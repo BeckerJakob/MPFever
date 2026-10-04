@@ -47,4 +47,4 @@ python tests\test_lockstep.py
 
 ## Status
 
-Experimental (0.1.0). The game build supported by the native module is 40408 (Steam). See [`docs/ROADMAP.txt`](docs/ROADMAP.txt).
+Experimental (0.1.1). The game build supported by the native module is 40408 (Steam). See [`docs/ROADMAP.txt`](docs/ROADMAP.txt).

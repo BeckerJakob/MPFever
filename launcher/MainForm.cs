@@ -35,7 +35,7 @@ namespace MPFever
 
     sealed class MainForm : Form
     {
-        public const string Version = "0.1.0-experimental";
+        public const string Version = "0.1.1-experimental";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         const long Step = 200;                 // game time units per simulation step
@@ -199,6 +199,16 @@ namespace MPFever
                 StartSession();
                 Thread.Sleep(8000);
                 var scenarios = (Environment.GetEnvironmentVariable("MPFEVER_SCENARIO") ?? "newroad,upgrade").Split(',');
+                if (scenarios[0] == "soak")
+                {
+                    // endurance: the games only run; the regular checkpoints show what drifts
+                    int.TryParse(Environment.GetEnvironmentVariable("MPFEVER_SOAK_SPEED") ?? "1", out int sp);
+                    int.TryParse(Environment.GetEnvironmentVariable("MPFEVER_SOAK_SECONDS") ?? "120", out int secs);
+                    SetSpeed(Math.Max(1, sp), "autotest");
+                    Thread.Sleep(Math.Max(10, secs) * 1000);
+                    AutoLine("sync: " + syncText + " (desyncs " + desyncs + ")");
+                    return;
+                }
                 foreach (var scenario in scenarios)
                 foreach (var role in new[] { "host", "client" })
                 {

@@ -49,7 +49,11 @@ local function valueHash(v, d)
 		if d > 14 then return 13 end
 		local acc = 17
 		for k, x in pairs(v) do
-			acc = (acc + C.hashStr(valueHash(k, d + 1), tostring(valueHash(x, d + 1)))) % 4294967296
+			-- local counters, not game state: entity revisions (bumped by each game's own component writes) and the
+			-- interface clock of the mission script
+			if k ~= "revision" and k ~= "guiTimeSeconds" then
+				acc = (acc + C.hashStr(valueHash(k, d + 1), tostring(valueHash(x, d + 1)))) % 4294967296
+			end
 		end
 		return acc
 	end
@@ -81,16 +85,39 @@ local function countsHash(counts)
 	return n .. "/" .. total .. "/" .. acc
 end
 
+-- diagnostic (MPFEVER_SDUMP set): every value of the game script states, one "path = value" per line, sorted, so
+-- that two games' files at the same game time can be compared line by line
+local SDUMP = os.getenv("MPFEVER_SDUMP")
+local sdumps = 0
+local function flatten(v, path, out, d)
+	if type(v) == "table" and d < 16 then
+		for k, x in pairs(v) do flatten(x, path .. "." .. tostring(k), out, d + 1) end
+	else
+		out[#out + 1] = path .. " = " .. (type(v) == "number" and string.format("%.10g", v) or tostring(v))
+	end
+end
+
 local function extendedParts(parts)
+	local dump = SDUMP and sdumps < 40 and {}
 	for name, res in pairs(GAME_SCRIPTS) do
 		local ok, v = pcall(function()
 			local e = api.engine.system.gameScriptSystem.getEntityForGameScript(res)
 			if not e or e < 0 then return "absent" end
 			local c = api.engine.getComponent(e, api.type.ComponentType.GAME_SCRIPT)
 			if not c then return "absent" end
+			if dump then flatten(c.state, name, dump, 0) end
 			return tostring(valueHash(c.state, 0))
 		end)
 		if ok and v ~= "absent" then parts["script:" .. name] = v end
+	end
+	if dump then
+		sdumps = sdumps + 1
+		table.sort(dump)
+		pcall(function()
+			local f = C.IO.open(C.DIR .. BS .. "sdump_" .. string.format("%012d", gameTime()) .. ".txt", "wb")
+			f:write(table.concat(dump, NL), NL)
+			f:close()
+		end)
 	end
 	-- cargo waiting in buildings (industries, warehouses, stations)
 	pcall(function()
@@ -445,12 +472,40 @@ local function simApplyDue(state)
 	if changed then state:set(st) end
 end
 
+-- Deterministic math.random for the game mechanics: the n-th draw of a simulation step depends only on the game time
+-- and n, whatever happened before (another script drawing first, the generator state of the process...).
+local detRandom
+local function installRandom()
+	if detRandom and math.random == detRandom then return end
+	local lastT, n = -1, 0
+	detRandom = function(m, k)
+		local okT, t = pcall(gameTime)
+		t = okT and t or 0
+		if t ~= lastT then lastT, n = t, 0 end
+		n = n + 1
+		local h = (t % 4294967296 + n * 2654435769) % 4294967296
+		for _ = 1, 3 do
+			-- 32-bit multiply in doubles (exact: each partial product stays below 2^53), then fold the high bits down
+			local hi, lo = math.floor(h / 65536), h % 65536
+			h = ((hi * 2246822519) % 65536 * 65536 + lo * 2246822519) % 4294967296
+			h = (h + math.floor(h / 8192)) % 4294967296
+		end
+		local x = h / 4294967296
+		if m == nil then return x end
+		if k == nil then m, k = 1, m end
+		return m + math.floor(x * (k - m + 1))
+	end
+	math.random = detRandom
+	log("deterministic math.random installed")
+end
+
 local function update(userParams, state, dt)
 	if not C.ACTIVE then return end
 	-- The game mechanics scripts (contracts, loans, weather, industries, towns...) draw random numbers from the Lua
 	-- generator, which is not part of the savegame and differs between games: reseeded from the game time at every
 	-- simulation step, every game draws the same numbers.
 	pcall(function() math.randomseed(gameTime()) end)
+	installRandom()
 	if not SIM.subscribed then
 		SIM.subscribed = true
 		pcall(function() state:subscribeToAllEvents() end)

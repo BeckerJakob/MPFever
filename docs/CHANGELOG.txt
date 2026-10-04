@@ -1,6 +1,17 @@
 MPFever - Changelog
 ===================
 
+0.1.1-experimental - synchronisation fixes
+  - Random numbers of the game mechanics (loan offers, contracts, events) are now
+    identical in every game: no more divergence of loans after a few minutes.
+  - False alarms removed from the state comparison (internal engine counters), which
+    caused needless resynchronisations at the start of a session.
+  - No more speed request loop after a resynchronisation.
+  - Notification sounds are no longer played twice.
+  - Constructions from a previous session are no longer sent again at startup.
+  - Known limit: passenger movement is computed by the engine and can still drift
+    slowly; the automatic resynchronisation corrects it.
+
 0.1.0-experimental - first public test version
   - Cooperative multiplayer in one shared company, connection by IP address.
   - Synchronisation of the game's construction tools (roads, tracks, joins in the
