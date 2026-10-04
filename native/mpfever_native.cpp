@@ -495,6 +495,96 @@ static bool InstallDetour(u32 rva, const u8* expect, int steal, void* detour, vo
     return true;
 }
 
+// ---------------------------------------------------------------- serial pool (MPFEVER_SERIAL=rva,rva,...)
+// Some simulation systems hand their work to the engine's thread pool, and the result then depends on which worker
+// finishes first (the games drift apart). The task submission functions listed in MPFEVER_SERIAL are redirected to a
+// pool of the engine's own kind with ONE worker: their tasks run one after the other, in submission order, while every
+// other system, the renderer and the loaders keep all the processor's cores.
+static const u32 RVA_POOL_CTOR = 0x3055a10;    // ThreadPool::ThreadPool(this, const std::string& name, int threads, bool)
+static const u8 P_ENQ[] = { 0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7C, 0x24, 0x20 };
+static void* volatile g_serialPool = 0;
+
+struct MsvcString { char buf[16]; u64 size; u64 cap; };
+typedef void* (*PoolCtor)(void* self, MsvcString* name, int threads, bool flag);
+
+static void* MakeSerialPool()
+{
+    u8* mem = (u8*)HeapAlloc(GetProcessHeap(), 8 /* HEAP_ZERO_MEMORY */, 0xe0 + 64);
+    if (!mem) return 0;
+    mem = (u8*)(((uptr)mem + 31) & ~(uptr)31);
+    MsvcString name;
+    memset(&name, 0, sizeof(name));
+    const char* n = "MPFever Serial";
+    int k = 0;
+    while (n[k]) { name.buf[k] = n[k]; k++; }
+    name.size = (u64)k;
+    name.cap = 15;
+    ((PoolCtor)(g_base + RVA_POOL_CTOR))(mem, &name, 1, true);
+    return mem;
+}
+
+// the pool is made on the first redirected submission (the engine is running by then)
+static volatile long g_poolLock = 0;
+extern "C" void* EnsureSerialPool()
+{
+    if (g_serialPool) return g_serialPool;
+    while (_InterlockedExchange(&g_poolLock, 1)) Sleep(0);
+    if (!g_serialPool) {
+        g_serialPool = MakeSerialPool();
+        Buf b; b.str("serial pool created at ").hex((uptr)g_serialPool); LogLine(b);
+    }
+    _InterlockedExchange(&g_poolLock, 0);
+    return g_serialPool;
+}
+
+static bool SerializeSite(u32 rva)
+{
+    u8* target = (u8*)(g_base + rva);
+    Buf b;
+    if (memcmp(target, P_ENQ, sizeof(P_ENQ)) != 0) { b.str("serial site ").hex(rva).str(": unexpected bytes, skipped"); LogLine(b); return false; }
+    u8* c = (u8*)VirtualAlloc(0, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!c) return false;
+    int i = 0;
+    static const u8 pre[] = { 0x51, 0x52, 0x41, 0x50, 0x41, 0x51, 0x48, 0x83, 0xEC, 0x28 };   // push rcx rdx r8 r9 / sub rsp,28
+    for (u8 x : pre) c[i++] = x;
+    c[i++] = 0x48; c[i++] = 0xB8; *(u64*)(c + i) = (u64)&EnsureSerialPool; i += 8;           // mov rax, EnsureSerialPool
+    c[i++] = 0xFF; c[i++] = 0xD0;                                                             // call rax
+    static const u8 post[] = { 0x48, 0x83, 0xC4, 0x28, 0x41, 0x59, 0x41, 0x58, 0x5A, 0x59,   // add rsp,28 / pop r9 r8 rdx rcx
+                               0x48, 0x85, 0xC0, 0x74, 0x03, 0x48, 0x89, 0xC1 };             // test rax,rax / jz +3 / mov rcx,rax
+    for (u8 x : post) c[i++] = x;
+    memcpy(c + i, P_ENQ, sizeof(P_ENQ)); i += sizeof(P_ENQ);                      // the instructions replaced below
+    WriteAbsJump(c + i, (uptr)target + sizeof(P_ENQ)); i += 14;
+    FlushInstructionCache(GetCurrentProcess(), c, i);
+    DWORD old;
+    if (!VirtualProtect(target, sizeof(P_ENQ), PAGE_EXECUTE_READWRITE, &old)) return false;
+    u8 patch[16];
+    WriteAbsJump(patch, (uptr)c);
+    patch[14] = 0xCC;
+    memcpy(target, patch, sizeof(P_ENQ));
+    VirtualProtect(target, sizeof(P_ENQ), old, &old);
+    FlushInstructionCache(GetCurrentProcess(), target, sizeof(P_ENQ));
+    b.str("serial site ").hex(rva).str(" redirected");
+    LogLine(b);
+    return true;
+}
+
+static void SetupSerial()
+{
+    char v[2048] = {};
+    DWORD n = GetEnvironmentVariableA("MPFEVER_SERIAL", v, sizeof(v) - 1);
+    if (n == 0 || n >= sizeof(v) - 1) return;
+    u32 cur = 0; bool any = false;
+    for (DWORD i = 0; i <= n; i++) {
+        char ch = v[i];
+        int d = (ch >= '0' && ch <= '9') ? ch - '0' : (ch >= 'a' && ch <= 'f') ? ch - 'a' + 10 : (ch >= 'A' && ch <= 'F') ? ch - 'A' + 10 : -1;
+        if (d >= 0 && !(ch == 'x' || ch == 'X')) { cur = cur * 16 + d; any = true; }
+        else if (ch == 'x' || ch == 'X') { cur = 0; any = false; }
+        else { if (any) SerializeSite(cur); cur = 0; any = false; }
+    }
+}
+
+static bool g_scriptPoolPatched = false;
+static u32 g_simPoolA = 0, g_simPoolB = 0;
 static u32 g_threads = 0;
 typedef void (WINAPI* GetSystemInfoF)(void*);
 static GetSystemInfoF g_realGetSystemInfo = 0;
@@ -529,12 +619,15 @@ static DWORD WINAPI Init(void*)
     Buf b;
     b.str("mpfever_native v3 loaded, base ").hex(g_base).str(", build stamp ").hex(fh->TimeDateStamp);
     LogLine(b);
+    { Buf t; t.str(g_scriptPoolPatched ? "game scripts: own pool, one worker" : "game scripts: pool NOT patched"); LogLine(t); }
+    if (g_simPoolA || g_simPoolB) { Buf t; t.str("pool sizes forced: ").hex(g_simPoolA).str(",").hex(g_simPoolB); LogLine(t); }
     if (g_threads) { Buf t; t.str("engine told it has ").hex(g_threads).str(" processor(s)").str(g_realGetSystemInfo ? "" : " (GetSystemInfo not patched)"); LogLine(t); }
     if (fh->TimeDateStamp != EXPECTED_TIMESTAMP) {
         Buf w; w.str("unknown game build: inert"); LogLine(w);
         return 0;
     }
     InstallDetour(RVA_ADD, P_ADD, sizeof(P_ADD), (void*)&AddDetour, (void**)&g_addOrig);
+    SetupSerial();
     // ArmMapSites();   (diagnostic: map lookup failures, see sites_gen.h)
     return 0;
 }
@@ -602,12 +695,67 @@ static void LimitThreads()
     if (real) g_realGetSystemInfo = (GetSystemInfoF)real;
 }
 
+// ---------------------------------------------------------------- simulation pools size (MPFEVER_SIMPOOL=a,b)
+// Two of the engine's pools are sized round(0.55 * cores + 0.75) by static initialisers (0x1b3c0 -> [0x4054fa8],
+// 0x1b410 -> [0x4054fa4]). MPFEVER_SIMPOOL patches those initialisers (in DllMain, before the game's own static
+// initialisation runs) to fixed sizes; the processor count, the main pool and everything else stay untouched.
+static void PatchPoolInit(uptr base, u32 fnRva, u32 globalRva, u32 value)
+{
+    u8* f = (u8*)(base + fnRva);
+    if (f[0] != 0x48 || f[1] != 0x83 || f[2] != 0xEC || f[3] != 0x28) return;   // sub rsp, 28h
+    u8 code[16];
+    int i = 0;
+    i32 rel = (i32)((i64)(base + globalRva) - (i64)(base + fnRva + 10));
+    code[i++] = 0xC7; code[i++] = 0x05; *(i32*)(code + i) = rel; i += 4; *(u32*)(code + i) = value; i += 4;   // mov dword [rip+rel], value
+    code[i++] = 0xC3;                                                                                       // ret
+    DWORD prot;
+    VirtualProtect(f, 16, PAGE_EXECUTE_READWRITE, &prot);
+    memcpy(f, code, i);
+    VirtualProtect(f, 16, prot, &prot);
+    FlushInstructionCache(GetCurrentProcess(), f, 16);
+}
+static void SetupSimPools()
+{
+    char v[32] = {};
+    DWORD n = GetEnvironmentVariableA("MPFEVER_SIMPOOL", v, 31);
+    if (n == 0 || n >= 31) return;
+    u32 a = 0, b = 0; DWORD i = 0;
+    for (; i < n && v[i] >= '0' && v[i] <= '9'; i++) a = a * 10 + (v[i] - '0');
+    if (i < n && v[i] == ',') for (i++; i < n && v[i] >= '0' && v[i] <= '9'; i++) b = b * 10 + (v[i] - '0');
+    uptr base = (uptr)GetModuleHandleW(0);
+    if (a) { PatchPoolInit(base, 0x1b3c0, 0x4054fa8, a); g_simPoolA = a; }
+    if (b) { PatchPoolInit(base, 0x1b410, 0x4054fa4, b); g_simPoolB = b; }
+}
+
+// ---------------------------------------------------------------- game scripts run one after the other
+// The game scripts (Lua: towns, loans, industries...) are updated on a thread pool. On processors with fewer than 8
+// threads the engine gives them their own pool of max(1, threads/2) workers; with 8 threads or more they share the
+// general pool and run in parallel, in an order that depends on thread timing, so two games drift apart. Patched here
+// (before the pool is made): the dedicated pool always exists, with one worker. Only the scripts' update is serial;
+// the simulation systems, the renderer and the loaders keep every core.
+static void PatchScriptPool(uptr base)
+{
+    static const u8 expect[] = { 0x83, 0xF8, 0x08, 0x0F, 0x8D, 0x25, 0x01, 0x00, 0x00,     // cmp eax,8 / jge (shared pool)
+                                 0xC7, 0x44, 0x24, 0x20, 0x01, 0x00, 0x00, 0x00,           // mov [rsp+20h],1
+                                 0xE8 };                                                   // call hardware_concurrency
+    u8* p = (u8*)(base + 0xaaec2c);
+    if (memcmp(p, expect, sizeof(expect)) != 0) return;
+    DWORD prot;
+    VirtualProtect(p, 32, PAGE_EXECUTE_READWRITE, &prot);
+    for (int k = 3; k < 9; k++) p[k] = 0x90;                    // never the shared pool
+    u8* c = p + 17;                                              // threads/2 -> 0, so max(1, ...) = 1 worker
+    c[0] = 0x31; c[1] = 0xC0; c[2] = 0x0F; c[3] = 0x1F; c[4] = 0x00;   // xor eax,eax / nop
+    VirtualProtect(p, 32, prot, &prot);
+    FlushInstructionCache(GetCurrentProcess(), p, 32);
+    g_scriptPoolPatched = true;
+}
+
 extern "C" BOOL WINAPI DllMain(HMODULE inst, DWORD reason, void*)
 {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
         char d[8];
-        if (GetEnvironmentVariableA("MPFEVER_DIR", d, 1) > 0) LimitThreads();
+        if (GetEnvironmentVariableA("MPFEVER_DIR", d, 1) > 0) { LimitThreads(); SetupSimPools(); PatchScriptPool((uptr)GetModuleHandleW(0)); }
         HANDLE t = CreateThread(0, 0, Init, 0, 0, 0);
         if (t) CloseHandle(t);
     }

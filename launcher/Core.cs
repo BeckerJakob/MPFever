@@ -218,9 +218,6 @@ namespace MPFever
             psi.EnvironmentVariables["MPFEVER_DIR"] = Dir;
             psi.EnvironmentVariables["MPFEVER_NAME"] = Name;
             psi.EnvironmentVariables["MPFEVER_ROLE"] = Role;
-            // the engine's thread pool makes the simulation depend on thread timing (games drift apart): every game is
-            // told it has 2 processors (winhttp.dll), which makes the simulation identical everywhere at no visible cost
-            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MPFEVER_THREADS"))) psi.EnvironmentVariables["MPFEVER_THREADS"] = "2";
             // application script: starts the host's savegame after a resynchronisation (and loads the autotest save)
             psi.Arguments = "--script mpfever_1::/mpfever_auto.lua";
             if (AutoSave != null) psi.EnvironmentVariables["MPFEVER_SAVE"] = AutoSave;
