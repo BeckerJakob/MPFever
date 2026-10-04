@@ -36,8 +36,8 @@ KNOWN LIMITATIONS
   .sav file to the others; see INSTALL.txt). Automatic transfer at join is planned.
 - Joining a session that is already running is not possible yet: everybody connects,
   loads the save, then the host starts the game.
-- Vehicles can drift apart a little after road building; the automatic
-  resynchronisation fixes it (at most once every 2 minutes).
+- If the games ever differ, the automatic resynchronisation reloads the host's game
+  (about 20 seconds).
 - No Steam invites yet: connection by IP address only (port forwarding or a virtual LAN
   such as Radmin VPN, ZeroTier or Tailscale).
 - Tested with 2 players. More players should work but are untested.

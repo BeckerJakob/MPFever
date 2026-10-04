@@ -495,6 +495,10 @@ static bool InstallDetour(u32 rva, const u8* expect, int steal, void* detour, vo
     return true;
 }
 
+static u32 g_threads = 0;
+typedef void (WINAPI* GetSystemInfoF)(void*);
+static GetSystemInfoF g_realGetSystemInfo = 0;
+
 static DWORD WINAPI Init(void*)
 {
     g_base = (uptr)GetModuleHandleW(0);
@@ -525,6 +529,7 @@ static DWORD WINAPI Init(void*)
     Buf b;
     b.str("mpfever_native v3 loaded, base ").hex(g_base).str(", build stamp ").hex(fh->TimeDateStamp);
     LogLine(b);
+    if (g_threads) { Buf t; t.str("engine told it has ").hex(g_threads).str(" processor(s)").str(g_realGetSystemInfo ? "" : " (GetSystemInfo not patched)"); LogLine(t); }
     if (fh->TimeDateStamp != EXPECTED_TIMESTAMP) {
         Buf w; w.str("unknown game build: inert"); LogLine(w);
         return 0;
@@ -534,10 +539,75 @@ static DWORD WINAPI Init(void*)
     return 0;
 }
 
+// ---------------------------------------------------------------- engine thread count (MPFEVER_THREADS=n)
+// The engine spreads parts of the simulation (traffic, persons) over a thread pool sized from the processor count;
+// the result then depends on thread timing and two games drift apart. With MPFEVER_THREADS set, the game is told it
+// has n processors (msvcp140 _Thrd_hardware_concurrency and GetSystemInfo, patched in the game's import table at
+// load time, before the engine creates its pool).
+
+extern "C" u32 HardwareConcurrency() { return g_threads; }
+extern "C" void WINAPI GetSystemInfoHook(void* si)
+{
+    g_realGetSystemInfo(si);
+    *(DWORD*)((u8*)si + 32) = g_threads;   // SYSTEM_INFO.dwNumberOfProcessors
+}
+
+static bool SameNoCase(const char* a, const char* b)
+{
+    for (; *a && *b; a++, b++) {
+        char x = *a, y = *b;
+        if (x >= 'A' && x <= 'Z') x += 32;
+        if (y >= 'A' && y <= 'Z') y += 32;
+        if (x != y) return false;
+    }
+    return *a == *b;
+}
+
+static void* PatchImport(uptr base, const char* dll, const char* fn, void* repl)
+{
+    auto dos = (IMAGE_DOS_HEADER_*)base;
+    u8* opt = (u8*)(base + dos->e_lfanew) + 4 + sizeof(IMAGE_FILE_HEADER_);
+    u32 impRva = *(u32*)(opt + 112 + 8);   // PE32+ DataDirectory[1] (imports)
+    if (!impRva) return 0;
+    for (u32* d = (u32*)(base + impRva); d[3]; d += 5) {
+        if (!SameNoCase((const char*)(base + d[3]), dll)) continue;
+        u64* names = (u64*)(base + (d[0] ? d[0] : d[4]));
+        u64* iat = (u64*)(base + d[4]);
+        for (int i = 0; names[i]; i++) {
+            if (names[i] >> 63) continue;   // by ordinal
+            if (!SameNoCase((const char*)(base + (u32)names[i] + 2), fn)) continue;
+            void* old = (void*)iat[i];
+            DWORD prot;
+            VirtualProtect(&iat[i], 8, 4 /* PAGE_READWRITE */, &prot);
+            iat[i] = (u64)repl;
+            VirtualProtect(&iat[i], 8, prot, &prot);
+            return old;
+        }
+    }
+    return 0;
+}
+
+static void LimitThreads()
+{
+    char v[16] = {};
+    DWORD n = GetEnvironmentVariableA("MPFEVER_THREADS", v, 15);
+    if (n == 0 || n >= 15) return;
+    u32 t = 0;
+    for (DWORD i = 0; i < n && v[i] >= '0' && v[i] <= '9'; i++) t = t * 10 + (v[i] - '0');
+    if (t == 0) return;
+    g_threads = t;
+    uptr base = (uptr)GetModuleHandleW(0);
+    PatchImport(base, "msvcp140.dll", "_Thrd_hardware_concurrency", (void*)&HardwareConcurrency);
+    void* real = PatchImport(base, "kernel32.dll", "GetSystemInfo", (void*)&GetSystemInfoHook);
+    if (real) g_realGetSystemInfo = (GetSystemInfoF)real;
+}
+
 extern "C" BOOL WINAPI DllMain(HMODULE inst, DWORD reason, void*)
 {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
+        char d[8];
+        if (GetEnvironmentVariableA("MPFEVER_DIR", d, 1) > 0) LimitThreads();
         HANDLE t = CreateThread(0, 0, Init, 0, 0, 0);
         if (t) CloseHandle(t);
     }

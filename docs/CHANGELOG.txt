@@ -18,8 +18,12 @@ MPFever - Changelog
     positions, passengers, town statistics) is reloaded only if it lasts 5 minutes;
     real differences (roads, stops, lines, buildings, finances) still trigger an
     immediate resynchronisation.
-  - Known limit: passenger movement is computed by the engine and can still drift
-    slowly; the automatic resynchronisation corrects it.
+  - Root cause of the slow drift found and fixed: the engine spreads traffic and
+    passengers over a thread pool whose results depend on thread timing. Every game
+    is now told it has 2 processors, which makes the simulation identical
+    everywhere (7 minutes at x4 without a single difference in testing), with no
+    visible slowdown.
+  - The game's speed request at startup no longer floods the launcher log.
 
 0.1.0-experimental - first public test version
   - Cooperative multiplayer in one shared company, connection by IP address.

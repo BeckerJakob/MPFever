@@ -109,6 +109,7 @@ namespace MPFever
             "script:towns", "script:towncargo", "script:celebrations", "script:progression", "script:industries" };
         const double DriftResyncSeconds = 300;
         double driftSince = -1;
+        double lastNotStartedLog = -1e9;
 
         readonly bool autotest;
         readonly List<string> autoReport = new List<string>();
@@ -203,6 +204,12 @@ namespace MPFever
                 if (!ready) { AutoLine("FAILED: the two games did not get ready with the same save"); return; }
                 AutoLine("both games ready");
                 Thread.Sleep(3000);
+                if (Environment.GetEnvironmentVariable("MPFEVER_SCENARIO") == "det")
+                {
+                    // exact simulation steps on every game, paused (no real-time pacing involved)
+                    RunDeterminism();
+                    return;
+                }
                 StartSession();
                 Thread.Sleep(8000);
                 var scenarios = (Environment.GetEnvironmentVariable("MPFEVER_SCENARIO") ?? "newroad,upgrade").Split(',');
@@ -506,7 +513,7 @@ namespace MPFever
                         var t = LuaLit.Parse(m.Payload) as Dictionary<object, object>;
                         if (t != null && t.TryGetValue("speed", out var sv) && sv is double d)
                         {
-                            if (!started) { Log.W(T($"{m.From} demande la vitesse {d} : la partie n'est pas démarrée", $"{m.From} asks for speed {d}: the game is not started")); break; }
+                            if (!started) { if (Now - lastNotStartedLog < 10) break; lastNotStartedLog = Now; Log.W(T($"{m.From} demande la vitesse {d} : la partie n'est pas démarrée", $"{m.From} asks for speed {d}: the game is not started")); break; }
                             // a request for the speed already in effect changes nothing (and must not echo back)
                             bool same; lock (sessionGate) same = d > 0 && !pauseAt.HasValue && (int)d == speed || d <= 0 && pauseAt.HasValue;
                             if (same) break;

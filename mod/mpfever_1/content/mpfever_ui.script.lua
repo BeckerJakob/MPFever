@@ -77,7 +77,12 @@ local function install()
 		end
 		if tag.name == "makeGameSetSpeedCmd" then
 			U.stats.speed = U.stats.speed + 1
-			sendLine("speed_req", { speed = tag.args[1] })
+			-- the interface repeats its request every frame while the game holds another speed: one per second at most
+			local now = os.clock()
+			if tag.args[1] ~= U.lastSpeedReq or now - (U.lastSpeedAt or -10) > 1 then
+				U.lastSpeedReq, U.lastSpeedAt = tag.args[1], now
+				sendLine("speed_req", { speed = tag.args[1] })
+			end
 			return
 		end
 		local okm, margs = pcall(function()
