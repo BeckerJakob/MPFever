@@ -260,7 +260,8 @@ local function buildCommand(fn, srcArgs, tries)
 end
 
 -- Executes one replicated action. Returns a result record (for the originator's UI and the bindings).
-local function executeAction(a, sendCommand, useCallback, bind)
+-- done (optional, with useCallback): called with the result once the engine has answered (or at once on failure)
+local function executeAction(a, sendCommand, useCallback, bind, done)
 	local result = { tok = a.tok, id = a.id, uid = a.uid, fn = a.fn, success = false }
 	local okt, unresolved = pcall(R.translateIn, a.args or {}, bind or {})
 	if not okt then
@@ -318,6 +319,8 @@ local function executeAction(a, sendCommand, useCallback, bind)
 			local first = nil
 			pcall(function() first = resultEntities[1][1] end)
 			if ok and createdKey and type(first) == "number" then result.created = { key = createdKey .. a.uid, e = first } end
+			result.answered = true
+			if done and result.returned then done(result) end
 		end)
 	else
 		-- simulation state: no callbacks; the command runs at once; created entities are found by difference
@@ -365,6 +368,13 @@ local function executeAction(a, sendCommand, useCallback, bind)
 	if not oks then
 		result.err = "send: " .. tostring(errs)
 		log("SEND FAILED " .. tostring(a.uid) .. ": " .. tostring(errs))
+		if done then done(result) end
+		return result
+	end
+	if useCallback and done then
+		-- the verdict comes in the callback (logged and reported there)
+		result.returned = true
+		if result.answered then done(result) end
 		return result
 	end
 	log("action " .. tostring(a.uid) .. " " .. tostring(a.fn) .. " at t=" .. tostring(gameTime()) .. " -> " .. (result.success and "OK" or "REFUSED"))
@@ -855,6 +865,14 @@ local function stampFor(t)
 	return math.max(t + G.ahead * STEP, G.stampFloor)
 end
 
+-- stamp of an action issued while the session is paused: the games may have stopped a batch apart (a speed change
+-- takes a frame), so the stamp is the latest of their times; the others catch up to it (pacing) before applying it
+local function pausedStamp(now)
+	local t = now
+	for _, pc in pairs(G.peers) do if type(pc.t) == "number" and pc.t > t then t = pc.t end end
+	return t
+end
+
 local function queueLocal(a)
 	if a.paused then
 		G.pendingPaused[#G.pendingPaused + 1] = a
@@ -869,7 +887,10 @@ local function pacing()
 	local s = G.session
 	if not s.started then return 0 end
 	local stopAt = s.pauseAt
-	if G.holdAt and (stopAt == nil or G.holdAt < stopAt) then stopAt = G.holdAt end
+	-- paused, but an action stamped later (another game stopped further): catch up to it, one step at a time
+	local catchUp = s.pauseAt ~= nil and G.holdAt ~= nil and G.holdAt > s.pauseAt and now < G.holdAt
+	if catchUp then stopAt = G.holdAt
+	elseif G.holdAt and (stopAt == nil or G.holdAt < stopAt) then stopAt = G.holdAt end
 	local barrier = nil
 	for _, pc in pairs(G.peers) do
 		local limit = pc.t + ((pc.ah or 3) - 1) * STEP
@@ -878,6 +899,7 @@ local function pacing()
 	if barrier and (stopAt == nil or barrier < stopAt) then stopAt = barrier end
 	local want = s.speed
 	if s.pauseAt == nil and G.holdAt then want = math.max(1, want) end
+	if catchUp then want = 1 end
 	if stopAt then
 		if now >= stopAt then return 0 end
 		if want > 1 and stopAt - now < want * STEP then return 1 end   -- do not overshoot a stop point inside a batch
@@ -941,6 +963,8 @@ local function upgradePlan(margs)
 	local st = margs[1] and margs[1].proposal
 	if type(st) ~= "table" then return nil end
 	if #(st.addedNodes or {}) > 0 or #(st.removedNodes or {}) > 0 or #(st.edgeObjectsToAdd or {}) > 0 then return nil end
+	-- a stop removed with the bulldozer looks like an upgrade, but replaceSegment would keep the stop
+	if #(st.edgeObjectsToRemove or {}) > 0 then return nil end
 	if #(margs[1].toAdd or {}) > 0 or #(margs[1].toRemove or {}) > 0 then return nil end
 	local added, removed = st.addedSegments or {}, st.removedSegments or {}
 	if #added == 0 or #added ~= #removed then return nil end
@@ -1052,11 +1076,17 @@ local function stopPlan(margs)
 	local E = rm.entity
 	if type(E) ~= "number" or E < 0 then return nil, "segment unresolved" end
 	local objs = {}
-	for i, o in ipairs(st.edgeObjectsToAdd) do
+	for i, o in ipairs(st.edgeObjectsToAdd or {}) do
 		if type(o.model) ~= "string" then return nil, "stop " .. i .. " without model" end
 		objs[#objs + 1] = o
 	end
-	return { E = E, seg = ad, objs = objs, nodeConfigs = st.nodeConfigsToAdd or {} }
+	-- removed stops (bulldozer): their ids differ between games, their rank on the segment does not
+	local gone, removeIdx = {}, {}
+	for _, id in ipairs(st.edgeObjectsToRemove or {}) do gone[id] = true end
+	for k, o in ipairs((rm.comp or {}).objects or {}) do
+		if type(o) == "table" and gone[o[1]] then removeIdx[k] = true end
+	end
+	return { E = E, seg = ad, objs = objs, removeIdx = removeIdx, nodeConfigs = st.nodeConfigsToAdd or {} }
 end
 
 local function replayStop(a, plan)
@@ -1085,8 +1115,11 @@ local function replayStop(a, plan)
 		cc.laneConfigs = c.laneConfigs
 	end
 	-- objects: the stops already on this segment, then the new ones (placeholders, side)
-	local list = {}
-	for i = 1, #c.objects do list[#list + 1] = { c.objects[i][1], c.objects[i][2] } end
+	local list, removeIds = {}, {}
+	for i = 1, #c.objects do
+		if plan.removeIdx and plan.removeIdx[i] then removeIds[#removeIds + 1] = c.objects[i][1]
+		else list[#list + 1] = { c.objects[i][1], c.objects[i][2] } end
+	end
 	for k, o in ipairs(plan.objs) do list[#list + 1] = { -400000000 - (k - 1), o.left and 0 or 1 } end
 	cc.objects = list
 	e.comp = cc
@@ -1114,6 +1147,7 @@ local function replayStop(a, plan)
 	ssp.edgesToRemove = { plan.E }
 	ssp.edgesToAdd = { e }
 	ssp.edgeObjectsToAdd = eos
+	if #removeIds > 0 then ssp.edgeObjectsToRemove = removeIds end
 	if #ncr > 0 then ssp.nodeConfigsToRemove = ncr end
 	sp.streetProposal = ssp
 	local okf, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, sContext(), false, true) end)
@@ -1135,7 +1169,8 @@ local function replayStop(a, plan)
 		if success then
 			G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
 				local after = stopCount()
-				log("NATIVE REPLAY " .. tostring(a.uid) .. " stops on the map " .. before .. " -> " .. after .. ((after > before) and "" or " (STOP MISSING)"))
+				local expected = before + #plan.objs - #removeIds
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " stops on the map " .. before .. " -> " .. after .. ((after == expected) and "" or (" (EXPECTED " .. expected .. ")")))
 			end }
 		end
 	end)
@@ -1156,7 +1191,7 @@ local function replayNative(a, formIndex)
 		if plan then return replayUpgrade(a, plan, 1) end
 		-- stops: the stop tool replaces one existing segment between the same nodes and adds edge objects
 		local stp = probe[1] and probe[1].proposal
-		if stp and #(stp.edgeObjectsToAdd or {}) > 0 then
+		if stp and (#(stp.edgeObjectsToAdd or {}) > 0 or #(stp.edgeObjectsToRemove or {}) > 0) then
 			if #missing > 0 then
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " (stop) SKIPPED, unresolved: " .. table.concat(missing, ","))
 				return
@@ -1283,7 +1318,7 @@ local function pollNativeEvents()
 		if id then
 			local now = gameTime()
 			local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt
-			local at = paused and now or (stampFor(now) + STEP)
+			local at = paused and pausedStamp(now) or (stampFor(now) + STEP)
 			G.natRelease[#G.natRelease + 1] = { id = id, at = at }
 			send("nat_pending", { origin = G.me, at = at, id = id })
 			log("native build " .. id .. " held by the DLL, released at t=" .. at .. " (now " .. now .. ")")
@@ -1459,7 +1494,7 @@ local function stampHeld()
 			G.oseq = G.oseq + 1
 			local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt and gameSpeed() == 0
 			local a = { tok = p.tok, id = p.id, fn = p.fn, args = p.args, origin = G.me, oseq = G.oseq,
-				uid = G.me .. ":" .. G.oseq, at = paused and now or stampFor(now), paused = paused or nil }
+				uid = G.me .. ":" .. G.oseq, at = paused and pausedStamp(now) or stampFor(now), paused = paused or nil }
 			send("act", a)
 			queueLocal(a)
 		elseif p and (kind == "speed_req" or kind == "act_fail" or kind == "save_done") then
@@ -1563,12 +1598,17 @@ local function runPausedActions()
 				send("sync_hash", { n = a.n, parts = simHash(), cost = 0, auth = okA and auth or nil })
 			else
 				toSim("replaying", {})
-				local r = executeAction(a, O.sendCommand, true, G.bind)
-				r.at = now
-				if r.created then G.bind[r.created.key] = r.created.e; G.rev[r.created.e] = r.created.key; toSim("bind", r.created) end
-				G.resultsSeen[tostring(r.uid) .. "@" .. tostring(r.at)] = true
-				C.appendFile(C.DIR .. BS .. "results.log", C.line("result", r))
-				if r.created then C.appendFile(C.DIR .. BS .. "bindings.log", r.created.key .. " " .. tostring(r.created.e) .. NL) end
+				-- paused: the engine answers in a callback, a frame later; the result is reported then
+				executeAction(a, O.sendCommand, true, G.bind, function(r)
+					r.at = now
+					r.answered, r.returned = nil, nil
+					log("paused action " .. tostring(r.uid) .. " " .. tostring(r.fn) .. " at t=" .. tostring(now) .. " -> " .. (r.success and "OK" or "REFUSED"))
+					if r.created then G.bind[r.created.key] = r.created.e; G.rev[r.created.e] = r.created.key; toSim("bind", r.created) end
+					G.resultsSeen[tostring(r.uid) .. "@" .. tostring(r.at)] = true
+					C.appendFile(C.DIR .. BS .. "results.log", C.line("result", r))
+					if r.created then C.appendFile(C.DIR .. BS .. "bindings.log", r.created.key .. " " .. tostring(r.created.e) .. NL) end
+					if not r.success then send("act_refused", { uid = r.uid, fn = r.fn, err = r.err }) end
+				end)
 			end
 		else
 			keep[#keep + 1] = a

@@ -9,6 +9,15 @@ MPFever - Changelog
   - No more speed request loop after a resynchronisation.
   - Notification sounds are no longer played twice.
   - Constructions from a previous session are no longer sent again at startup.
+  - Lines: stops can be added in the line editor again (results of an earlier
+    session no longer hide the new ones); lines and every other action now work
+    while the game is paused, on every player's side.
+  - Removing a stop with the bulldozer is replicated (the stop used to stay on the
+    other players' maps).
+  - Fewer interruptions: a slight drift of the engine's own simulation (vehicle
+    positions, passengers, town statistics) is reloaded only if it lasts 5 minutes;
+    real differences (roads, stops, lines, buildings, finances) still trigger an
+    immediate resynchronisation.
   - Known limit: passenger movement is computed by the engine and can still drift
     slowly; the automatic resynchronisation corrects it.
 

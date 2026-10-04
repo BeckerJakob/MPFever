@@ -102,6 +102,13 @@ namespace MPFever
         readonly HashSet<string> ignoredParts = new HashSet<string>();
         // parts every game corrects by itself from the host's values (not a reason to reload)
         static readonly HashSet<string> CorrectedParts = new HashSet<string> { "money" };
+        // slow drift of the engine's own simulation (passengers boarding, vehicle positions, the town statistics that
+        // follow): not caused by a missed action; reloaded only when it lasts, so that players are not interrupted
+        // every two minutes
+        static readonly HashSet<string> DriftParts = new HashSet<string> { "vehicles", "onboard", "persons", "stocks",
+            "script:towns", "script:towncargo", "script:celebrations", "script:progression", "script:industries" };
+        const double DriftResyncSeconds = 300;
+        double driftSince = -1;
 
         readonly bool autotest;
         readonly List<string> autoReport = new List<string>();
@@ -209,6 +216,8 @@ namespace MPFever
                     AutoLine("sync: " + syncText + " (desyncs " + desyncs + ")");
                     return;
                 }
+                // MPFEVER_PAUSED=1: the scenarios run with the session paused (actions applied while paused)
+                if (Environment.GetEnvironmentVariable("MPFEVER_PAUSED") == "1") { Pause("autotest"); Thread.Sleep(4000); }
                 foreach (var scenario in scenarios)
                 foreach (var role in new[] { "host", "client" })
                 {
@@ -401,7 +410,12 @@ namespace MPFever
             lock (hashes) hashes[n] = new Dictionary<string, Dictionary<object, object>>();
             long? p; lock (sessionGate) p = pauseAt;
             if (p.HasValue && MaxClock() >= p.Value)
-                HostSend(Msg.Make("hash", hostName, "{[\"n\"]=" + n + ",[\"at\"]=" + p.Value + ",[\"paused\"]=true}"));
+            {
+                // the games may have stopped a batch apart: the check is taken at the latest of their times (the others
+                // catch up to it)
+                long at; lock (clocks) at = Math.Max(p.Value, clocks.Count == 0 ? 0 : clocks.Values.Max(c => c.T));
+                HostSend(Msg.Make("hash", hostName, "{[\"n\"]=" + n + ",[\"at\"]=" + at + ",[\"paused\"]=true}"));
+            }
             else
                 HostSend(Msg.Make("hash", hostName, "{[\"n\"]=" + n + ",[\"at\"]=" + FutureStamp() + "}"));
         }
@@ -595,6 +609,14 @@ namespace MPFever
                 syncText = "SYNC ✔";
                 if (changed || n % 6 == 1) Log.W(T($"Synchronisation n°{n} (temps {time}) : IDENTIQUE sur {names.Count} jeux ({keys.Count} mesures)", $"Sync check #{n} (time {time}): IDENTICAL on {names.Count} games ({keys.Count} measures)"));
             }
+            else if (diffKeys.Where(d => !ignoredParts.Contains(d) && !CorrectedParts.Contains(d)).All(DriftParts.Contains))
+            {
+                // simulation drift (or money, corrected at once): no alarm, a line per minute
+                bool changed = !syncText.StartsWith("SYNC ~");
+                syncText = T("SYNC ~ (légère dérive : ", "SYNC ~ (slight drift: ") + string.Join(",", diffs.Select(d => DiffKey(d))) + ")";
+                if (changed || n % 6 == 1) Log.W(T($"Synchronisation n°{n} (temps {time}) : légère dérive de la simulation ({string.Join(", ", diffs.Select(d => DiffKey(d)))}), corrigée si elle dure",
+                    $"Sync check #{n} (time {time}): slight simulation drift ({string.Join(", ", diffs.Select(d => DiffKey(d)))}), corrected if it lasts"));
+            }
             else
             {
                 desyncs++;
@@ -612,7 +634,21 @@ namespace MPFever
         {
             if (resyncing || autotest) return;
             string k = string.Join(",", keys.OrderBy(x => x));
-            if (keys.Count == 0) { diffStreak = 0; lastDiffKeys = ""; return; }
+            if (keys.Count == 0) { diffStreak = 0; lastDiffKeys = ""; driftSince = -1; return; }
+            if (keys.All(DriftParts.Contains))
+            {
+                // simulation drift only: reload once it has lasted DriftResyncSeconds
+                diffStreak = 0; lastDiffKeys = "";
+                if (driftSince < 0) driftSince = Now;
+                if (Now - driftSince < DriftResyncSeconds || Now - lastResync < ResyncCooldownSeconds) return;
+                driftSince = -1;
+                int others; lock (players) others = players.Count(p => p != hostName);
+                if (others == 0) return;
+                resyncing = true;
+                new Thread(() => Resync(T("dérive de la simulation : ", "simulation drift: ") + k)) { IsBackground = true, Name = "Resync" }.Start();
+                return;
+            }
+            driftSince = -1;
             diffStreak = k == lastDiffKeys ? diffStreak + 1 : 1;
             lastDiffKeys = k;
             if (diffStreak < 2) return;
