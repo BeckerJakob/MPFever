@@ -500,8 +500,10 @@ function C.rebuildProposal(m, opts)
 		if params.seed == nil then params.seed = (opts.seed or 0) + i end
 		c.params = params
 		if ce.transf then c.transf = plain(ce.transf) end
+		-- -1 = nobody's (a town building the tool moved for the new street): it must stay a town building, not
+		-- become the player's construction (which the player would also pay for)
 		local player = ce.playerEntity
-		if type(player) ~= "number" or player < 0 then player = api.engine.util.getPlayer() end
+		if type(player) ~= "number" then player = api.engine.util.getPlayer() end
 		c.playerEntity = player
 		local name = ce.name
 		if type(name) ~= "string" or name == "" then name = baseName(ce.fileName) end
@@ -509,8 +511,18 @@ function C.rebuildProposal(m, opts)
 		cons[i] = c
 	end
 	sp.constructionsToAdd = cons
-	sp.constructionsToRemove = entityList(m.constructionsToRemove or m.toRemove)
-	if type(m.old2new) == "table" then pcall(function() sp.old2new = plain(m.old2new) end) end
+	local removeList = entityList(m.constructionsToRemove or m.toRemove)
+	sp.constructionsToRemove = removeList
+	if type(m.old2newByRank) == "table" then
+		pcall(function()
+			local map = {}
+			for i, e in ipairs(removeList) do
+				local v = m.old2newByRank[i] or m.old2newByRank[tostring(i)]
+				if v ~= nil then map[e] = v end
+			end
+			sp.old2new = map
+		end)
+	elseif type(m.old2new) == "table" then pcall(function() sp.old2new = plain(m.old2new) end) end
 
 	local st = m.streetProposal or m.proposal
 	if type(st) == "table" and not opts.noStreet then
@@ -739,6 +751,17 @@ function C.compactProposal(p)
 		return nil
 	end
 	local out = { toAdd = {}, toRemove = C.marshal(get(p, "toRemove")) or {}, old2new = C.marshal(get(p, "old2new")) }
+	-- old2new is keyed by the removed constructions' entity ids, which differ between games: shipped by their rank in
+	-- toRemove (references there are translated), rebuilt with each game's own ids
+	pcall(function()
+		if type(out.old2new) ~= "table" then return end
+		local byRank = {}
+		for i, e in ipairs(out.toRemove) do
+			local v = out.old2new[e]
+			if v ~= nil then byRank[i] = v end
+		end
+		out.old2newByRank = byRank
+	end)
 	local toAdd = get(p, "toAdd") or get(p, "constructionsToAdd")
 	local n = 0
 	pcall(function() n = #toAdd end)

@@ -882,6 +882,7 @@ local function queueLocal(a)
 end
 
 -- the speed this game may run at: session speed, never past the slowest other player (barrier), stop points
+G.pstat = { frames = 0, barrier = 0, hold = 0 }
 local function pacing()
 	local now = gameTime()
 	local s = G.session
@@ -893,16 +894,35 @@ local function pacing()
 	elseif G.holdAt and (stopAt == nil or G.holdAt < stopAt) then stopAt = G.holdAt end
 	local barrier = nil
 	for _, pc in pairs(G.peers) do
-		local limit = pc.t + ((pc.ah or 3) - 1) * STEP
+		-- window (see G.ahead): a game that overshoots this limit by its reserve is still before the time stamped on
+		-- the peer's next action
+		local limit = pc.t + (G.window or 3) * STEP
 		if barrier == nil or limit < barrier then barrier = limit end
 	end
 	if barrier and (stopAt == nil or barrier < stopAt) then stopAt = barrier end
 	local want = s.speed
 	if s.pauseAt == nil and G.holdAt then want = math.max(1, want) end
 	if catchUp then want = 1 end
+	-- statistics (logged with "gui alive"): frames slowed down by the other players' clocks, or by held actions
+	local ps = G.pstat
+	ps.frames = ps.frames + 1
+	local function slowed(r)
+		if r < want and s.pauseAt == nil then
+			if stopAt == barrier then ps.barrier = ps.barrier + 1 else ps.hold = ps.hold + 1 end
+		end
+		return r
+	end
+	G.wantSteps = nil
 	if stopAt then
-		if now >= stopAt then return 0 end
-		if want > 1 and stopAt - now < want * STEP then return 1 end   -- do not overshoot a stop point inside a batch
+		if now >= stopAt then return slowed(0) end
+		-- near a stop point, running at a speed would overshoot it (N steps per frame, a speed change takes a frame):
+		-- the game pauses and the engine performs exactly the steps left
+		-- (only for real stop points: the barrier keeps a reserve for the overshoot and moves all the time)
+		if O.steps and stopAt ~= barrier and stopAt - now <= 2 * math.max(1, want) * STEP then
+			G.wantSteps = math.floor((stopAt - now) / STEP)
+			return slowed(0)
+		end
+		if want > 1 and stopAt - now < want * STEP then return slowed(1) end   -- do not overshoot a stop point inside a batch
 	end
 	return want
 end
@@ -947,6 +967,18 @@ H.act = function(from, p)
 	end
 end
 
+-- Replays of other players' builds: the engine applies a command a frame later (verdict in the callback). Until it
+-- has, this game stays where it is (nativeHoldAt): resuming at once would let it run steps before the build lands.
+local function replaySend(cmd, cb)
+	G.replayOut = (G.replayOut or 0) + 1
+	G.replaySince = G.frames
+	O.sendCommand(cmd, function(...)
+		G.replayOut = math.max(0, (G.replayOut or 1) - 1)
+		G.replayQuiet = G.frames + 3   -- room for a follow-up command (next segment, next form)
+		if cb then return cb(...) end
+	end)
+end
+
 -- engine verdicts arrive in callbacks: a refused native replay is retried with the next form, in a fixed order
 local REPLAY_FORMS = {
 	-- the tool's proposal is already cleaned up: cleaning it again can split a curved segment (one more segment here)
@@ -965,7 +997,13 @@ local function upgradePlan(margs)
 	if #(st.addedNodes or {}) > 0 or #(st.removedNodes or {}) > 0 or #(st.edgeObjectsToAdd or {}) > 0 then return nil end
 	-- a stop removed with the bulldozer looks like an upgrade, but replaceSegment would keep the stop
 	if #(st.edgeObjectsToRemove or {}) > 0 then return nil end
-	if #(margs[1].toAdd or {}) > 0 or #(margs[1].toRemove or {}) > 0 then return nil end
+	-- constructions: only town buildings the engine moved for the new street (nobody's, -1); every game's own
+	-- replaceSegment moves them the same way (a rebuilt proposal could not make them town buildings again)
+	local tAdd, tRem = margs[1].toAdd or {}, margs[1].toRemove or {}
+	if #tAdd ~= #tRem then return nil end
+	for _, ce in ipairs(tAdd) do
+		if ce.playerEntity ~= -1 then return nil end
+	end
 	local added, removed = st.addedSegments or {}, st.removedSegments or {}
 	if #added == 0 or #added ~= #removed then return nil end
 	local plan = {}
@@ -997,7 +1035,7 @@ local function replayUpgrade(a, plan, i)
 	ctx.gatherFields = true
 	ctx.player = api.engine.util.getPlayer()
 	toSim("replaying", {})
-	O.sendCommand(api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true), function(res, success)
+	replaySend(api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true), function(res, success)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " upgrade of segment " .. step.edge .. " to " .. tostring(step.template) .. ": " .. (success and "BUILT" or ("refused " .. why)))
@@ -1044,7 +1082,7 @@ local function engineReplay(a, what, makeP)
 	ctx.gatherFields = true
 	ctx.player = api.engine.util.getPlayer()
 	toSim("replaying", {})
-	O.sendCommand(api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true), function(res, success)
+	replaySend(api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true), function(res, success)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " " .. what .. ": " .. (success and "BUILT" or ("refused " .. why)))
@@ -1162,7 +1200,7 @@ local function replayStop(a, plan)
 	end
 	local before = stopCount()
 	toSim("replaying", {})
-	O.sendCommand(cmd, function(res, success)
+	replaySend(cmd, function(res, success)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " stop on segment " .. plan.E .. ": " .. (success and "BUILT" or ("refused " .. why)))
@@ -1239,7 +1277,7 @@ local function replayNative(a, formIndex)
 		expected = #(st.addedSegments or {}) - #(st.removedSegments or {})
 	end)
 	local edgesBefore = #R.allEdges()
-	O.sendCommand(cmd, function(res, success)
+	replaySend(cmd, function(res, success)
 		if success then
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " BUILT with form " .. label)
 			pcall(function()
@@ -1303,6 +1341,14 @@ local function nativeHoldAt()
 	local m = nil
 	for _, r in ipairs(G.natRelease) do if m == nil or r.at < m then m = r.at end end
 	for _, w in ipairs(G.natWait) do if m == nil or w.at < m then m = w.at end end
+	-- other players' builds already received: this game must stop exactly at their time
+	local now = gameTime()
+	if (G.replayOut or 0) > 0 and G.frames - (G.replaySince or 0) > 600 then
+		log("replay without engine answer for 600 frames: hold released")
+		G.replayOut = 0
+	end
+	if (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0) then return now end
+	for _, a in ipairs(G.nativeQueue or {}) do if a.at > now and (m == nil or a.at < m) then m = a.at end end
 	return m
 end
 
@@ -1326,6 +1372,17 @@ local function pollNativeEvents()
 	end
 end
 
+-- autotest: a scripted build follows the tools' path (announced, every game holds at its time, then it is sent)
+G.autoBuildSeq = 0
+local function deferredSend(cmd, cb)
+	local now = gameTime()
+	G.autoBuildSeq = G.autoBuildSeq + 1
+	local id = 100000 + G.autoBuildSeq
+	local at = stampFor(now) + STEP
+	G.natRelease[#G.natRelease + 1] = { id = id, at = at, fn = function() O.sendCommand(cmd, cb) end }
+	send("nat_pending", { origin = G.me, at = at, id = id })
+end
+
 local function runNativeRelease()
 	if #G.natRelease == 0 then return end
 	local now = gameTime()
@@ -1335,9 +1392,15 @@ local function runNativeRelease()
 			G.natReleased = G.natReleased + 1
 			G.natShipIds = G.natShipIds or {}
 			G.natShipIds[#G.natShipIds + 1] = r.id
-			nativeCtl("release " .. G.natReleased)
-			-- any command reaching CommandList::Add lets the DLL release the held build just before it
-			O.sendCommand(O.event("mpfever", "mpfever", "nop", {}))
+			if r.fn then
+				-- a scripted build (autotest) deferred like the tools' ones: sent now, at its announced time
+				G.natReleased = G.natReleased - 1
+				pcall(r.fn)
+			else
+				nativeCtl("release " .. G.natReleased)
+				-- any command reaching CommandList::Add lets the DLL release the held build just before it
+				O.sendCommand(O.event("mpfever", "mpfever", "nop", {}))
+			end
 			log("native build " .. r.id .. " released at t=" .. now .. (now > r.at and (" (" .. ((now - r.at) / STEP) .. " step(s) late)") or ""))
 		else
 			keep[#keep + 1] = r
@@ -1726,7 +1789,7 @@ local function autoStep(name, makeProposal, after)
 		return after(false)
 	end
 	local okc, err = pcall(function()
-		O.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, nil, false, true), function(res, success)
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, nil, false, true), function(res, success)
 			AUTO.results[#AUTO.results + 1] = name .. ": " .. (success and "built" or "refused by the engine")
 			log("AUTOTEST " .. name .. ": " .. (success and "built" or "refused by the engine"))
 			G.waits[#G.waits + 1] = { at = G.frames + 40, fn = function() after(success) end }
@@ -2161,7 +2224,7 @@ local function runUpgrade(p)
 				local args, n = C.rebuildArgs("makeWorldBuildProposalCmd", margs, { seed = 7919, variant = "native" })
 				C.appendFile(C.DIR .. BS .. "ab_simple_in.txt", C.dump(args[1]):sub(1, 60000) .. NL)
 				C.appendFile(C.DIR .. BS .. "ab_native_in.txt", C.dump(P):sub(1, 60000) .. NL)
-				O.sendCommand(api.cmd.makeWorldBuildProposalCmd(table.unpack(args, 1, n)), function(res, success)
+				deferredSend(api.cmd.makeWorldBuildProposalCmd(table.unpack(args, 1, n)), function(res, success)
 					C.appendFile(C.DIR .. BS .. "ab_simple.txt", "success=" .. tostring(success) .. NL .. C.dump(res):sub(1, 60000) .. NL)
 					log("AUTOTEST A/B rebuilt proposal on the originator: " .. tostring(success))
 					G.waits[#G.waits + 1] = { at = G.frames + 5, fn = function() attempt(i) end }
@@ -2172,7 +2235,7 @@ local function runUpgrade(p)
 		local before = C.ser(C.marshal(api.engine.getComponent(pick.e, api.type.ComponentType.BASE_EDGE).roadTemplate))
 		log("AUTOTEST sending the engine's upgrade proposal")
 		local okc, errc = pcall(function()
-			O.sendCommand(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res, success)
+			deferredSend(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res, success)
 
 				local why = ""
 				pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
@@ -2226,7 +2289,7 @@ local function runNewRoad(p)
 			ctx.gatherBuildings = true
 			ctx.gatherFields = true
 			ctx.player = api.engine.util.getPlayer()
-			O.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), function(res, success)
+			deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), function(res, success)
 				local why = ""
 				if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 				G.waits[#G.waits + 1] = { at = G.frames + 20, fn = function()
@@ -2457,7 +2520,7 @@ local function runTramStop(p)
 					roadStyle = "::/infrastructure/street/tram/tram_old.street", roadType = info.c.roadType } }
 			local okb, sp = pcall(buildMatrixProposal, o, n, pn, a)
 			if not okb then log("TRAMSTOP road proposal error " .. shortErr(sp)); return build(k + 1) end
-			O.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, playerContext(), false, true), function(res, success)
+			deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, playerContext(), false, true), function(res, success)
 				log("TRAMSTOP tram road from node " .. n .. ": " .. tostring(success))
 				if success then
 					G.waits[#G.waits + 1] = { at = G.frames + 60, fn = function()
@@ -2554,7 +2617,7 @@ local function runTramStop(p)
 			o.playerEntity = api.engine.util.getPlayer(); o.name = "MPF stop"
 			ssp.edgesToRemove = { T }; ssp.edgesToAdd = { e }; ssp.edgeObjectsToAdd = { o }
 			sp.streetProposal = ssp
-			O.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, playerContext(), false, true), function(res, success)
+			deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, playerContext(), false, true), function(res, success)
 				log("TRAMSTOP conversion probe on town segment " .. T .. ": success " .. tostring(success))
 				pcall(function()
 					local list2 = res.proposal.proposal.edgeObjectsToAdd
@@ -2582,7 +2645,7 @@ local function runTramStop(p)
 				AUTO.results[#AUTO.results + 1] = "tram stop " .. v .. ": factory " .. shortErr(cmd)
 				return nextVariant()
 			end
-			O.sendCommand(cmd, function(res, success)
+			deferredSend(cmd, function(res, success)
 				local why = ""
 				if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 				G.waits[#G.waits + 1] = { at = G.frames + 20, fn = function()
@@ -2645,7 +2708,7 @@ local function runTramStop(p)
 			AUTO.results[#AUTO.results + 1] = "tram stop " .. v .. ": factory " .. shortErr(cmd)
 			return nextVariant()
 		end
-		O.sendCommand(cmd, function(res, success)
+		deferredSend(cmd, function(res, success)
 			local why = ""
 			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 			G.waits[#G.waits + 1] = { at = G.frames + 20, fn = function()
@@ -2785,7 +2848,7 @@ local function runBulldoze(p)
 		if not okp or not P then log("BULLDOZE no proposal " .. tostring(P)); return attempt(k + 1) end
 		local before = edgeCount()
 		local pn = nodePosition(n)
-		O.sendCommand(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res, success)
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res, success)
 			local why = ""
 			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 			G.waits[#G.waits + 1] = { at = G.frames + 20, fn = function()
@@ -3429,6 +3492,40 @@ H.autotest = function(from, p)
 end
 
 -- what this game has around the test points: edges (rounded end positions, template) and stops
+-- autotest: one game moves its camera around the map (does the camera change the simulation?)
+H.camtour = function(from, p)
+	if p.role ~= C.ROLE then return end
+	local cam = api.gui and api.gui.camera
+	if not cam then log("camtour: no api.gui.camera"); return end
+	local okc, data = pcall(cam.getCameraData)
+	log("camtour: camera " .. (okc and C.dump(data):sub(1, 300) or tostring(data)))
+	if not okc then return end
+	local spots = {}
+	pcall(function()
+		local edges = R.allEdges()
+		for k = 1, #edges, math.max(1, math.floor(#edges / 12)) do
+			local c = api.engine.getComponent(edges[k], api.type.ComponentType.BASE_EDGE)
+			local q = c and nodePosition(c.node0)
+			if q then spots[#spots + 1] = q end
+		end
+	end)
+	local i = 0
+	local function hop()
+		i = i + 1
+		local q = spots[(i % math.max(1, #spots)) + 1]
+		if q then
+			local ok, err = pcall(function()
+				local d = cam.getCameraData()
+				if d.x ~= nil then d.x, d.y = q.x, q.y else d[1], d[2] = q.x, q.y end
+				cam.setCameraData(d)
+			end)
+			if i <= 2 then log("camtour: hop " .. i .. " -> " .. (ok and "ok" or tostring(err))) end
+		end
+		if i < 400 then G.waits[#G.waits + 1] = { at = G.frames + 90, fn = hop } end
+	end
+	hop()
+end
+
 H.area_dump = function(from, p)
 	local lines = {}
 	local function near(q)
@@ -3519,7 +3616,11 @@ end
 local function guiUpdate(userParams, state, guiState)
 	if not C.ACTIVE then return end
 	G.frames = G.frames + 1
-	if G.frames % 600 == 0 then log("gui alive frame " .. G.frames .. " t=" .. tostring(gameTime())) end
+	if G.frames % 600 == 0 then
+		local ps = G.pstat
+		log("gui alive frame " .. G.frames .. " t=" .. tostring(gameTime()) .. " | slowed by other clocks " .. ps.barrier .. "/" .. ps.frames .. " frames, by held actions " .. ps.hold)
+		ps.frames, ps.barrier, ps.hold = 0, 0, 0
+	end
 	if not G.started then
 		G.started = true
 		-- the game's own functions, even if the UI hook already wrapped this api table (shared after a reload)
@@ -3579,8 +3680,20 @@ local function guiUpdate(userParams, state, guiState)
 		if okp then
 			if gameSpeed() ~= sp then G.lastSet = -1 end
 			setSpeed(sp)
+			-- exact steps up to the stop point (once the engine is stopped, one request at a time)
+			local now = gameTime()
+			if G.stepTarget and (now >= G.stepTarget or G.frames - G.stepSince > 120) then G.stepTarget = nil end
+			if sp == 0 and G.wantSteps and G.wantSteps > 0 and not G.stepTarget and gameSpeed() == 0 then
+				G.stepTarget, G.stepSince = now + G.wantSteps * STEP, G.frames
+				O.sendCommand(O.steps(G.wantSteps))
+			end
 		end
-		G.ahead = 2 + math.max(1, math.min(4, G.session.speed or 1))
+		-- stamp distance = barrier window + overshoot reserve + 1. The engine runs the simulation on its own thread,
+		-- driven by real time: a game passes a stop point by what it simulates before its interface reacts (a frame,
+		-- or a hiccup of a few hundred milliseconds). The reserve covers about half a second of simulation.
+		local spd = math.max(1, math.min(4, G.session.speed or 1))
+		G.window = spd + 2
+		G.ahead = G.window + (2 * spd + 1) + 1
 		local okt, t = pcall(gameTime)
 		if okt and (t ~= G.lastClock or G.frames % 30 == 0) then
 			G.lastClock = t

@@ -25,6 +25,13 @@ MPFever - Changelog
     processors. Only the scripts' update is affected: the simulation, the rendering
     and the loading keep every core. Result in testing: 7 minutes at x4 without a
     single difference, and the same speed as before.
+  - Actions applied a few steps late on another player's game at x4 (a game could
+    pass its stop point while the interface reacted): actions are now stamped with
+    a reserve for it, and games stop exactly at their stop points (exact steps).
+    This was the cause of vehicles drifting after purchases and line changes.
+  - Fewer synchronised slowdowns: wider waiting window between games.
+  - Road upgrades that move a town building: the building stays a town building on
+    the other players' games (it used to become the player's construction).
   - The game's speed request at startup no longer floods the launcher log.
 
 0.1.0-experimental - first public test version

@@ -219,10 +219,14 @@ namespace MPFever
                     int.TryParse(Environment.GetEnvironmentVariable("MPFEVER_SOAK_SPEED") ?? "1", out int sp);
                     int.TryParse(Environment.GetEnvironmentVariable("MPFEVER_SOAK_SECONDS") ?? "120", out int secs);
                     SetSpeed(Math.Max(1, sp), "autotest");
+                    var cam = Environment.GetEnvironmentVariable("MPFEVER_CAMTOUR");
+                    if (!string.IsNullOrEmpty(cam)) HostSend(Msg.Make("camtour", hostName, "{[\"role\"]=\"" + cam + "\"}"));
                     Thread.Sleep(Math.Max(10, secs) * 1000);
                     AutoLine("sync: " + syncText + " (desyncs " + desyncs + ")");
                     return;
                 }
+                // MPFEVER_SPEED=n: the scenarios run at that speed
+                if (int.TryParse(Environment.GetEnvironmentVariable("MPFEVER_SPEED") ?? "", out int scenSpeed) && scenSpeed > 0) { SetSpeed(scenSpeed, "autotest"); Thread.Sleep(3000); }
                 // MPFEVER_PAUSED=1: the scenarios run with the session paused (actions applied while paused)
                 if (Environment.GetEnvironmentVariable("MPFEVER_PAUSED") == "1") { Pause("autotest"); Thread.Sleep(4000); }
                 foreach (var scenario in scenarios)
