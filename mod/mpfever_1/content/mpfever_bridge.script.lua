@@ -1566,7 +1566,7 @@ local function runPausedActions()
 				local r = executeAction(a, O.sendCommand, true, G.bind)
 				r.at = now
 				if r.created then G.bind[r.created.key] = r.created.e; G.rev[r.created.e] = r.created.key; toSim("bind", r.created) end
-				G.resultsSeen[tostring(r.uid)] = true
+				G.resultsSeen[tostring(r.uid) .. "@" .. tostring(r.at)] = true
 				C.appendFile(C.DIR .. BS .. "results.log", C.line("result", r))
 				if r.created then C.appendFile(C.DIR .. BS .. "bindings.log", r.created.key .. " " .. tostring(r.created.e) .. NL) end
 			end
@@ -3449,7 +3449,8 @@ local function resumeAfterLoad(state)
 	-- records of the savegame's script state (an earlier session, or the host's): never shipped or reported again
 	local st = state:get() or {}
 	for _, o in ipairs(st.out or {}) do if o.n > G.outSent then G.outSent = o.n end end
-	for _, r in ipairs(st.results or {}) do G.resultsSeen[tostring(r.uid)] = true end
+	-- (keyed by uid and game time: uids start again at 1 in every session, an old record must not hide a new one)
+	for _, r in ipairs(st.results or {}) do G.resultsSeen[tostring(r.uid) .. "@" .. tostring(r.at)] = true end
 	if type(st.hash) == "table" then G.hashSent = st.hash.n end
 	-- first start of this game in the session: everything the launcher wrote so far is for it
 	if fileSize("started.txt") == 0 then
@@ -3561,7 +3562,7 @@ local function guiUpdate(userParams, state, guiState)
 		send("sync_hash", { n = st.hash.n, parts = st.hash.parts, cost = st.hash.cost, auth = st.hash.auth })
 	end
 	for _, r in ipairs(st.results or {}) do
-		local key = tostring(r.uid)
+		local key = tostring(r.uid) .. "@" .. tostring(r.at)
 		if not G.resultsSeen[key] then
 			G.resultsSeen[key] = true
 			C.appendFile(C.DIR .. BS .. "results.log", C.line("result", r))
