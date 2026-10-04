@@ -1,0 +1,16 @@
+MPFever - Changelog
+===================
+
+0.1.0-experimental - first public test version
+  - Cooperative multiplayer in one shared company, connection by IP address.
+  - Synchronisation of the game's construction tools (roads, tracks, joins in the
+    middle of a road, upgrades, stops including on tram tracks, stations, depots,
+    buildings, bulldozer), vehicle purchases, lines, assignments, speed and pause.
+  - Host authority: state comparison every 10 seconds (money, loans, company, contracts,
+    towns, industries, cargo, vehicles, roads), automatic money correction, automatic
+    resynchronisation from the host's savegame (about 20 seconds).
+  - Deterministic game mechanics: contracts, loans, weather and industry events are
+    the same in every game.
+  - Launcher in English and French (follows the Windows language).
+  - No process injection: the native module is a winhttp.dll the game loads by itself.
+  - Full source code published, with build instructions.

@@ -1,0 +1,43 @@
+MPFever - Roadmap
+=================
+
+The order may change with your feedback. Versions are not dated: each one comes when
+it is stable enough.
+
+0.1 - Experimental co-op (this version)
+  [x] Cooperative play in one shared company, connection by IP address
+  [x] Synchronised construction tools: roads, tracks, joins, upgrades, stops (also on
+      tram tracks), stations, depots, buildings, bulldozer
+  [x] Synchronised vehicles purchases, lines, assignments, game speed and pause
+  [x] Host authority: periodic state comparison, automatic money correction,
+      automatic resynchronisation from the host's savegame
+  [x] Built into the game: no extra button in the game interface
+
+0.2 - Stability and easier start
+  [ ] Automatic transfer of the host's savegame when joining (no manual copy)
+  [ ] Start from any savegame, mod added automatically
+  [ ] Fix the vehicle drift after road building (fewer resynchronisations)
+  [ ] Reconnect after a lost connection
+  [ ] Tests and fixes for 3 to 8 players
+  [ ] Feedback from the first testers
+
+0.3 - Playing with friends
+  [ ] Steam invites (join through your Steam friends list)
+  [ ] Join a session that is already running
+  [ ] Player list and chat inside the game interface
+  [ ] Settings for the host (who may build, bulldoze, spend money)
+
+0.4 - Separate companies
+  [ ] Each player (or team) runs their own company on the same map
+  [ ] Own money, vehicles, lines and stations per company
+  [ ] Competition on cargo and passengers, company rankings
+
+0.5 - Mixed modes
+  [ ] Shared companies and separate companies in the same game
+  [ ] Joining, leaving and merging companies
+  [ ] Rules for shared infrastructure (track access, fees)
+
+Later - Persistent worlds
+  [ ] Dedicated server running the world without the host's PC
+  [ ] Persistent world that players join and leave at any time
+  [ ] Larger player counts (MMO-like)

@@ -1,0 +1,25 @@
+LIBRARY kernel32.dll
+EXPORTS
+GetModuleHandleW
+VirtualAlloc
+VirtualProtect
+FlushInstructionCache
+GetCurrentProcess
+CreateThread
+CloseHandle
+GetEnvironmentVariableA
+CreateFileA
+WriteFile
+SetFilePointer
+GetLocalTime
+DisableThreadLibraryCalls
+Sleep
+AddVectoredExceptionHandler
+ReadFile
+GetFileSize
+GetTickCount
+HeapAlloc
+GetProcessHeap
+LoadLibraryW
+GetSystemDirectoryW
+GetProcAddress

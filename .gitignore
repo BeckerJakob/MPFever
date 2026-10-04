@@ -1,0 +1,16 @@
+# build outputs
+launcher/bin/
+launcher/obj/
+native/out/
+release/
+bin/
+
+# internal reverse-engineering tools and caches (derived from the game binary)
+re/
+
+# runtime
+logs/
+*.log
+autotest_result.txt
+__pycache__/
+*.pyc

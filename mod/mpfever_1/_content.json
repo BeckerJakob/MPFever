@@ -1,0 +1,13 @@
+{
+    "archives": null,
+    "files": [
+        "mpfever.gs.lua",
+        "mpfever_bridge.script.lua",
+        "mpfever_common.lua",
+        "mpfever_entry.res.lua",
+        "mpfever_ui.res.lua",
+        "mpfever_ui.script.lua",
+        "mpfever_refs.lua",
+        "mpfever_auto.lua"
+    ]
+}

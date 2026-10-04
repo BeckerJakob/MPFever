@@ -1,0 +1,16 @@
+LIBRARY winhttp
+EXPORTS
+    WinHttpAddRequestHeaders=P_WinHttpAddRequestHeaders @5
+    WinHttpCloseHandle=P_WinHttpCloseHandle @9
+    WinHttpConnect=P_WinHttpConnect @10
+    WinHttpOpen=P_WinHttpOpen @51
+    WinHttpOpenRequest=P_WinHttpOpenRequest @52
+    WinHttpQueryDataAvailable=P_WinHttpQueryDataAvailable @60
+    WinHttpQueryHeaders=P_WinHttpQueryHeaders @61
+    WinHttpReadData=P_WinHttpReadData @64
+    WinHttpReceiveResponse=P_WinHttpReceiveResponse @68
+    WinHttpSendRequest=P_WinHttpSendRequest @74
+    WinHttpSetOption=P_WinHttpSetOption @77
+    WinHttpSetStatusCallback=P_WinHttpSetStatusCallback @80
+    WinHttpSetTimeouts=P_WinHttpSetTimeouts @81
+    WinHttpWriteData=P_WinHttpWriteData @91
