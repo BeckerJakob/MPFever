@@ -40,11 +40,12 @@ local function install()
 	U.installed = true
 	-- the game script bridge may share this api table: it must keep using the game's own functions, never the
 	-- wrapped ones (its speed commands would come back as player requests, its events would be replicated)
-	if not api.cmd.__mpfever_orig then
-		api.cmd.__mpfever_orig = { sendCommand = api.cmd.sendCommand, setSpeed = api.cmd.makeGameSetSpeedCmd,
-			event = api.cmd.makeScriptingSendEventCmd }
+	-- (api.cmd is userdata and takes no new member: the originals are kept in package.loaded, shared by the state)
+	local orig = C.origCmds()
+	if not orig.sendCommand then
+		orig.sendCommand, orig.setSpeed, orig.event = api.cmd.sendCommand, api.cmd.makeGameSetSpeedCmd, api.cmd.makeScriptingSendEventCmd
 	end
-	local O = { sendCommand = api.cmd.__mpfever_orig.sendCommand }
+	local O = { sendCommand = orig.sendCommand }
 	local wrapped, missing, kinds = 0, {}, {}
 	for _, name in ipairs(C.FACTORIES) do
 		local fn = nil

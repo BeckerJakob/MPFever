@@ -86,6 +86,19 @@ function C.hashStr(h, s)
 	return h
 end
 
+-- the game's own command functions, saved before the UI hook wraps them; kept in package.loaded so that every
+-- script of the Lua state (UI hook, game script bridge) sees the same table, also after a savegame reload
+function C.origCmds()
+	local ok, t = pcall(function()
+		local t = package.loaded["mpfever_orig_cmds"]
+		if type(t) ~= "table" then t = {}; package.loaded["mpfever_orig_cmds"] = t end
+		return t
+	end)
+	if ok then return t end
+	C._orig = C._orig or {}
+	return C._orig
+end
+
 -- one protocol line: kind TAB from TAB payload
 function C.line(kind, payload)
 	return kind .. TAB .. C.NAME .. TAB .. C.ser(payload or {}) .. NL

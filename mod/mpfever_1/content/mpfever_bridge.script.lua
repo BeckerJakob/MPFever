@@ -3482,10 +3482,11 @@ local function guiUpdate(userParams, state, guiState)
 	if not G.started then
 		G.started = true
 		-- the game's own functions, even if the UI hook already wrapped this api table (shared after a reload)
-		local orig = api.cmd.__mpfever_orig
-		O.sendCommand = orig and orig.sendCommand or api.cmd.sendCommand
-		O.setSpeed = orig and orig.setSpeed or api.cmd.makeGameSetSpeedCmd
-		O.event = orig and orig.event or api.cmd.makeScriptingSendEventCmd
+		local orig = C.origCmds()
+		if not orig.sendCommand then
+			orig.sendCommand, orig.setSpeed, orig.event = api.cmd.sendCommand, api.cmd.makeGameSetSpeedCmd, api.cmd.makeScriptingSendEventCmd
+		end
+		O.sendCommand, O.setSpeed, O.event = orig.sendCommand, orig.setSpeed, orig.event
 		O.steps = api.cmd.debug and api.cmd.debug.makeGamePerformSimulationStepsCmd
 		pcall(function() guiState:subscribeToAllEvents() end)
 		log("bridge v0.17 started: name=" .. C.NAME .. " role=" .. C.ROLE .. " dir=" .. C.DIR)
