@@ -483,6 +483,9 @@ namespace MPFever
                         if (t != null && t.TryGetValue("speed", out var sv) && sv is double d)
                         {
                             if (!started) { Log.W(T($"{m.From} demande la vitesse {d} : la partie n'est pas démarrée", $"{m.From} asks for speed {d}: the game is not started")); break; }
+                            // a request for the speed already in effect changes nothing (and must not echo back)
+                            bool same; lock (sessionGate) same = d > 0 && !pauseAt.HasValue && (int)d == speed || d <= 0 && pauseAt.HasValue;
+                            if (same) break;
                             if (d <= 0) Pause(m.From); else SetSpeed((int)d, m.From);
                         }
                         break;

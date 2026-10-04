@@ -3391,6 +3391,11 @@ end
 -- This GUI half starts with the game, and again after a resynchronisation (the host's savegame loaded here): what the
 -- files already hold belongs to the previous game state, and the savegame's script state holds the host's records.
 local function resumeAfterLoad(state)
+	-- records of the savegame's script state (an earlier session, or the host's): never shipped or reported again
+	local st = state:get() or {}
+	for _, o in ipairs(st.out or {}) do if o.n > G.outSent then G.outSent = o.n end end
+	for _, r in ipairs(st.results or {}) do G.resultsSeen[tostring(r.uid)] = true end
+	if type(st.hash) == "table" then G.hashSent = st.hash.n end
 	-- first start of this game in the session: everything the launcher wrote so far is for it
 	if fileSize("started.txt") == 0 then
 		C.appendFile(C.DIR .. BS .. "started.txt", "1")
@@ -3410,10 +3415,6 @@ local function resumeAfterLoad(state)
 			if n and n > G.natReleased then G.natReleased = n end
 		end
 	end
-	local st = state:get() or {}
-	for _, o in ipairs(st.out or {}) do if o.n > G.outSent then G.outSent = o.n end end
-	for _, r in ipairs(st.results or {}) do G.resultsSeen[tostring(r.uid)] = true end
-	if type(st.hash) == "table" then G.hashSent = st.hash.n end
 	-- entity bindings of a previous game state are void
 	C.appendFile(C.DIR .. BS .. "bindings.log", "RESET 0" .. NL)
 	if G.inOff > 0 then log("started over an existing session (" .. G.inOff .. " bytes of messages skipped): resynchronised game") end
@@ -3425,9 +3426,11 @@ local function guiUpdate(userParams, state, guiState)
 	if G.frames % 600 == 0 then log("gui alive frame " .. G.frames .. " t=" .. tostring(gameTime())) end
 	if not G.started then
 		G.started = true
-		O.sendCommand = api.cmd.sendCommand
-		O.setSpeed = api.cmd.makeGameSetSpeedCmd
-		O.event = api.cmd.makeScriptingSendEventCmd
+		-- the game's own functions, even if the UI hook already wrapped this api table (shared after a reload)
+		local orig = api.cmd.__mpfever_orig
+		O.sendCommand = orig and orig.sendCommand or api.cmd.sendCommand
+		O.setSpeed = orig and orig.setSpeed or api.cmd.makeGameSetSpeedCmd
+		O.event = orig and orig.event or api.cmd.makeScriptingSendEventCmd
 		O.steps = api.cmd.debug and api.cmd.debug.makeGamePerformSimulationStepsCmd
 		pcall(function() guiState:subscribeToAllEvents() end)
 		log("bridge v0.17 started: name=" .. C.NAME .. " role=" .. C.ROLE .. " dir=" .. C.DIR)

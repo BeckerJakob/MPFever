@@ -38,7 +38,13 @@ end
 local function install()
 	if U.installed then return end
 	U.installed = true
-	local O = { sendCommand = api.cmd.sendCommand }
+	-- the game script bridge may share this api table: it must keep using the game's own functions, never the
+	-- wrapped ones (its speed commands would come back as player requests, its events would be replicated)
+	if not api.cmd.__mpfever_orig then
+		api.cmd.__mpfever_orig = { sendCommand = api.cmd.sendCommand, setSpeed = api.cmd.makeGameSetSpeedCmd,
+			event = api.cmd.makeScriptingSendEventCmd }
+	end
+	local O = { sendCommand = api.cmd.__mpfever_orig.sendCommand }
 	local wrapped, missing, kinds = 0, {}, {}
 	for _, name in ipairs(C.FACTORIES) do
 		local fn = nil
@@ -62,6 +68,10 @@ local function install()
 		if tag == nil then
 			U.stats.untracked = U.stats.untracked + 1
 			if U.logged < 30 then U.logged = U.logged + 1; log("untracked command sent natively: " .. C.dump(cmd):sub(1, 160)) end
+			return O.sendCommand(cmd, cb, progress)
+		end
+		-- notification events (popup sound, dismiss) are sent automatically by each game's own interface: local only
+		if tag.name == "makeScriptingSendEventCmd" and tag.args[2] == "Notifications" then
 			return O.sendCommand(cmd, cb, progress)
 		end
 		if tag.name == "makeGameSetSpeedCmd" then
