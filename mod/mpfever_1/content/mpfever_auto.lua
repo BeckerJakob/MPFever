@@ -23,21 +23,22 @@ end
 
 local S = { requested = false, frames = 0, readyStarted = false }
 
-local function loadSave()
+local function loadSave(name)
+	name = name or SAVE
 	local ns = app.SaveGameNamespace.getSavegame()
 	local found = nil
 	for _, s in ipairs(app.findAllSavegames(ns) or {}) do
-		if s.saveName == SAVE then found = s end
+		if s.saveName == name and (not found or (s.timestamp or 0) > (found.timestamp or 0)) then found = s end
 	end
 	if not found then
-		log("savegame '" .. SAVE .. "' not found")
+		log("savegame '" .. name .. "' not found")
 		return
 	end
 	local id = api.type.SavegameId.new()
 	id.path = found.path
 	id.saveGameName = found.saveName
 	id.saveGameNamespace = ns
-	log("loading savegame '" .. SAVE .. "' (" .. tostring(found.path) .. ")")
+	log("loading savegame '" .. name .. "' (" .. tostring(found.path) .. ")")
 	app.loadGame(id, false)
 end
 
@@ -56,6 +57,31 @@ local function clearResync()
 	if f then f:close() end
 end
 
+-- main menu: MPFever.exe received the host's savegame (menu_state.txt: load=name, loadSeq=n), load it
+local lastLoadSeq = nil
+local function menuLoad()
+	if not (DIR and IO and S.menuReady) then return end
+	local f = IO.open(DIR .. BS .. "menu_state.txt", "rb")
+	if not f then return end
+	local s = f:read("*a") or ""
+	f:close()
+	local name = s:match("load=([^" .. string.char(10, 13) .. "]*)")
+	local seq = s:match("loadSeq=([^" .. string.char(10, 13) .. "]*)")
+	if not name or name == "" or not seq or seq == "" or seq == lastLoadSeq then return end
+	-- the request already handled (kept in a file: this script may be restarted with the loaded game)
+	local fd = IO.open(DIR .. BS .. "menu_loaded.txt", "rb")
+	local done = fd and fd:read("*a") or ""
+	if fd then fd:close() end
+	lastLoadSeq = seq
+	if done == seq then return end
+	fd = IO.open(DIR .. BS .. "menu_loaded.txt", "wb")
+	if fd then fd:write(seq) fd:close() end
+	local fl = IO.open(DIR .. BS .. "resync_pending.txt", "wb")
+	if fl then fl:write("1") fl:close() end
+	local ok, err = pcall(loadSave, name)
+	if not ok then log("menu load failed: " .. tostring(err)) end
+end
+
 -- the loaded game waits for a key press: start it once loading is complete
 local function startWhenReady()
 	local ok, waiting = pcall(app.isWaitForStartReadyGame)
@@ -72,6 +98,7 @@ end
 function data()
 	return {
 		handleEvent = function(id, name, param)
+			if name == "mainMenuReady" then S.menuReady = true end
 			if name == "mainMenuReady" and SAVE and not S.requested then
 				S.requested = true
 				local ok, err = pcall(loadSave)
@@ -85,6 +112,7 @@ function data()
 				S.readyStarted = true
 				log("game loaded, starting it")
 			end
+			pcall(menuLoad)
 			if resyncPending() and startWhenReady() then
 				clearResync()
 				log("host's game loaded (resynchronisation), starting it")

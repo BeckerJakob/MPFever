@@ -23,3 +23,7 @@ GetProcessHeap
 LoadLibraryW
 GetSystemDirectoryW
 GetProcAddress
+GetCommandLineW
+CreateProcessW
+TerminateProcess
+GetModuleFileNameW

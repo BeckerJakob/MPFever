@@ -14,7 +14,7 @@ it is stable enough.
   [x] Built into the game: no extra button in the game interface
 
 0.2 - Stability and easier start
-  [ ] Automatic transfer of the host's savegame when joining (no manual copy)
+  [x] Automatic transfer of the host's savegame when joining (0.2.0)
   [ ] Start from any savegame, mod added automatically
   [x] Fix the slow simulation drift without limiting the processor (0.1.1)
   [ ] Reconnect after a lost connection
@@ -22,8 +22,8 @@ it is stable enough.
   [ ] Feedback from the first testers
 
 0.3 - Playing with friends
-  [ ] Steam invites (join through your Steam friends list)
-  [ ] Join a session that is already running
+  [x] Steam invites (join through your Steam friends list) (0.2.0)
+  [x] Join a session that is already running (0.2.0)
   [ ] Player list and chat inside the game interface
   [ ] Settings for the host (who may build, bulldoze, spend money)
 

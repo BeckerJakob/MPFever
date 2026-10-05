@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -27,7 +27,12 @@ namespace MPFever
             Log.Init(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs"));
             bool auto = args.Length > 0 && args[0] == "--autotest";
             MainForm.Dev = auto || args.Contains("--dev");
+            // default: the game starts at once and the session is set up from its main menu (MPFever window)
+            MainForm.MenuModeDefault = !MainForm.Dev;
             if (auto) GameLink.AutoSave = args.Length > 1 ? args[1] : "test multi";
+            // started by the game from a Steam invitation: join that host at once
+            int j = Array.IndexOf(args, "--join");
+            if (j >= 0 && j + 1 < args.Length) MainForm.JoinAtStart = args[j + 1];
             Application.Run(new MainForm(auto));
             return 0;
         }
@@ -35,9 +40,19 @@ namespace MPFever
 
     sealed class MainForm : Form
     {
-        public const string Version = "0.1.1-experimental";
+        public const string Version = "0.2.0-experimental";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
+        public static bool MenuModeDefault;
+        public static string JoinAtStart;
+        string steamConnect, lastSteamJoin;
+        int steamSeq;
+        bool menuMode;
+
+        // ---- main menu mode: the game's MPFever window drives the session
+        GameLink menuGame;
+        string menuPhase = "idle", menuText = "", menuLoad = "", menuLoadSeq = "", lastMenuReq;
+        volatile bool joinPending;
         const long Step = 200;                 // game time units per simulation step
         const double UnitsPerSecond = 1000;    // game time units per real second at x1
         const double HashEverySeconds = 10;
@@ -173,11 +188,240 @@ namespace MPFever
             try { GameInstall.InstallNative(gameDir); } catch (Exception e) { Log.W("winhttp.dll: " + e.Message); }
             try { GameInstall.EnsureModActive(); } catch (Exception e) { Log.W("settings.lua: " + e.Message); }
             try { GameInstall.InstallMod(); } catch (Exception e) { Log.W(T("Installation du mod : ", "Mod installation: ") + e.Message); }
+            if (MenuModeDefault && !autotest)
+            {
+                StartMenuMode();
+                return;
+            }
             if (autotest)
             {
                 Guard(StartLocalTest);
                 new Thread(AutoTest) { IsBackground = true, Name = "Autotest" }.Start();
             }
+        }
+
+        // ---------------------------------------------------------------- main menu mode
+
+        static string SettingsFile => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mpfever_settings.txt");
+
+        static Dictionary<string, string> LoadSettings()
+        {
+            var d = new Dictionary<string, string>();
+            try { foreach (var l in File.ReadAllLines(SettingsFile)) { int i = l.IndexOf('='); if (i > 0) d[l.Substring(0, i)] = l.Substring(i + 1); } } catch { }
+            return d;
+        }
+
+        static void SaveSetting(string k, string v)
+        {
+            var d = LoadSettings();
+            d[k] = v;
+            try { File.WriteAllLines(SettingsFile, d.Select(kv => kv.Key + "=" + kv.Value)); } catch { }
+        }
+
+        /// <summary>MPFever.exe started normally: the game starts at once; hosting or joining is chosen in the MPFever
+        /// window of its main menu.</summary>
+        void StartMenuMode()
+        {
+            menuMode = true;
+            running = true;
+            hostBtn.Enabled = joinBtn.Enabled = localBtn.Enabled = false;
+            var st = LoadSettings();
+            menuGame = new GameLink(st.TryGetValue("name", out var n) && n != "" ? n : Environment.UserName, "menu");
+            games.Add(menuGame);
+            menuGame.Exited += () => { Log.W(T("Transport Fever 3 fermé : fin de MPFever.", "Transport Fever 3 closed: MPFever exits.")); try { BeginInvoke((Action)Close); } catch { } };
+            MenuStatus();
+            menuGame.Launch(gameDir);
+            WindowState = FormWindowState.Minimized;
+            Log.W(T("Le jeu démarre : choisissez « Multijoueur (MPFever) » dans son menu principal.", "The game is starting: choose « Multiplayer (MPFever) » in its main menu."));
+            new Thread(MenuLoop) { IsBackground = true, Name = "Menu link" }.Start();
+            if (JoinAtStart != null)
+            {
+                var addr = JoinAtStart;
+                new Thread(() => { Thread.Sleep(1000); OnMenuRequest("join", addr, menuGame.Name); }) { IsBackground = true }.Start();
+            }
+        }
+
+        /// <summary>Command for the native module's Steam part (steam_ctl.txt): presence / invite / clear.</summary>
+        void SteamCtl(string cmd, string arg)
+        {
+            try { File.WriteAllText(Path.Combine(menuGame.Dir, "steam_ctl.txt"), (++steamSeq) + "-" + DateTime.Now.Ticks + " " + cmd + (arg != null ? " " + arg : "") + "\n"); }
+            catch (Exception e) { Log.W("steam_ctl: " + e.Message); }
+        }
+
+        /// <summary>The address friends use to reach this host: its public IP (asked to api.ipify.org), else its
+        /// local address.</summary>
+        static string PublicAddress()
+        {
+            try
+            {
+                var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("https://api.ipify.org");
+                req.Timeout = 5000;
+                using (var resp = req.GetResponse())
+                using (var r = new StreamReader(resp.GetResponseStream()))
+                {
+                    var ip = r.ReadToEnd().Trim();
+                    if (System.Net.IPAddress.TryParse(ip, out _)) return ip;
+                }
+            }
+            catch (Exception e) { Log.W(T("Adresse IP publique inconnue : ", "Public IP address unknown: ") + e.Message); }
+            return LocalAddresses().Split(',')[0].Trim();
+        }
+
+        /// <summary>A friend accepted an invitation, or clicked « Join game » in Steam (steam_join.txt).</summary>
+        void CheckSteamJoin()
+        {
+            var f = Path.Combine(menuGame.Dir, "steam_join.txt");
+            if (!File.Exists(f)) return;
+            string line;
+            try { line = File.ReadAllText(f).Trim(); } catch { return; }
+            if (line == "" || line == lastSteamJoin) return;
+            lastSteamJoin = line;
+            var parts = line.Split('\t');
+            var connect = parts.Length > 1 ? parts[1] : parts[0];
+            int k = connect.IndexOf("+mpfever_connect", StringComparison.Ordinal);
+            if (k < 0) return;
+            var addr = connect.Substring(k + "+mpfever_connect".Length).Trim();
+            Log.W(T("Invitation Steam acceptée : ", "Steam invitation accepted: ") + addr);
+            if (hostGame != null || clients.Count > 0) { Log.W(T("Déjà dans une session : invitation ignorée.", "Already in a session: invitation ignored.")); return; }
+            OnMenuRequest("join", addr, menuGame.Name);
+        }
+
+        /// <summary>Writes the state shown by the game's MPFever window.</summary>
+        void MenuStatus()
+        {
+            if (menuGame == null) return;
+            var st = LoadSettings();
+            string list;
+            int known;
+            lock (players) { list = string.Join(", ", players); known = players.Count; }
+            if (hostGame != null && relay != null)
+            {
+                if (list == "") list = hostName;
+                int connecting = relay.Count - Math.Max(0, known - 1);
+                if (connecting > 0) list += T($" (+{connecting} en connexion)", $" (+{connecting} connecting)");
+            }
+            try
+            {
+                menuGame.WriteMenuState(new Dictionary<string, string>
+                {
+                    ["phase"] = menuPhase,
+                    ["text"] = menuText,
+                    ["name"] = menuGame.Name,
+                    ["addr"] = st.TryGetValue("addr", out var a) ? a : "",
+                    ["players"] = list,
+                    ["load"] = menuLoad,
+                    ["loadSeq"] = menuLoadSeq,
+                    ["invite"] = steamConnect != null ? "1" : "",
+                });
+            }
+            catch (Exception e) { Log.W("menu_state: " + e.Message); }
+        }
+
+        static string LocalAddresses()
+        {
+            try
+            {
+                return string.Join(", ", System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName())
+                    .Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !System.Net.IPAddress.IsLoopback(a))
+                    .Select(a => a.ToString()));
+            }
+            catch { return "?"; }
+        }
+
+        void MenuLoop()
+        {
+            while (true)
+            {
+                Thread.Sleep(300);
+                try
+                {
+                    CheckSteamJoin();
+                    var req = menuGame.ReadMenuRequest();
+                    if (req != null && req[0] != lastMenuReq)
+                    {
+                        bool first = lastMenuReq == null && File.GetLastWriteTimeUtc(Path.Combine(menuGame.Dir, "menu_req.txt")) < DateTime.UtcNow.AddSeconds(-30);
+                        lastMenuReq = req[0];
+                        if (!first) OnMenuRequest(req[1], req[2], req[3]);
+                    }
+                    if (joinPending && started && !resyncing)
+                    {
+                        joinPending = false;
+                        resyncing = true;
+                        new Thread(() => Resync(T("nouveau joueur", "new player"))) { IsBackground = true, Name = "Resync" }.Start();
+                    }
+                }
+                catch (Exception e) { Log.W("menu: " + e.Message); }
+            }
+        }
+
+        void OnMenuRequest(string cmd, string arg, string name)
+        {
+            name = new string((name ?? "").Trim().Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').ToArray());
+            if (name == "") name = new string(Environment.UserName.Where(char.IsLetterOrDigit).ToArray());
+            if (name == "") name = "joueur";
+            Log.W(T($"Menu : {cmd} {arg} ({name})", $"Menu: {cmd} {arg} ({name})"));
+            SaveSetting("name", name);
+            if (cmd == "host")
+            {
+                if (hostGame != null || clients.Count > 0) return;
+                menuGame.SetIdentity(name, "host");
+                int port = (int)portBox.Value;
+                try { StartHost(name, false, menuGame); }
+                catch (Exception e) { menuPhase = "error"; menuText = T("Impossible d'héberger : ", "Cannot host: ") + e.Message; MenuStatus(); return; }
+                menuLoad = arg; menuLoadSeq = "h" + DateTime.Now.Ticks;   // the game loads the chosen savegame
+                // Steam: friends can join from their friends list or an invitation
+                new Thread(() =>
+                {
+                    steamConnect = "+mpfever_connect " + PublicAddress() + ":" + port;
+                    SteamCtl("presence", steamConnect);
+                    Log.W(T("Steam : invitations possibles (", "Steam: invitations enabled (") + steamConnect + ")");
+                    MenuStatus();
+                }) { IsBackground = true, Name = "Steam presence" }.Start();
+                menuPhase = "hosting";
+                menuText = T($"Partie hébergée (« {arg} »). Les autres joueurs rejoignent avec votre adresse IP, port {port} (TCP, à rediriger sur votre box pour Internet). Adresse locale : {LocalAddresses()}",
+                             $"Game hosted (« {arg} »). Other players join with your IP address, port {port} (TCP, to forward on your router for the Internet). Local address: {LocalAddresses()}");
+                MenuStatus();
+            }
+            else if (cmd == "join")
+            {
+                if (hostGame != null || clients.Count > 0) return;
+                string host = arg.Trim();
+                int port = (int)portBox.Value;
+                int c = host.LastIndexOf(':');
+                if (c > 0 && int.TryParse(host.Substring(c + 1), out int p2)) { port = p2; host = host.Substring(0, c); }
+                SaveSetting("addr", arg.Trim());
+                menuGame.SetIdentity(name, "client");
+                menuPhase = "connecting"; menuText = T($"Connexion à {host}:{port}...", $"Connecting to {host}:{port}..."); MenuStatus();
+                try { StartClient(name, host, port, false, menuGame); }
+                catch (Exception e)
+                {
+                    clients.Clear();
+                    games.Remove(menuGame); games.Add(menuGame);
+                    menuPhase = "error"; menuText = T($"Connexion impossible à {host}:{port} : ", $"Cannot connect to {host}:{port}: ") + e.Message; MenuStatus();
+                    return;
+                }
+                menuPhase = "connected"; menuText = T("Connecté. L'hôte prépare sa partie...", "Connected. The host is preparing its game..."); MenuStatus();
+            }
+            else if (cmd == "invite")
+            {
+                if (steamConnect != null) SteamCtl("invite", steamConnect);
+            }
+            else if (cmd == "cancel")
+            {
+                foreach (var cl in clients) cl.Dispose();
+                clients.Clear();
+                menuPhase = "idle"; menuText = ""; MenuStatus();
+            }
+        }
+
+        /// <summary>Host started from the menu: the session starts as soon as its game runs the savegame.</summary>
+        void AutoStart()
+        {
+            WaitUntil(() => { lock (clocks) return hostName != null && clocks.ContainsKey(hostName); }, 120);
+            Thread.Sleep(1000);
+            if (started) return;
+            StartSession();
+            menuText = T("Partie en cours.", "Game running."); MenuStatus();
         }
 
         // ---------------------------------------------------------------- autotest (MPFever.exe --autotest [savegame])
@@ -259,6 +503,7 @@ namespace MPFever
 
         void RefreshStatus()
         {
+            if (menuMode) MenuStatus();
             if (relay == null) { if (clients.Count > 0) status.Text = T("Client connecté", "Connected to the host"); return; }
             int n; lock (players) n = players.Count;
             string sp; lock (sessionGate) sp = pauseAt.HasValue ? T("pause", "paused") : "x" + speed;
@@ -276,7 +521,7 @@ namespace MPFever
 
         // ---------------------------------------------------------------- sessions
 
-        void StartHost(string name, bool launch)
+        void StartHost(string name, bool launch, GameLink existing = null)
         {
             hostName = name;
             relay = new Relay();
@@ -285,6 +530,8 @@ namespace MPFever
                 Log.W(T($"{p.Name} a rejoint la session", $"{p.Name} joined the session"));
                 relay.Send(p, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(p.Name) + ",[\"role\"]=\"client\"}"));
                 BroadcastSession();
+                // started from the main menu: the new player receives the host's game (every game reloads it)
+                if (menuMode) { joinPending = true; MenuStatus(); }
             };
             relay.Left += p =>
             {
@@ -296,15 +543,17 @@ namespace MPFever
             relay.Received += (p, m) => OnHostMessage(m, p);
             relay.Start((int)portBox.Value);
 
-            hostGame = new GameLink(name, "host");
-            games.Add(hostGame);
+            hostGame = existing ?? new GameLink(name, "host");
+            if (!games.Contains(hostGame)) games.Add(hostGame);
             hostGame.FromGame += (g, m) =>
             {
                 m.From = hostName;
                 if (m.Kind == "hello")
                 {
+                    g.InGame = true;
                     g.ToGame(Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(hostName) + ",[\"role\"]=\"host\"}"));
                     BroadcastSession();
+                    if (menuMode && !started) new Thread(AutoStart) { IsBackground = true, Name = "Auto start" }.Start();
                 }
                 OnHostMessage(m, null);
             };
@@ -312,11 +561,11 @@ namespace MPFever
             new Thread(HostLoop) { IsBackground = true, Name = "Host loop" }.Start();
         }
 
-        void StartClient(string name, string host, int port, bool launch)
+        void StartClient(string name, string host, int port, bool launch, GameLink existing = null)
         {
             var client = new Client();
-            var game = new GameLink(name, "client");
-            games.Add(game);
+            var game = existing ?? new GameLink(name, "client");
+            if (!games.Contains(game)) games.Add(game);
             clients.Add(client);
             client.Received += m =>
             {
@@ -324,8 +573,13 @@ namespace MPFever
                 game.ToGame(m);
                 if (m.Kind == "act") Log.W(T($"[{name}] reçu {m.Kind} de {m.From}", $"[{name}] received {m.Kind} from {m.From}"));
             };
-            client.Closed += () => { Log.W(T($"[{name}] connexion à l'hôte perdue", $"[{name}] connection to the host lost")); game.ToGame(Msg.Make("session", "MPFever", "{[\"started\"]=false,[\"speed\"]=0}")); };
-            game.FromGame += (g, m) => client.Send(m);
+            client.Closed += () =>
+            {
+                Log.W(T($"[{name}] connexion à l'hôte perdue", $"[{name}] connection to the host lost"));
+                game.ToGame(Msg.Make("session", "MPFever", "{[\"started\"]=false,[\"speed\"]=0}"));
+                if (menuMode) { menuPhase = "error"; menuText = T("Connexion à l'hôte perdue.", "Connection to the host lost."); MenuStatus(); }
+            };
+            game.FromGame += (g, m) => { if (m.Kind == "hello") { g.InGame = true; if (menuMode) { menuPhase = "ingame"; menuText = T("En partie.", "In game."); MenuStatus(); } } client.Send(m); };
             client.Connect(host, port, name);
             if (launch) game.Launch(gameDir);
         }
@@ -745,7 +999,11 @@ namespace MPFever
             {
                 if (!resyncParts.TryGetValue(id, out got)) resyncParts[id] = got = new string[n];
                 got[i] = t["data"] as string;
-                if (got.Any(x => x == null)) return;
+                if (got.Any(x => x == null))
+                {
+                    if (menuMode && !game.InGame) { menuPhase = "downloading"; menuText = T($"Réception de la partie de l'hôte : {100 * got.Count(x => x != null) / n} %", $"Receiving the host's game: {100 * got.Count(x => x != null) / n} %"); MenuStatus(); }
+                    return;
+                }
                 resyncParts.Remove(id);
             }
             try
@@ -754,6 +1012,13 @@ namespace MPFever
                 string name = ResyncSaveName + " " + new string(game.Name.Where(char.IsLetterOrDigit).ToArray());
                 foreach (var d in GameInstall.SaveDirs()) File.WriteAllBytes(Path.Combine(d, name + ".sav"), bytes);
                 Log.W(T($"[{game.Name}] partie de l'hôte reçue ({bytes.Length / 1048576.0:0.0} Mo) : chargement...", $"[{game.Name}] host game received ({bytes.Length / 1048576.0:0.0} MB): loading..."));
+                if (menuMode && !game.InGame)
+                {
+                    // still in the main menu: its MPFever window loads the savegame
+                    menuPhase = "loading"; menuText = T("Chargement de la partie de l'hôte...", "Loading the host's game..."); menuLoad = name; menuLoadSeq = "r" + id;
+                    MenuStatus();
+                    return;
+                }
                 game.ToGame(Msg.Make("resync_load", m.From, "{[\"id\"]=" + id + ",[\"name\"]=" + LuaLit.Quote(name) + "}"));
             }
             catch (Exception e) { Log.W(T($"[{game.Name}] partie de l'hôte : {e.Message}", $"[{game.Name}] host game: {e.Message}")); }

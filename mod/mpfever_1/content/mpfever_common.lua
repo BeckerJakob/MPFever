@@ -19,6 +19,19 @@ C.NAME = os.getenv("MPFEVER_NAME") or "player"
 C.ROLE = os.getenv("MPFEVER_ROLE") or "solo"
 C.ACTIVE = C.DIR ~= nil and C.DIR ~= "" and C.IO ~= nil
 
+-- name and role chosen in the main menu's MPFever window (written by MPFever.exe before the savegame is loaded)
+if C.ACTIVE then
+	local f = C.IO.open(C.DIR .. BS .. "identity.txt", "rb")
+	if f then
+		local s = f:read("*a") or ""
+		f:close()
+		local n = s:match("name=([^" .. NL .. CR .. "]+)")
+		local r = s:match("role=([^" .. NL .. CR .. "]+)")
+		if n then C.NAME = n end
+		if r then C.ROLE = r end
+	end
+end
+
 function C.appendFile(path, text)
 	local f = C.IO and C.IO.open(path, "ab")
 	if not f then return false end

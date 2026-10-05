@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -167,7 +167,11 @@ namespace MPFever
     sealed class GameLink : IDisposable
     {
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false);
-        public readonly string Name, Role, Dir;
+        public readonly string Dir;
+        public string Name { get; private set; }
+        public string Role { get; private set; }
+        /// <summary>The game has loaded a savegame and its bridge said hello (false while it shows the main menu).</summary>
+        public volatile bool InGame;
         readonly string inPath, outPath;
         readonly object writeGate = new object();
         long outOff;
@@ -192,6 +196,45 @@ namespace MPFever
         }
 
         public bool GameRunning => proc != null && !proc.HasExited;
+
+        /// <summary>Name and role chosen in the main menu, read by the mod when the game loads (identity.txt).</summary>
+        public void SetIdentity(string name, string role)
+        {
+            Name = name;
+            Role = role;
+            File.WriteAllText(Path.Combine(Dir, "identity.txt"), "name=" + name + "\nrole=" + role + "\n", Utf8);
+        }
+
+        /// <summary>State shown by the MPFever window of the game's main menu (menu_state.txt, key=value lines).</summary>
+        public void WriteMenuState(IDictionary<string, string> st)
+        {
+            var sb = new StringBuilder();
+            foreach (var kv in st) sb.Append(kv.Key).Append('=').Append((kv.Value ?? "").Replace("\r", " ").Replace("\n", " ")).Append('\n');
+            var tmp = Path.Combine(Dir, "menu_state.tmp");
+            var dst = Path.Combine(Dir, "menu_state.txt");
+            lock (writeGate)
+            {
+                File.WriteAllText(tmp, sb.ToString(), Utf8);
+                try { if (File.Exists(dst)) File.Replace(tmp, dst, null); else File.Move(tmp, dst); }
+                catch { File.Copy(tmp, dst, true); }
+            }
+        }
+
+        /// <summary>The last request of the main menu's MPFever window: seq, command, argument, player name (or null).</summary>
+        public string[] ReadMenuRequest()
+        {
+            try
+            {
+                var f = Path.Combine(Dir, "menu_req.txt");
+                if (!File.Exists(f)) return null;
+                var line = File.ReadAllText(f, Utf8).Trim('\r', '\n');
+                var parts = line.Split('\t');
+                return parts.Length >= 4 ? parts : null;
+            }
+            catch { return null; }
+        }
+
+        public event Action Exited;
 
         public void ToGame(Msg m)
         {
@@ -218,10 +261,13 @@ namespace MPFever
             psi.EnvironmentVariables["MPFEVER_DIR"] = Dir;
             psi.EnvironmentVariables["MPFEVER_NAME"] = Name;
             psi.EnvironmentVariables["MPFEVER_ROLE"] = Role;
+            psi.EnvironmentVariables["MPFEVER_LANG"] = L.Fr ? "fr" : "en";
             // application script: starts the host's savegame after a resynchronisation (and loads the autotest save)
             psi.Arguments = "--script mpfever_1::/mpfever_auto.lua";
             if (AutoSave != null) psi.EnvironmentVariables["MPFEVER_SAVE"] = AutoSave;
             proc = Process.Start(psi);
+            proc.EnableRaisingEvents = true;
+            proc.Exited += (s, e) => Exited?.Invoke();
             // experiment (MPFEVER_AFFINITY=mask): pin the game to some CPU cores
             var aff = Environment.GetEnvironmentVariable("MPFEVER_AFFINITY");
             if (!string.IsNullOrEmpty(aff)) try { proc.ProcessorAffinity = (IntPtr)Convert.ToInt64(aff, 16); } catch (Exception e) { Log.W("affinity: " + e.Message); }
@@ -548,6 +594,8 @@ namespace MPFever
         {
             var src = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "winhttp.dll");
             var dst = Path.Combine(gameDir, "winhttp.dll");
+            // a game started by Steam from an MPFever invitation starts MPFever.exe from this path
+            try { File.WriteAllText(Path.Combine(gameDir, "mpfever_path.txt"), System.Reflection.Assembly.GetExecutingAssembly().Location, Encoding.Unicode); } catch (Exception e) { Log.W("mpfever_path.txt: " + e.Message); }
             if (!File.Exists(src)) { Log.W(L.T("winhttp.dll absent à côté de MPFever.exe : module natif non installé", "winhttp.dll missing next to MPFever.exe: native module not installed")); return; }
             if (File.Exists(dst))
             {

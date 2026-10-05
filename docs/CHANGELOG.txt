@@ -1,6 +1,18 @@
 MPFever - Changelog
 ===================
 
+0.2.0-experimental - multiplayer from the game's main menu
+  - MPFever.exe starts the game directly. A "Multiplayer (MPFever)" button in the
+    game's main menu opens the MPFever window: player name, host one of your
+    savegames, or join a host by its address. No more launcher buttons to click.
+  - The host's savegame is sent automatically to every player who joins and loads by
+    itself (no file to copy, no "Start" button: the session starts when the host's
+    game is loaded). A player joining later is welcomed the same way.
+  - Steam invitations: the host can invite friends from the MPFever window, and
+    friends can use "Join game" in their Steam friends list. A friend whose game is
+    closed: Steam starts it and MPFever joins the host by itself.
+  - The old launcher window stays available with MPFever.exe --dev.
+
 0.1.1-experimental - synchronisation fixes
   - Random numbers of the game mechanics (loan offers, contracts, events) are now
     identical in every game: no more divergence of loans after a few minutes.

@@ -8,6 +8,7 @@
         "mpfever_ui.res.lua",
         "mpfever_ui.script.lua",
         "mpfever_refs.lua",
-        "mpfever_auto.lua"
+        "mpfever_auto.lua",
+        "mpfever_menu.lua"
     ]
 }

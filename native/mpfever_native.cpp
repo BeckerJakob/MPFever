@@ -589,6 +589,167 @@ static u32 g_threads = 0;
 typedef void (WINAPI* GetSystemInfoF)(void*);
 static GetSystemInfoF g_realGetSystemInfo = 0;
 
+// ---------------------------------------------------------------- Steam invitations
+// MPFever.exe writes steam_ctl.txt (one command, rewritten each time): "<seq> presence <connect>" makes the player
+// joinable from the Steam friends list (rich presence "connect"), "<seq> invite <connect>" opens Steam's invite dialog,
+// "<seq> clear" removes the presence. A friend who accepts while the game runs: Steam's GameRichPresenceJoinRequested
+// callback (337) writes steam_join.txt for MPFever.exe. A friend whose game is closed: Steam starts the game with the
+// connect string on its command line (see ColdJoin).
+typedef void* (*SteamIfaceF)();
+typedef bool (*SetRichPresenceF)(void* self, const char* key, const char* value);
+typedef void (*ClearRichPresenceF)(void* self);
+typedef void (*InviteConnectF)(void* self, const char* connect);
+typedef void (*RegisterCallbackF)(void* cb, int id);
+
+extern "C" char __ImageBase;
+
+class JoinCallback {
+public:
+    // same virtual layout as Steam's CCallbackBase (Run overloads, then GetCallbackSizeBytes)
+    virtual void Run(void* param);
+    virtual void Run(void* param, bool ioFailure, u64 call);
+    virtual int GetCallbackSizeBytes();
+    u8 flags;
+    int id;
+};
+
+static void WriteSessionFile(const char* name, const char* text, int len)
+{
+    char path[400];
+    PathOf(path, name);
+    HANDLE f = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, 2 /* CREATE_ALWAYS */, FILE_ATTRIBUTE_NORMAL, 0);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD w;
+    WriteFile(f, text, (DWORD)len, &w, 0);
+    CloseHandle(f);
+}
+
+void JoinCallback::Run(void* param)
+{
+    // GameRichPresenceJoinRequested_t { CSteamID friend; char connect[256]; }
+    const char* connect = (const char*)param + 8;
+    int n = 0;
+    while (n < 255 && connect[n]) n++;
+    static long seq = 0;
+    Buf b;
+    b.dec(GetTickCount()).str("-").dec(_InterlockedIncrement(&seq)).str("\t");
+    for (int i = 0; i < n; i++) b.s[b.n++] = connect[i];
+    b.s[b.n++] = '\n';
+    WriteSessionFile("steam_join.txt", b.s, b.n);
+    Buf l; l.str("steam: join requested by a friend"); LogLine(l);
+}
+void JoinCallback::Run(void* param, bool, u64) { Run(param); }
+int JoinCallback::GetCallbackSizeBytes() { return 8 + 256; }
+
+static JoinCallback g_joinCb;
+
+static DWORD WINAPI SteamThread(void*)
+{
+    HMODULE sa = 0;
+    void* friends = 0;
+    for (int i = 0; i < 600 && !friends; i++) {   // the game initialises Steam during its start
+        Sleep(500);
+        if (!sa) sa = GetModuleHandleW(L"steam_api64.dll");
+        if (!sa) continue;
+        auto get = (SteamIfaceF)GetProcAddress(sa, "SteamAPI_SteamFriends_v017");
+        if (get) friends = get();
+    }
+    if (!friends) { Buf b; b.str("steam: friends interface not available, invitations off"); LogLine(b); return 0; }
+    auto setRp = (SetRichPresenceF)GetProcAddress(sa, "SteamAPI_ISteamFriends_SetRichPresence");
+    auto clearRp = (ClearRichPresenceF)GetProcAddress(sa, "SteamAPI_ISteamFriends_ClearRichPresence");
+    auto invite = (InviteConnectF)GetProcAddress(sa, "SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialogConnectString");
+    auto reg = (RegisterCallbackF)GetProcAddress(sa, "SteamAPI_RegisterCallback");
+    if (reg) reg(&g_joinCb, 337);
+    { Buf b; b.str("steam: invitations ready").str(reg ? "" : " (no join callback)"); LogLine(b); }
+    char last[64] = {};
+    static char buf[1024];
+    for (;;) {
+        Sleep(250);
+        char path[400];
+        PathOf(path, "steam_ctl.txt");
+        HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | 4, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+        if (f == INVALID_HANDLE_VALUE) continue;
+        DWORD got = 0;
+        ReadFile(f, buf, sizeof(buf) - 1, &got, 0);
+        CloseHandle(f);
+        buf[got] = 0;
+        while (got && (buf[got - 1] == '\n' || buf[got - 1] == '\r')) buf[--got] = 0;
+        // "<seq> <command> [argument]"
+        int a = 0;
+        while (buf[a] && buf[a] != ' ') a++;
+        if (!buf[a] || a >= 63) continue;
+        buf[a] = 0;
+        if (!memcmp(buf, last, a + 1)) continue;
+        memcpy(last, buf, a + 1);
+        char* cmd = buf + a + 1;
+        int c = 0;
+        while (cmd[c] && cmd[c] != ' ') c++;
+        char* arg = cmd[c] ? cmd + c + 1 : cmd + c;
+        cmd[c] = 0;
+        Buf l; l.str("steam: ").str(cmd).str(" ").str(arg); LogLine(l);
+        if (!memcmp(cmd, "presence", 9) && setRp) { setRp(friends, "connect", arg); setRp(friends, "status", "MPFever"); }
+        else if (!memcmp(cmd, "invite", 7) && invite) invite(friends, arg);
+        else if (!memcmp(cmd, "clear", 6) && clearRp) clearRp(friends);
+    }
+}
+
+// Started by Steam from an invitation ("+mpfever_connect <address>" on the command line) without MPFever: MPFever.exe,
+// whose path the launcher wrote next to this module (mpfever_path.txt), is started with --join, and this game quits
+// (MPFever starts its own).
+static bool ColdJoin()
+{
+    const wchar_t* cl = GetCommandLineW();
+    const wchar_t* key = L"+mpfever_connect";
+    const wchar_t* at = 0;
+    for (const wchar_t* p = cl; *p && !at; p++) {
+        int k = 0;
+        while (key[k] && p[k] == key[k]) k++;
+        if (!key[k]) at = p + k;
+    }
+    if (!at) return false;
+    while (*at == ' ' || *at == '"') at++;
+    wchar_t addr[128];
+    int n = 0;
+    while (at[n] && at[n] != ' ' && at[n] != '"' && n < 127) { addr[n] = at[n]; n++; }
+    addr[n] = 0;
+    // MPFever.exe path: mpfever_path.txt next to this module (UTF-16 written by the launcher)
+    wchar_t mod[300];
+    DWORD ml = GetModuleFileNameW((HMODULE)&__ImageBase, mod, 260);
+    while (ml && mod[ml - 1] != '\\') ml--;
+    const wchar_t* fname = L"mpfever_path.txt";
+    for (int k = 0; fname[k]; k++) mod[ml++] = fname[k];
+    mod[ml] = 0;
+    char modA[300];
+    for (DWORD k = 0; k <= ml; k++) modA[k] = (char)mod[k];   // ASCII-only paths only for CreateFileA
+    HANDLE f = CreateFileA(modA, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    static wchar_t exe[300];
+    DWORD got = 0;
+    ReadFile(f, exe, sizeof(exe) - 2, &got, 0);
+    CloseHandle(f);
+    int el = (int)(got / 2);
+    if (el && exe[0] == 0xFEFF) { for (int k = 1; k < el; k++) exe[k - 1] = exe[k]; el--; }
+    while (el && (exe[el - 1] == '\n' || exe[el - 1] == '\r')) el--;
+    exe[el] = 0;
+    if (!el) return false;
+    static wchar_t cmd[600];
+    int k = 0;
+    cmd[k++] = '"';
+    for (int i = 0; exe[i]; i++) cmd[k++] = exe[i];
+    const wchar_t* mid = L"\" --join ";
+    for (int i = 0; mid[i]; i++) cmd[k++] = mid[i];
+    for (int i = 0; addr[i]; i++) cmd[k++] = addr[i];
+    cmd[k] = 0;
+    STARTUPINFOW_ si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION_ pi = {};
+    if (!CreateProcessW(0, cmd, 0, 0, 0, 0, 0, 0, &si, &pi)) return false;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    TerminateProcess(GetCurrentProcess(), 0);
+    return true;
+}
+
 static DWORD WINAPI Init(void*)
 {
     g_base = (uptr)GetModuleHandleW(0);
@@ -604,8 +765,9 @@ static DWORD WINAPI Init(void*)
     }
     char dir[300] = {};
     DWORD dl = GetEnvironmentVariableA("MPFEVER_DIR", dir, 260);
-    // loaded by every start of the game (winhttp.dll slot): without an MPFever session it does nothing at all
-    if (dl == 0 || dl >= 260) return 0;
+    // loaded by every start of the game (winhttp.dll slot): without an MPFever session it does nothing at all, except
+    // when Steam started the game from an MPFever invitation
+    if (dl == 0 || dl >= 260) { ColdJoin(); return 0; }
     {
         const char* tail = "\\native.log";
         int k = 0;
@@ -627,6 +789,7 @@ static DWORD WINAPI Init(void*)
         return 0;
     }
     InstallDetour(RVA_ADD, P_ADD, sizeof(P_ADD), (void*)&AddDetour, (void**)&g_addOrig);
+    { HANDLE st = CreateThread(0, 0, SteamThread, 0, 0, 0); if (st) CloseHandle(st); }
     SetupSerial();
     // ArmMapSites();   (diagnostic: map lookup failures, see sites_gen.h)
     return 0;
@@ -750,12 +913,67 @@ static void PatchScriptPool(uptr base)
     g_scriptPoolPatched = true;
 }
 
+// ---------------------------------------------------------------- multiplayer page in the game's main menu
+// The main menu's UI runs in its own Lua state, which no mod file reaches (mods are only mounted in a game). lua_load is
+// wrapped: when the engine loads gui/menu/main_menu.tl, one statement is put in front of its source that loads
+// mpfever_1::/mpfever_menu.lua, which adds the multiplayer page through the UI's own recipe replacement table.
+typedef const char* (*LuaReader)(void* L, void* ud, size_t* size);
+typedef int (*LuaLoadF)(void* L, LuaReader reader, void* data, const char* chunkname, const char* mode);
+static const u32 RVA_LUA_LOAD = 0x2fbdf70;
+static const u8 P_LUA_LOAD[] = { 0x48, 0x89, 0x5C, 0x24, 0x10, 0x56, 0x48, 0x83, 0xEC, 0x50, 0x49, 0x8B, 0xD9, 0x48, 0x8B, 0xF1 };
+static LuaLoadF g_luaLoadOrig = 0;
+static const char MENU_PREFIX[] = "do local ok, e = pcall(require, \"mpfever_1::/mpfever_menu.lua\") if not ok then print(\"[MPFEVER-MENU] \" .. tostring(e)) end end ";
+static volatile long g_menuInjected = 0;
+
+struct MenuReader { LuaReader reader; void* data; int stage; const char* held; size_t heldSize; };
+
+extern "C" const char* MenuReaderFn(void* L, void* ud, size_t* size)
+{
+    MenuReader* m = (MenuReader*)ud;
+    if (m->stage == 0) {
+        size_t n = 0;
+        const char* blk = m->reader(L, m->data, &n);
+        if (!blk || n == 0 || blk[0] == 0x1B) { m->stage = 2; *size = n; return blk; }   // empty or precompiled: untouched
+        m->held = blk; m->heldSize = n; m->stage = 1;
+        *size = sizeof(MENU_PREFIX) - 1;
+        return MENU_PREFIX;
+    }
+    if (m->stage == 1) { m->stage = 2; *size = m->heldSize; return m->held; }
+    return m->reader(L, m->data, size);
+}
+
+static bool EndsWith(const char* s, const char* tail)
+{
+    int a = 0, b = 0;
+    while (s[a]) a++;
+    while (tail[b]) b++;
+    return a >= b && memcmp(s + a - b, tail, b) == 0;
+}
+
+extern "C" int LuaLoadDetour(void* L, LuaReader reader, void* data, const char* chunkname, const char* mode)
+{
+    if (chunkname && EndsWith(chunkname, "gui/menu/main_menu.tl")) {
+        MenuReader m = { reader, data, 0, 0, 0 };
+        int r = g_luaLoadOrig(L, MenuReaderFn, &m, chunkname, mode);
+        if (_InterlockedIncrement(&g_menuInjected) == 1) { Buf b; b.str("main menu: multiplayer page added (").str(chunkname).str(")"); LogLine(b); }
+        return r;
+    }
+    return g_luaLoadOrig(L, reader, data, chunkname, mode);
+}
+
 extern "C" BOOL WINAPI DllMain(HMODULE inst, DWORD reason, void*)
 {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
         char d[8];
-        if (GetEnvironmentVariableA("MPFEVER_DIR", d, 1) > 0) { LimitThreads(); SetupSimPools(); PatchScriptPool((uptr)GetModuleHandleW(0)); }
+        if (GetEnvironmentVariableA("MPFEVER_DIR", d, 1) > 0) {
+            LimitThreads(); SetupSimPools(); PatchScriptPool((uptr)GetModuleHandleW(0));
+            g_base = (uptr)GetModuleHandleW(0);
+            auto dos = (IMAGE_DOS_HEADER_*)g_base;
+            auto fh = (IMAGE_FILE_HEADER_*)((u8*)(g_base + dos->e_lfanew) + 4);
+            if (fh->TimeDateStamp == EXPECTED_TIMESTAMP)
+                InstallDetour(RVA_LUA_LOAD, P_LUA_LOAD, sizeof(P_LUA_LOAD), (void*)&LuaLoadDetour, (void**)&g_luaLoadOrig);
+        }
         HANDLE t = CreateThread(0, 0, Init, 0, 0, 0);
         if (t) CloseHandle(t);
     }

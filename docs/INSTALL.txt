@@ -1,4 +1,4 @@
-MPFever 0.1.1-experimental - Installation and first game
+MPFever 0.2.0-experimental - Installation and first game
 ========================================================
 
 REQUIREMENTS (every player)
@@ -25,17 +25,18 @@ REQUIREMENTS (every player)
    - MPFever also copies winhttp.dll into the game folder (see "What MPFever changes on
      your PC" in README.txt).
 
-Always start Transport Fever 3 THROUGH MPFever.exe when you want to play together.
-Started normally from Steam, the game is a normal solo game: the mod does nothing.
+Always start Transport Fever 3 THROUGH MPFever.exe when you want to play together
+(MPFever.exe starts the game itself). Started normally from Steam, the game is a normal
+solo game: the mod does nothing.
 
 
-2. PREPARE THE SAVEGAME (host)
-------------------------------
-All players must load exactly the same savegame, and that savegame must include the
-MPFever mod.
+2. THE SAVEGAME (host)
+----------------------
+The host plays one of their own savegames; the other players receive it
+automatically when they join (no file to send).
 
-New game (recommended for this first version):
-1. Start MPFever.exe once (step 1), then close it.
+The savegame must include the MPFever mod. New game (recommended):
+1. Start MPFever.exe once (step 1), then close the game and MPFever.
 2. Start Transport Fever 3 normally from Steam and create a new game as usual.
    "MPFever Multiplayer" is already selected in the mods of the new game.
 3. Save it (for example "coop1"), then quit the game.
@@ -44,65 +45,64 @@ Existing savegame: a savegame created without the mod does not contain it. If th
 game's load screen lets you change the mods of a savegame, add "MPFever Multiplayer"
 there and save again; otherwise start a new game for now.
 
-Send the savegame file to the other players. Savegames are in:
-    C:\Program Files (x86)\Steam\userdata\<your Steam id>\3493540\local\save\
-The file is "<name>.sav" (about 15-60 MB). Every player puts it in the same folder on
-their PC.
-
 
 3. NETWORK (host)
 -----------------
-The other players connect to the host on TCP port 28090 (you can change it in the
-MPFever window; everybody must use the same port).
+The other players connect to the host on TCP port 28090.
 
 Choose one:
-a) Virtual LAN (easiest): every player installs the same tool, for example Radmin VPN,
-   ZeroTier or Tailscale, and joins the same network. The host gives the IP address
-   shown by that tool.
-b) Port forwarding: on the host's internet box/router, forward TCP port 28090 to the
+a) Port forwarding: on the host's internet box/router, forward TCP port 28090 to the
    host's PC, and allow MPFever.exe in the Windows firewall (Windows asks the first
-   time you click "Host": tick "Private" and "Public" networks). The host gives their
-   public IP address (search "what is my IP" in a browser).
+   time you host: tick "Private" and "Public" networks). Needed for Steam invitations.
+b) Virtual LAN: every player installs the same tool, for example Radmin VPN, ZeroTier
+   or Tailscale, and joins the same network. The host gives the IP address shown by
+   that tool; the others join by IP.
 c) Same local network: use the host's local address (for example 192.168.1.20).
 
 
 4. PLAY
 -------
+Everybody: start MPFever.exe. Transport Fever 3 starts by itself (the MPFever window
+stays minimized). In the game's main menu, click "Multiplayer (MPFever)" (under the
+cards) and type your player name.
+
 Host:
-1. Start MPFever.exe, type your name, click "Host". Transport Fever 3 starts.
-2. Load the shared savegame.
+1. "Host a game", click the savegame to share, then "Host".
+2. The savegame loads and the game starts. Your friends can now join.
+3. Invite friends: click "Invite Steam friends" in the MPFever window of the main menu
+   (or friends right-click you in their Steam friends list, "Join game").
 
-Other players:
-1. Start MPFever.exe, type your name and the host's IP address in "Host:", then click
-   "Join by IP". Transport Fever 3 starts.
-2. Load the SAME savegame.
-
-Host, when every game has finished loading (the status line shows "2 game(s) ready",
-"3 game(s) ready"...):
-3. Click "Start the game". The games check that they are identical, then run.
+Other players, either:
+- accept the host's Steam invitation (Transport Fever 3 and MPFever start by
+  themselves if needed), or
+- "Join a game", type the host's address (for example 89.12.34.56 or
+  89.12.34.56:28090), then "Join".
+The host's game is sent to you (progress shown in the MPFever window) and loads by
+itself. Each time a player joins, every game pauses and reloads the host's game for a
+few seconds, then everybody continues together.
 
 During the game:
 - Play normally. Anybody can build, buy vehicles, create lines...
-- Speed and pause: use the game's own speed buttons (they ask the host) or the buttons
-  of the host's MPFever window. Every game always runs at the same speed.
-- If the window shows "OUT OF SYNC", MPFever corrects it: money at once; anything else
-  with an automatic resynchronisation (pause, everybody reloads the host's game, about
-  20 seconds, then the game resumes by itself). Do not touch anything while it loads.
-- To stop: the host saves the game (normal save), then everybody quits.
+- Speed and pause: use the game's own speed buttons (they ask the host). Every game
+  always runs at the same speed.
+- If the games differ, MPFever corrects it: money at once; anything else with an
+  automatic resynchronisation (pause, everybody reloads the host's game, about 20
+  seconds, then the game resumes by itself). Do not touch anything while it loads.
+- To stop: the host saves the game (normal save), then everybody quits. Closing the
+  game also closes MPFever.
 
-Next time: the host sends the newest savegame again (or every player keeps the save
-made by the automatic resynchronisation, "MPFever resync"), and you start again from
-step 4.
+Developer mode (MPFever.exe --dev) keeps the old window with the Host / Join buttons
+and the local test.
 
 
 TROUBLESHOOTING
 ---------------
 - "Transport Fever 3 not found": Steam must be installed normally and the game
   installed in one of its libraries.
-- "Join by IP" fails: check the IP address, the port, the host's firewall / port
+- "Cannot connect": check the address, the port, the host's firewall / port
   forwarding, or use a virtual LAN.
-- "The games are not at the same time": the players did not load the same savegame
-  file. Send it again and reload.
+- No "Multiplayer (MPFever)" button in the main menu: the game was not started by
+  MPFever.exe, or another winhttp.dll is in the game folder (see the MPFever log).
 - The game shows "press any key" after a resynchronisation and does not continue: press
   a key, and please report it (with the logs, see README.txt).
 - Something does not appear in the other game: please report it with the logs.
