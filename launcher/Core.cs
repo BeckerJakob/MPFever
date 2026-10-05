@@ -409,6 +409,21 @@ namespace MPFever
             return t.Length == 0 ? "joueur" : (t.Length > 24 ? t.Substring(0, 24) : t);
         }
 
+        /// <summary>A player who comes back (reconnection) under the same name: the old connection, which may still look
+        /// alive after a network cut, is closed.</summary>
+        public void DropOlder(Peer p)
+        {
+            string Base(string n) { int i = n.LastIndexOf('#'); return i < 0 ? n : n.Substring(0, i); }
+            Peer[] all;
+            lock (peers) all = peers.ToArray();
+            foreach (var o in all)
+                if (o != p && Base(o.Name) == Base(p.Name))
+                {
+                    Log.W(L.T($"{o.Name} : ancienne connexion fermée (reconnexion)", $"{o.Name}: old connection closed (reconnection)"));
+                    try { o.Tcp.Close(); } catch { }
+                }
+        }
+
         public void Send(Peer p, Msg m)
         {
             try { lock (p.Gate) p.Writer.WriteLine(m.ToString()); }

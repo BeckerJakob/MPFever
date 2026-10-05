@@ -53,6 +53,7 @@ namespace MPFever
         GameLink menuGame;
         string menuPhase = "idle", menuText = "", menuLoad = "", menuLoadSeq = "", lastMenuReq;
         volatile bool joinPending;
+        volatile bool clientCancelled;
         const long Step = 200;                 // game time units per simulation step
         const double UnitsPerSecond = 1000;    // game time units per real second at x1
         const double HashEverySeconds = 10;
@@ -406,9 +407,15 @@ namespace MPFever
             {
                 if (steamConnect != null) SteamCtl("invite", steamConnect);
             }
+            else if (cmd == "dropnet")
+            {
+                // test only: cuts the connection to the host as a network failure would
+                foreach (var cl in clients.ToList()) cl.Dispose();
+            }
             else if (cmd == "cancel")
             {
-                foreach (var cl in clients) cl.Dispose();
+                clientCancelled = true;
+                foreach (var cl in clients.ToList()) cl.Dispose();
                 clients.Clear();
                 menuPhase = "idle"; menuText = ""; MenuStatus();
             }
@@ -528,6 +535,7 @@ namespace MPFever
             relay.Joined += p =>
             {
                 Log.W(T($"{p.Name} a rejoint la session", $"{p.Name} joined the session"));
+                relay.DropOlder(p);
                 relay.Send(p, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(p.Name) + ",[\"role\"]=\"client\"}"));
                 BroadcastSession();
                 // started from the main menu: the new player receives the host's game (every game reloads it)
@@ -563,24 +571,65 @@ namespace MPFever
 
         void StartClient(string name, string host, int port, bool launch, GameLink existing = null)
         {
-            var client = new Client();
             var game = existing ?? new GameLink(name, "client");
             if (!games.Contains(game)) games.Add(game);
-            clients.Add(client);
-            client.Received += m =>
+            Client current = null;
+            clientCancelled = false;
+            game.FromGame += (g, m) =>
             {
-                if (m.Kind == "resync_file") { OnResyncFile(game, m); return; }
-                game.ToGame(m);
-                if (m.Kind == "act") Log.W(T($"[{name}] reçu {m.Kind} de {m.From}", $"[{name}] received {m.Kind} from {m.From}"));
+                if (m.Kind == "hello") { g.InGame = true; if (menuMode) { menuPhase = "ingame"; menuText = T("En partie.", "In game."); MenuStatus(); } }
+                current?.Send(m);
             };
-            client.Closed += () =>
+            Action<Client> wire = null;
+            wire = client =>
             {
-                Log.W(T($"[{name}] connexion à l'hôte perdue", $"[{name}] connection to the host lost"));
-                game.ToGame(Msg.Make("session", "MPFever", "{[\"started\"]=false,[\"speed\"]=0}"));
-                if (menuMode) { menuPhase = "error"; menuText = T("Connexion à l'hôte perdue.", "Connection to the host lost."); MenuStatus(); }
+                client.Received += m =>
+                {
+                    if (m.Kind == "resync_file") { OnResyncFile(game, m); return; }
+                    game.ToGame(m);
+                    if (m.Kind == "act") Log.W(T($"[{name}] reçu {m.Kind} de {m.From}", $"[{name}] received {m.Kind} from {m.From}"));
+                };
+                client.Closed += () =>
+                {
+                    lock (clients) clients.Remove(client);
+                    if (current == client) current = null;   // nothing is sent until reconnected
+                    Log.W(T($"[{name}] connexion à l'hôte perdue", $"[{name}] connection to the host lost"));
+                    game.ToGame(Msg.Make("session", "MPFever", "{[\"started\"]=false,[\"speed\"]=0}"));
+                    if (!menuMode || clientCancelled) return;
+                    // the connection dropped: try again for 5 minutes; back with the host, this game receives its
+                    // game again like any player who joins
+                    new Thread(() =>
+                    {
+                        var end = DateTime.UtcNow.AddMinutes(5);
+                        for (int attempt = 1; DateTime.UtcNow < end && !clientCancelled; attempt++)
+                        {
+                            menuPhase = "connecting";
+                            menuText = T($"Connexion à l'hôte perdue : reconnexion (essai {attempt})...", $"Connection to the host lost: reconnecting (attempt {attempt})...");
+                            MenuStatus();
+                            Thread.Sleep(5000);
+                            if (clientCancelled) return;
+                            var c = new Client();
+                            try
+                            {
+                                wire(c);
+                                c.Connect(host, port, name);
+                                lock (clients) clients.Add(c);
+                                current = c;
+                                Log.W(T($"[{name}] reconnecté à l'hôte", $"[{name}] reconnected to the host"));
+                                menuPhase = "connected"; menuText = T("Reconnecté. L'hôte renvoie sa partie...", "Reconnected. The host sends its game again..."); MenuStatus();
+                                return;
+                            }
+                            catch (Exception e) { Log.W(T("Reconnexion : ", "Reconnecting: ") + e.Message); }
+                        }
+                        if (!clientCancelled) { menuPhase = "error"; menuText = T("Connexion à l'hôte perdue (reconnexion impossible).", "Connection to the host lost (could not reconnect)."); MenuStatus(); }
+                    }) { IsBackground = true, Name = "Reconnect" }.Start();
+                };
             };
-            game.FromGame += (g, m) => { if (m.Kind == "hello") { g.InGame = true; if (menuMode) { menuPhase = "ingame"; menuText = T("En partie.", "In game."); MenuStatus(); } } client.Send(m); };
-            client.Connect(host, port, name);
+            var first = new Client();
+            wire(first);
+            first.Connect(host, port, name);
+            lock (clients) clients.Add(first);
+            current = first;
             if (launch) game.Launch(gameDir);
         }
 
