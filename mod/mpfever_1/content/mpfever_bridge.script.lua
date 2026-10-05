@@ -1214,6 +1214,55 @@ local function replayStop(a, plan)
 	end)
 end
 
+-- A construction placed against a street (depot, station): the tool's proposal also splits the street for it. The
+-- engine refuses it rebuilt as one SimpleProposal ("Construction impossible"; without the street part: "Collision"),
+-- so it is replayed in two steps like the originator's game ends up with it: the street part first, as the engine's
+-- own (native) proposal type, then the construction alone on the street that is now cut.
+local function replayTwoStep(a)
+	local m0 = a.args[1]
+	if type(m0) ~= "table" or #(m0.toAdd or {}) == 0 or type(m0.proposal) ~= "table" then return false end
+	local sArgs = C.deser(C.ser(a.args))
+	local cArgs = C.deser(C.ser(a.args))
+	local miss = R.translateIn(sArgs, G.bind)
+	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: unresolved " .. table.concat(miss, ",")) return false end
+	R.translateIn(cArgs, G.bind)
+	sArgs[1].toAdd = {}
+	sArgs[1].toRemove = {}
+	local okp, P = pcall(C.rebuildNativeProposal, sArgs[1])
+	if not okp or not P then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street part not rebuilt (" .. shortErr(P) .. ")") return false end
+	local ctx = api.type.Context.new()
+	ctx.checkTerrainAlignment = false
+	ctx.cleanupStreetGraph = false
+	ctx.gatherBuildings = true
+	ctx.gatherFields = true
+	ctx.player = api.engine.util.getPlayer()
+	local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true) end)
+	if not okc or not cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street command " .. shortErr(cmd)) return false end
+	toSim("replaying", {})
+	replaySend(cmd, function(res, success)
+		if not success then
+			local why = ""
+			pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street part refused " .. why .. " (desync)")
+			return
+		end
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street part BUILT")
+		G.waits[#G.waits + 1] = { at = G.frames + 3, fn = function()
+			local okr, args, n = pcall(C.rebuildArgs, a.fn, cArgs, { seed = 7919, variant = "minimal", raw = true, ctx = "terrainNoCleanup", noStreet = true })
+			if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction not rebuilt (" .. shortErr(args) .. ")") return end
+			local okk, cmd2 = pcall(function() return api.cmd[a.fn](table.unpack(args, 1, n)) end)
+			if not okk or not cmd2 then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction command " .. shortErr(cmd2)) return end
+			toSim("replaying", {})
+			replaySend(cmd2, function(res2, success2)
+				local why = ""
+				if not success2 then pcall(function() why = C.ser(C.marshal(res2.resultProposalData.errorState.messages)) end) end
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction " .. (success2 and "BUILT" or ("refused " .. why .. " (desync)")))
+			end)
+		end }
+	end)
+	return true
+end
+
 local function replayNative(a, formIndex)
 	if formIndex == 1 then
 		pcall(function()
@@ -1260,6 +1309,7 @@ local function replayNative(a, formIndex)
 	end
 	local form = REPLAY_FORMS[formIndex]
 	if not form then
+		if replayTwoStep(a) then return end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. ": every form refused (desync)")
 		return
 	end
