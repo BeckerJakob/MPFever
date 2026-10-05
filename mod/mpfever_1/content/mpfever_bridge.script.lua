@@ -1216,50 +1216,66 @@ end
 
 -- A construction placed against a street (depot, station): the tool's proposal also splits the street for it. The
 -- engine refuses it rebuilt as one SimpleProposal ("Construction impossible"; without the street part: "Collision"),
--- so it is replayed in two steps like the originator's game ends up with it: the street part first, as the engine's
--- own (native) proposal type, then the construction alone on the street that is now cut.
+-- and the native proposal type refuses the removed segments we rebuild ("Unknown exception"). So it is replayed in two
+-- steps, in the order the engine needs: the street part alone (the forms that rebuild roads), then the construction
+-- alone on the street that is now cut.
+-- a build this game could not reproduce: the host reloads its game for everybody at once (without waiting for the
+-- next checkpoints to notice the difference)
+local function replayFailed(a, why)
+	pcall(send, "replay_failed", { uid = tostring(a.uid), why = tostring(why):sub(1, 120) })
+end
+
+local STREET_FORMS = {
+	{ v = "minimal", raw = true, ctx = "terrainNoCleanup" }, { v = "minimal", raw = true, ctx = "terrain" },
+	{ v = "minimal", raw = true, ctx = "plain" }, { v = "full", raw = true, ctx = "terrain" },
+}
+
 local function replayTwoStep(a)
 	local m0 = a.args[1]
 	if type(m0) ~= "table" or #(m0.toAdd or {}) == 0 or type(m0.proposal) ~= "table" then return false end
-	local sArgs = C.deser(C.ser(a.args))
 	local cArgs = C.deser(C.ser(a.args))
-	local miss = R.translateIn(sArgs, G.bind)
+	local miss = R.translateIn(cArgs, G.bind)
 	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: unresolved " .. table.concat(miss, ",")) return false end
-	R.translateIn(cArgs, G.bind)
-	sArgs[1].toAdd = {}
-	sArgs[1].toRemove = {}
-	local okp, P = pcall(C.rebuildNativeProposal, sArgs[1])
-	if not okp or not P then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street part not rebuilt (" .. shortErr(P) .. ")") return false end
-	local ctx = api.type.Context.new()
-	ctx.checkTerrainAlignment = false
-	ctx.cleanupStreetGraph = false
-	ctx.gatherBuildings = true
-	ctx.gatherFields = true
-	ctx.player = api.engine.util.getPlayer()
-	local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true) end)
-	if not okc or not cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street command " .. shortErr(cmd)) return false end
-	toSim("replaying", {})
-	replaySend(cmd, function(res, success)
-		if not success then
+
+	local function buildConstruction()
+		local okr, args, n = pcall(C.rebuildArgs, a.fn, C.deser(C.ser(cArgs)), { seed = 7919, variant = "minimal", raw = true, ctx = "terrainNoCleanup", noStreet = true })
+		if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction not rebuilt (" .. shortErr(args) .. ")") replayFailed(a, "construction not rebuilt") return end
+		local okk, cmd2 = pcall(function() return api.cmd[a.fn](table.unpack(args, 1, n)) end)
+		if not okk or not cmd2 then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction command " .. shortErr(cmd2)) replayFailed(a, "construction command") return end
+		toSim("replaying", {})
+		replaySend(cmd2, function(res2, success2)
 			local why = ""
-			pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
-			log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street part refused " .. why .. " (desync)")
-			return
-		end
-		log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street part BUILT")
-		G.waits[#G.waits + 1] = { at = G.frames + 3, fn = function()
-			local okr, args, n = pcall(C.rebuildArgs, a.fn, cArgs, { seed = 7919, variant = "minimal", raw = true, ctx = "terrainNoCleanup", noStreet = true })
-			if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction not rebuilt (" .. shortErr(args) .. ")") return end
-			local okk, cmd2 = pcall(function() return api.cmd[a.fn](table.unpack(args, 1, n)) end)
-			if not okk or not cmd2 then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction command " .. shortErr(cmd2)) return end
-			toSim("replaying", {})
-			replaySend(cmd2, function(res2, success2)
+			if not success2 then pcall(function() why = C.ser(C.marshal(res2.resultProposalData.errorState.messages)) end) end
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction " .. (success2 and "BUILT" or ("refused " .. why .. " (desync)")))
+			if not success2 then replayFailed(a, "construction refused " .. why) end
+		end)
+	end
+
+	local function streetStep(k)
+		local form = STREET_FORMS[k]
+		if not form then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street part refused by every form (desync)") replayFailed(a, "street part refused") return end
+		local sArgs = C.deser(C.ser(cArgs))
+		sArgs[1].toAdd = {}
+		sArgs[1].toRemove = {}
+		local label = form.v .. "/" .. form.ctx
+		local okr, args, n = pcall(C.rebuildArgs, a.fn, sArgs, { seed = 7919, variant = form.v, ctx = form.ctx, raw = form.raw })
+		if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street " .. label .. " rebuild " .. shortErr(args)) return streetStep(k + 1) end
+		local okc, cmd = pcall(function() return api.cmd[a.fn](table.unpack(args, 1, n)) end)
+		if not okc or not cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street " .. label .. " command " .. shortErr(cmd)) return streetStep(k + 1) end
+		toSim("replaying", {})
+		replaySend(cmd, function(res, success)
+			if not success then
 				local why = ""
-				if not success2 then pcall(function() why = C.ser(C.marshal(res2.resultProposalData.errorState.messages)) end) end
-				log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction " .. (success2 and "BUILT" or ("refused " .. why .. " (desync)")))
-			end)
-		end }
-	end)
+				pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street " .. label .. " refused " .. why)
+				G.waits[#G.waits + 1] = { at = G.frames + 1, fn = function() streetStep(k + 1) end }
+				return
+			end
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street part BUILT with " .. label)
+			G.waits[#G.waits + 1] = { at = G.frames + 3, fn = buildConstruction }
+		end)
+	end
+	streetStep(1)
 	return true
 end
 
@@ -1311,12 +1327,14 @@ local function replayNative(a, formIndex)
 	if not form then
 		if replayTwoStep(a) then return end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. ": every form refused (desync)")
+		replayFailed(a, "every form refused")
 		return
 	end
 	local margs = C.deser(C.ser(a.args))
 	local missing = R.translateIn(margs, G.bind)
 	if #missing > 0 then
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " SKIPPED, unresolved: " .. table.concat(missing, ","))
+		replayFailed(a, "unresolved references")
 		return
 	end
 	if form.ie ~= nil then margs[3] = form.ie end

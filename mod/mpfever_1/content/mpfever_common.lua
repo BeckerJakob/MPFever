@@ -702,7 +702,12 @@ local function idMap(m)
 	return r
 end
 
-function C.rebuildNativeProposal(m)
+-- stage (diagnostics): how much of the street part is filled in, to find which assignment the factory refuses
+-- 1 nothing, 2 +nodes, 3 +segments, 4 +removed nodes, 5 +removed segments, 6 +id maps (default: everything)
+-- rm: how the removed segments are given: nil = rebuilt from the capture, "entity" = their id only, "live" = id and
+-- the segment's current edge component in this game
+function C.rebuildNativeProposal(m, stage, rm)
+	stage = stage or 99
 	local st = m.proposal
 	if type(st) ~= "table" then error("no street part") end
 	if #(m.toAdd or {}) > 0 or #(m.toRemove or {}) > 0 then error("constructions: not a street-only build") end
@@ -720,13 +725,24 @@ function C.rebuildNativeProposal(m)
 		edges[i] = segmentFrom(s, "addedSegments[" .. i .. "]")
 	end
 	for i, n in ipairs(st.removedNodes or {}) do rnodes[i] = rebuild("NodeAndEntity", n, "removedNodes[" .. i .. "]") end
-	for i, s in ipairs(st.removedSegments or {}) do redges[i] = segmentFrom(s, "removedSegments[" .. i .. "]") end
-	sp.addedNodes = nodes
-	sp.addedSegments = edges
-	sp.removedNodes = rnodes
-	sp.removedSegments = redges
+	for i, s in ipairs(st.removedSegments or {}) do
+		if rm and type(s.entity) == "number" then
+			local se = rebuild("SegmentAndEntity", { entity = s.entity }, "removedSegments[" .. i .. "]")
+			if rm == "live" then
+				local okl, comp = pcall(function() return api.engine.getComponent(s.entity, api.type.ComponentType.BASE_EDGE) end)
+				if okl and comp then pcall(function() se.comp = comp end) end
+			end
+			redges[i] = se
+		else
+			redges[i] = segmentFrom(s, "removedSegments[" .. i .. "]")
+		end
+	end
+	if stage >= 2 then sp.addedNodes = nodes end
+	if stage >= 3 then sp.addedSegments = edges end
+	if stage >= 4 then sp.removedNodes = rnodes end
+	if stage >= 5 then sp.removedSegments = redges end
 	for _, k in ipairs({ "new2oldSegments", "old2newSegments", "new2oldNodes", "old2newNodes" }) do
-		local mm = idMap(st[k])
+		local mm = stage >= 6 and idMap(st[k])
 		if mm then
 			local okm, errm = pcall(function() sp[k] = mm end)
 			if not okm then C.errors[#C.errors + 1] = k .. ": " .. tostring(errm):sub(1, 100) end

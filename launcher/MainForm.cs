@@ -764,6 +764,20 @@ namespace MPFever
                     lock (resyncWaiting) resyncWaiting.Remove(m.From);
                     break;
 
+                case "replay_failed":
+                    {
+                        // a game could not reproduce a build of another player: the games differ for sure, no need to wait
+                        // for the next checkpoints (and for the long cooldown) before reloading the host's game
+                        Log.W(T($"{m.From} : une construction n'a pas pu être reproduite {m.Payload}", $"{m.From}: a build could not be reproduced {m.Payload}"));
+                        int others; lock (players) others = players.Count(p => p != hostName);
+                        if (started && !resyncing && !autotest && others > 0 && Now - lastResync > 15)
+                        {
+                            resyncing = true;
+                            new Thread(() => { Thread.Sleep(1500); Resync(T("construction non reproduite", "build not reproduced")); }) { IsBackground = true, Name = "Resync" }.Start();
+                        }
+                        break;
+                    }
+
                 case "save_done":
                     saveDone = LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>();
                     Log.W(T($"{m.From} : sauvegarde de resynchronisation terminée {m.Payload}", $"{m.From}: resynchronisation save done {m.Payload}"));
