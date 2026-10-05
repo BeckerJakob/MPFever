@@ -1222,6 +1222,18 @@ local function replayNative(a, formIndex)
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " shape: +nodes " .. #(st.addedNodes or {}) .. " -nodes " .. #(st.removedNodes or {})
 				.. " +segments " .. #(st.addedSegments or {}) .. " -segments " .. #(st.removedSegments or {}) .. " stops " .. #(st.edgeObjectsToAdd or {})
 				.. " +constructions " .. #(m.toAdd or {}) .. " -constructions " .. #(m.toRemove or {}))
+			-- what exactly is built (for bug reports: station models, underground segments, heights)
+			local names, zmin, zmax, kinds = {}, nil, nil, {}
+			for _, ce in ipairs(m.toAdd or {}) do names[#names + 1] = tostring(ce.fileName) end
+			for _, nd in ipairs(st.addedNodes or {}) do
+				local z = nd.comp and nd.comp.position and nd.comp.position.z
+				if type(z) == "number" then zmin = math.min(zmin or z, z) zmax = math.max(zmax or z, z) end
+			end
+			for _, sg in ipairs(st.addedSegments or {}) do
+				kinds[#kinds + 1] = tostring(sg.comp and sg.comp.type) .. "/" .. tostring(sg.comp and sg.comp.typeIndex)
+			end
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " detail: constructions {" .. table.concat(names, ", ") .. "} node heights " ..
+				tostring(zmin) .. ".." .. tostring(zmax) .. " segment type/index {" .. table.concat(kinds, ", ") .. "}")
 		end)
 		local probe = C.deser(C.ser(a.args))
 		local missing = R.translateIn(probe, G.bind)
