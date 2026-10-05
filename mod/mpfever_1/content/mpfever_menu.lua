@@ -123,7 +123,7 @@ local function setup()
 	end
 	local function button(label, onClick, enabled, class, width)
 		return builtin.Button{
-			meta = { enabled = enabled ~= false },
+			meta = { class = "secondary", enabled = enabled ~= false },   -- game style: outlined button
 			content = text(label, class or "font-scale-title-4", width),
 			onClick = onClick,
 		}
