@@ -117,16 +117,18 @@ local function setup()
 	local V = builtin.type.Orientation.Vertical
 	local H = builtin.type.Orientation.Horizontal
 
-	local function text(s, class)
-		return builtin.TextView{ meta = { class = class or "font-scale-body" }, text = s }
+	local WIDTH = 760   -- width of the MPFever window's content
+	local function text(s, class, width)
+		return builtin.TextView{ meta = { class = class or "font-scale-title-4" }, text = s, width = width }
 	end
-	local function button(label, onClick, enabled, class)
+	local function button(label, onClick, enabled, class, width)
 		return builtin.Button{
-			meta = { class = class, enabled = enabled ~= false },
-			content = text(label),
+			meta = { enabled = enabled ~= false },
+			content = text(label, class or "font-scale-title-4", width),
 			onClick = onClick,
 		}
 	end
+	local function gap() return text(" ", "font-scale-body") end
 	local function box(orientation, children, class)
 		return builtin.Component{
 			meta = { class = class },
@@ -149,19 +151,23 @@ local function setup()
 		local busy = st.phase ~= nil and st.phase ~= "" and st.phase ~= "idle" and st.phase ~= "error"
 		local rows = {}
 
+		rows[#rows + 1] = text(T("Jouer à plusieurs à Transport Fever 3", "Play Transport Fever 3 together"), "font-scale-title-2", WIDTH)
+		rows[#rows + 1] = gap()
 		rows[#rows + 1] = box(H, {
-			text(T("Pseudo : ", "Player name: ")),
+			text(T("Pseudo :  ", "Player name:  ")),
 			builtin.TextInputField{
-				meta = { class = "font-scale-body" },
+				meta = { class = "font-scale-title-4" },
 				placeholderText = T("Votre pseudo", "Your name"),
 				value = name:old(),
 				onTyping = function(v) name:set(v) end,
 			},
 		})
+		rows[#rows + 1] = gap()
 		rows[#rows + 1] = box(H, {
-			button(T("Héberger une partie", "Host a game"), function() tab:set("host") end, not busy),
-			button(T("Rejoindre une partie", "Join a game"), function() tab:set("join") end, not busy),
+			button((tab:old() == "host" and "> " or "") .. T("Héberger une partie", "Host a game"), function() tab:set("host") end, not busy, "font-scale-title-3", WIDTH / 2 - 10),
+			button((tab:old() == "join" and "> " or "") .. T("Rejoindre une partie", "Join a game"), function() tab:set("join") end, not busy, "font-scale-title-3", WIDTH / 2 - 10),
 		})
+		rows[#rows + 1] = gap()
 
 		if tab:old() == "host" then
 			rows[#rows + 1] = text(T("Choisissez la sauvegarde à partager :", "Choose the savegame to share:"))
@@ -169,41 +175,44 @@ local function setup()
 			for i, s in ipairs(saves:old()) do
 				if i > 12 then break end
 				local isSel = selected:old() == s.saveName
-				list[#list + 1] = button((isSel and "> " or "") .. s.saveName, function() selected:set(s.saveName) end, not busy)
+				list[#list + 1] = button((isSel and ">  " or "    ") .. s.saveName .. (s.timestamp and ("   (" .. os.date("%d/%m/%Y %H:%M", s.timestamp) .. ")") or ""), function() selected:set(s.saveName) end, not busy, nil, WIDTH)
 			end
 			if #list == 0 then list[1] = text(T("Aucune sauvegarde trouvée.", "No savegame found.")) end
 			rows[#rows + 1] = box(V, list)
-			rows[#rows + 1] = button(T("Héberger", "Host"), function()
+			rows[#rows + 1] = gap()
+			rows[#rows + 1] = button(T("Héberger cette partie", "Host this game"), function()
 				local sel = selected:old()
 				if not sel then return end
 				request("host", sel, name:old())   -- MPFever.exe opens the session, then has the savegame loaded
-			end, selected:old() ~= nil and not busy)
+			end, selected:old() ~= nil and not busy, "font-scale-title-3", WIDTH)
 		else
 			rows[#rows + 1] = box(H, {
 				text(T("Adresse de l'hôte : ", "Host address: ")),
 				builtin.TextInputField{
-					meta = { class = "font-scale-body" },
+					meta = { class = "font-scale-title-4" },
 					placeholderText = "1.2.3.4:28090",
 					value = addr:old(),
 					onTyping = function(v) addr:set(v) end,
 				},
 			})
+			rows[#rows + 1] = gap()
 			rows[#rows + 1] = button(T("Rejoindre", "Join"), function()
 				if addr:old() == "" then return end
 				request("join", addr:old(), name:old())
-			end, addr:old() ~= "" and not busy)
+			end, addr:old() ~= "" and not busy, "font-scale-title-3", WIDTH)
 		end
+		rows[#rows + 1] = gap()
 
-		if st.invite == "1" then rows[#rows + 1] = button(T("Inviter des amis Steam", "Invite Steam friends"), function() request("invite") end) end
+		if st.invite == "1" then rows[#rows + 1] = button(T("Inviter des amis Steam", "Invite Steam friends"), function() request("invite") end, true, "font-scale-title-3", WIDTH) end
 		if busy and st.phase ~= "hosting" and st.phase ~= "ingame" then rows[#rows + 1] = button(T("Annuler", "Cancel"), function() request("cancel") end) end
-		if st.text and st.text ~= "" then rows[#rows + 1] = text(st.text) end
-		if st.players and st.players ~= "" then rows[#rows + 1] = text(T("Joueurs : ", "Players: ") .. st.players) end
+		if st.text and st.text ~= "" then rows[#rows + 1] = text(st.text, nil, WIDTH) end
+		if st.players and st.players ~= "" then rows[#rows + 1] = text(T("Joueurs : ", "Players: ") .. st.players, nil, WIDTH) end
 
 		return builtin.Window{
 			title = "MPFever – " .. T("Multijoueur", "Multiplayer"),
 			id = "window.mpfever",
 			initialX = 0.5,
-			initialY = 0.45,
+			initialY = 0.5,
 			movable = true,
 			closable = true,
 			onClose = wp.onClose,
@@ -224,7 +233,7 @@ local function setup()
 		return builtin.FloatingLayout{
 			children = {
 				builtin.FloatingLayoutChild{ h = -1, v = -1, item = builtin.Component{ mouseTransparent = true, layout = builtin.BoxLayout{ children = { _react.originalRecipeFn[mainId](p) } } } },
-				builtin.FloatingLayoutChild{ h = 0.5, v = 0.93, item = button(T("Multijoueur (MPFever)", "Multiplayer (MPFever)"), open) },
+				builtin.FloatingLayoutChild{ h = 0.02, v = 0.5, item = button(T("  MULTIJOUEUR  ", "  MULTIPLAYER  ") .. string.char(10) .. "  MPFever", open, true, "font-scale-title-1") },
 			},
 		}
 	end)
