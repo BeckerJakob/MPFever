@@ -38,8 +38,52 @@ local function loadSave(name)
 	id.path = found.path
 	id.saveGameName = found.saveName
 	id.saveGameNamespace = ns
-	log("loading savegame '" .. name .. "' (" .. tostring(found.path) .. ")")
-	app.loadGame(id, false)
+	-- the savegame's details are read first (asynchronous, see update): MPFever is added to its mods if missing,
+	-- as the game's own load screen does when the player changes the mods of a savegame
+	local ok, async = pcall(app.getSavegameInfo, id)
+	if ok and async then
+		S.pending = { id = id, async = async, name = name, since = S.frames }
+		log("reading savegame '" .. name .. "' (" .. tostring(found.path) .. ")")
+	else
+		log("loading savegame '" .. name .. "' (details unavailable: " .. tostring(async) .. ")")
+		app.loadGame(id, false)
+	end
+end
+
+local MOD_ID = "mpfever_1"
+
+local function loadPending()
+	local p = S.pending
+	local ok, done = pcall(function() return p.async:isCompleted() end)
+	if ok and not done and S.frames - p.since < 600 then return end
+	S.pending = nil
+	local info
+	if ok and done then
+		local okg, data = pcall(function() return p.async:get() end)
+		if okg and data and data.info then info = data.info end
+	end
+	if not info then
+		log("loading savegame '" .. p.name .. "' (details unavailable)")
+		app.loadGame(p.id, false)
+		return
+	end
+	local details = api.type.SaveGameDetails.new(info)
+	local has = false
+	local mods = {}
+	for _, m in ipairs(info.mods or {}) do
+		mods[#mods + 1] = m
+		if m.name == MOD_ID then has = true end
+	end
+	if not has then
+		local m = api.type.ModId.new()
+		m.name = MOD_ID
+		mods[#mods + 1] = m
+		details.mods = mods
+		log("loading savegame '" .. p.name .. "' with MPFever added to its mods")
+	else
+		log("loading savegame '" .. p.name .. "'")
+	end
+	app.loadGame(p.id, false, details)
 end
 
 -- a resynchronisation load is pending (written by the mod just before it loads the host's savegame)
@@ -108,6 +152,10 @@ function data()
 		update = function()
 			S.frames = S.frames + 1
 			if S.frames % 30 ~= 0 then return end
+			if S.pending then
+				local ok, err = pcall(loadPending)
+				if not ok then log("load failed: " .. tostring(err)) S.pending = nil end
+			end
 			if S.requested and not S.readyStarted and startWhenReady() then
 				S.readyStarted = true
 				log("game loaded, starting it")

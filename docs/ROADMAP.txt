@@ -15,7 +15,7 @@ it is stable enough.
 
 0.2 - Stability and easier start
   [x] Automatic transfer of the host's savegame when joining (0.2.0)
-  [ ] Start from any savegame, mod added automatically
+  [x] Start from any savegame, mod added automatically (0.2.0)
   [x] Fix the slow simulation drift without limiting the processor (0.1.1)
   [ ] Reconnect after a lost connection
   [ ] Tests and fixes for 3 to 8 players

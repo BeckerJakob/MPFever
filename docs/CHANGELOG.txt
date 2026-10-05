@@ -11,6 +11,8 @@ MPFever - Changelog
   - Steam invitations: the host can invite friends from the MPFever window, and
     friends can use "Join game" in their Steam friends list. A friend whose game is
     closed: Steam starts it and MPFever joins the host by itself.
+  - Any savegame can be hosted, even one created without MPFever: the mod is added
+    to it automatically when it is loaded for a multiplayer game.
   - The old launcher window stays available with MPFever.exe --dev.
 
 0.1.1-experimental - synchronisation fixes

@@ -32,18 +32,9 @@ solo game: the mod does nothing.
 
 2. THE SAVEGAME (host)
 ----------------------
-The host plays one of their own savegames; the other players receive it
-automatically when they join (no file to send).
-
-The savegame must include the MPFever mod. New game (recommended):
-1. Start MPFever.exe once (step 1), then close the game and MPFever.
-2. Start Transport Fever 3 normally from Steam and create a new game as usual.
-   "MPFever Multiplayer" is already selected in the mods of the new game.
-3. Save it (for example "coop1"), then quit the game.
-
-Existing savegame: a savegame created without the mod does not contain it. If the
-game's load screen lets you change the mods of a savegame, add "MPFever Multiplayer"
-there and save again; otherwise start a new game for now.
+The host plays any of their own savegames, even one created without MPFever: the
+mod is added to it automatically when it is loaded for a multiplayer game. The other
+players receive the host's game automatically when they join (no file to send).
 
 
 3. NETWORK (host)
