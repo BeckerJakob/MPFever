@@ -4,7 +4,7 @@ MPFever - Roadmap
 The order may change with your feedback. Versions are not dated: each one comes when
 it is stable enough.
 
-0.1 - Experimental co-op (this version)
+0.1 - Experimental co-op
   [x] Cooperative play in one shared company, connection by IP address
   [x] Synchronised construction tools: roads, tracks, joins, upgrades, stops (also on
       tram tracks), stations, depots, buildings, bulldozer
@@ -13,7 +13,7 @@ it is stable enough.
       automatic resynchronisation from the host's savegame
   [x] Built into the game: no extra button in the game interface
 
-0.2 - Stability and easier start
+0.2 - Stability and easier start (this version: 0.2.5)
   [x] Automatic transfer of the host's savegame when joining (0.2.0)
   [x] Start from any savegame, mod added automatically (0.2.1)
   [x] Fix the slow simulation drift without limiting the processor (0.1.1)

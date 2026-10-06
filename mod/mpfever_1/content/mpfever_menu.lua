@@ -118,6 +118,7 @@ local function setup()
 	local H = builtin.type.Orientation.Horizontal
 
 	local WIDTH = 760   -- width of the MPFever window's content
+	local autoClosed = false
 	local function text(s, class, width)
 		return builtin.TextView{ meta = { class = class or "font-scale-title-4" }, text = s, width = width }
 	end
@@ -145,7 +146,23 @@ local function setup()
 		local addr = react.useState(st0.addr or "")
 		local state = react.useState(st0)
 		-- (the host's savegame, once received, is loaded by the application script mpfever_auto.lua)
-		react.onStepTimer(function() state:set(readState()) end, 0.5)
+		react.onStepTimer(function()
+			local s = readState()
+			state:set(s)
+			-- the game is about to load (the host's own, or the host's game received by a player who joins) or is loaded: the
+			-- window has done its job and goes away. Left open it stayed over the game as a leftover whose close button no
+			-- longer answered, so it is closed before the load starts.
+			if s.phase == "hosting" or s.phase == "loading" or s.phase == "ingame" then
+				if not autoClosed then
+					autoClosed = true
+					log("phase " .. tostring(s.phase) .. ": closing the MPFever window")
+					local ok, err = pcall(wp.onClose)
+					if not ok then log("closing the window failed: " .. tostring(err)) end
+				end
+			else
+				autoClosed = false
+			end
+		end, 0.5)
 
 		local st = state:old()
 		local busy = st.phase ~= nil and st.phase ~= "" and st.phase ~= "idle" and st.phase ~= "error"

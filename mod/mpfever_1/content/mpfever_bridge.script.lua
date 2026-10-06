@@ -180,6 +180,20 @@ local function simHash()
 		return acc.balance .. "/" .. acc.loan
 	end)
 	parts.money = okm and money or "?"
+	-- debugging (MPFEVER_CONDUMP=1): every construction at each checkpoint, to find the first action that differs
+	if os.getenv("MPFEVER_CONDUMP") then
+		pcall(function()
+			local lines = {}
+			for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
+				local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+				local pp = c and c.transf and R.matPos(c.transf)
+				if pp then lines[#lines + 1] = string.format("%s %.1f,%.1f #%d", tostring(c.fileName):match("[^/]+$"), pp.x, pp.y, e) end
+			end
+			table.sort(lines)
+			local f = C.IO.open(C.DIR .. BS .. "con_" .. tostring(parts.time) .. ".txt", "wb")
+			if f then f:write(table.concat(lines, NL) .. NL); f:close() end
+		end)
+	end
 	return parts
 end
 
@@ -764,6 +778,19 @@ local function handleEvent(userParams, state, src, id, name, param)
 	if not C.ACTIVE then return end
 	if id == "apply_command" and name == "onPostBuildProposal" then
 		log("engine: post build t=" .. tostring(gameTime()))
+		if os.getenv("MPFEVER_CONDUMP") then
+			pcall(function()
+				local lines = {}
+				for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
+					local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+					local pp = c and c.transf and R.matPos(c.transf)
+					if pp then lines[#lines + 1] = string.format("%s %.1f,%.1f #%d", tostring(c.fileName):match("[^/]+$"), pp.x, pp.y, e) end
+				end
+				table.sort(lines)
+				local f = C.IO.open(C.DIR .. BS .. "conb_" .. tostring(gameTime()) .. ".txt", "wb")
+				if f then f:write(table.concat(lines, NL) .. NL); f:close() end
+			end)
+		end
 		local ok, err = pcall(enrichAfterBuild, state, param)
 		if not ok then log("onPostBuildProposal failed: " .. tostring(err)) end
 		return
@@ -958,7 +985,18 @@ end
 -- reached their time
 G.nativeQueue = {}
 local nativeReceived
+-- how far ahead of this game an announced action still is when it arrives (steps): the margin the stamp distance leaves
+local function logMargin(kind, at)
+	local ok, now = pcall(gameTime)
+	if ok and type(at) == "number" then
+		local m = (at - now) / STEP
+		G.minMargin = math.min(G.minMargin or 99, m)
+		log("MARGIN " .. kind .. " " .. m .. " steps (smallest so far " .. G.minMargin .. ", stamp distance " .. tostring(G.ahead) .. ", speed " .. tostring(G.session.speed) .. ")")
+	end
+end
+
 H.act = function(from, p)
+	logMargin(p.native and "act(native)" or "act", p.at)
 	if p.native then
 		G.nativeQueue[#G.nativeQueue + 1] = p
 		if nativeReceived then pcall(nativeReceived, p) end
@@ -969,12 +1007,35 @@ end
 
 -- Replays of other players' builds: the engine applies a command a frame later (verdict in the callback). Until it
 -- has, this game stays where it is (nativeHoldAt): resuming at once would let it run steps before the build lands.
+-- The dust cloud of a construction going up is an effect of the interface, not of the simulation: only the game whose
+-- tool issued the build shows it. The games that replay the build show it too.
+local function buildEffects(res, success)
+	if not success then return end
+	local ok, err = pcall(function()
+		local P = res.proposal
+		if P == nil then return end
+		local n = #P.toAdd
+		for k = 1, math.min(n, 4) do
+			local ce = P.toAdd[k]
+			-- a box around the construction (its real size is not read: a puff the size of a small building)
+			api.gui.rendering.spawnDust(api.type.Vec3f.new(-10, -10, 0), api.type.Vec3f.new(10, 10, 6), ce.transf)
+		end
+		G.dustCount = (G.dustCount or 0) + n
+		if n > 0 and G.dustCount <= 8 then log("build effects: dust shown for " .. n .. " replayed construction(s)") end
+	end)
+	if not ok and not G.dustFailed then
+		G.dustFailed = true
+		log("build effects: no dust for replayed builds (" .. tostring(err):sub(1, 160) .. ")")
+	end
+end
+
 local function replaySend(cmd, cb)
 	G.replayOut = (G.replayOut or 0) + 1
 	G.replaySince = G.frames
 	O.sendCommand(cmd, function(...)
 		G.replayOut = math.max(0, (G.replayOut or 1) - 1)
 		G.replayQuiet = G.frames + 3   -- room for a follow-up command (next segment, next form)
+		pcall(buildEffects, ...)
 		if cb then return cb(...) end
 	end)
 end
@@ -1000,22 +1061,28 @@ local function upgradePlan(margs)
 	-- constructions: only town buildings the engine moved for the new street (nobody's, -1); every game's own
 	-- replaceSegment moves them the same way (a rebuilt proposal could not make them town buildings again)
 	local tAdd, tRem = margs[1].toAdd or {}, margs[1].toRemove or {}
-	if #tAdd ~= #tRem then return nil end
-	for _, ce in ipairs(tAdd) do
-		if ce.playerEntity ~= -1 then return nil end
-	end
+	-- buildings moved for the new street: the engine picks their new places at random, so every game would put them
+	-- elsewhere (the town then grows differently): they are rebuilt exactly as the originator's engine placed them
+	if #tAdd > 0 or #tRem > 0 then return nil end
 	local added, removed = st.addedSegments or {}, st.removedSegments or {}
 	if #added == 0 or #added ~= #removed then return nil end
 	local plan = {}
 	for _, ad in ipairs(added) do
 		local c = ad.comp or {}
-		local match = nil
+		local match, decorations = nil, nil
+		local customLanes = C.customLanes(ad)
 		for _, rm in ipairs(removed) do
 			local rc = rm.comp or {}
-			if (rc.node0 == c.node0 and rc.node1 == c.node1) or (rc.node0 == c.node1 and rc.node1 == c.node0) then match = rm.entity end
+			if (rc.node0 == c.node0 and rc.node1 == c.node1) or (rc.node0 == c.node1 and rc.node1 == c.node0) then
+				match = rm.entity
+				-- more than a new template (a bridge, a different track...): replaceSegment would not make it
+				if c.type ~= rc.type or c.typeIndex ~= rc.typeIndex or c.roadType ~= rc.roadType or ad.type ~= rm.type then return nil end
+				-- (the decorations, a noise barrier for instance, are put on the engine's upgrade proposal below)
+				if C.ser(c.edgeDecorations or {}) ~= C.ser(rc.edgeDecorations or {}) then decorations = c.edgeDecorations or {} end
+			end
 		end
 		if type(match) ~= "number" or match < 0 then return nil end
-		plan[#plan + 1] = { edge = match, template = c.roadTemplate }
+		plan[#plan + 1] = { edge = match, template = c.roadTemplate, decorations = decorations, lanes = customLanes, n0 = c.node0 }
 	end
 	return plan
 end
@@ -1028,6 +1095,33 @@ local function replayUpgrade(a, plan, i)
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " upgrade of " .. tostring(step.edge) .. ": no proposal " .. tostring(P))
 		return replayUpgrade(a, plan, i + 1)
 	end
+	if step.decorations or step.lanes then
+		-- the engine's upgrade proposal with what the template does not give: the originator's decorations (noise
+		-- barrier...) and lanes (tram tracks on a road) on the new segment
+		local okd, errd = pcall(function()
+			local sp = P.proposal
+			local list = sp.addedSegments
+			local seg = list[1]
+			local cmp = seg.comp
+			if step.decorations then
+				-- a decoration has a side (left of the segment's direction): when this game's segment runs the other way
+				-- round than the originator's, the side is the opposite one
+				local deco = C.plain(step.decorations)
+				local be = api.engine.getComponent(step.edge, api.type.ComponentType.BASE_EDGE)
+				if be and type(step.n0) == "number" and be.node0 ~= step.n0 then
+					for _, d in ipairs(deco) do if type(d) == "table" then d[2] = not d[2] end end
+					log("NATIVE REPLAY " .. tostring(a.uid) .. " segment " .. step.edge .. " runs the other way round: decoration sides swapped")
+				end
+				cmp.edgeDecorations = deco
+			end
+			if step.lanes then cmp.laneConfigs = C.rebuildLanes(step.lanes) end
+			seg.comp = cmp
+			list[1] = seg
+			sp.addedSegments = list
+			P.proposal = sp
+		end)
+		if not okd then log("NATIVE REPLAY " .. tostring(a.uid) .. " upgrade of " .. tostring(step.edge) .. ": decorations/lanes not applied (" .. shortErr(errd) .. ")") end
+	end
 	local ctx = api.type.Context.new()
 	ctx.checkTerrainAlignment = true
 	ctx.cleanupStreetGraph = true
@@ -1039,6 +1133,15 @@ local function replayUpgrade(a, plan, i)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " upgrade of segment " .. step.edge .. " to " .. tostring(step.template) .. ": " .. (success and "BUILT" or ("refused " .. why)))
+		pcall(function()
+			local at = {}
+			for k = 1, #res.proposal.toAdd do
+				local ce = res.proposal.toAdd[k]
+				local t = ce.transf
+				at[#at + 1] = tostring(ce.fileName):match("[^/]+$") .. "@" .. string.format("%.1f,%.1f", t[13] or 0, t[14] or 0)
+			end
+			if #at > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " engine's own constructions: " .. table.concat(at, " ") .. "; removed " .. #res.proposal.toRemove) end
+		end)
 		G.waits[#G.waits + 1] = { at = G.frames + 1, fn = function() replayUpgrade(a, plan, i + 1) end }
 	end)
 end
@@ -1124,17 +1227,18 @@ local function stopPlan(margs)
 	for k, o in ipairs((rm.comp or {}).objects or {}) do
 		if type(o) == "table" and gone[o[1]] then removeIdx[k] = true end
 	end
-	return { E = E, seg = ad, objs = objs, removeIdx = removeIdx, nodeConfigs = st.nodeConfigsToAdd or {} }
+	return { E = E, seg = ad, objs = objs, removeIdx = removeIdx, nodeConfigs = st.nodeConfigsToAdd or {}, segType = rm.type }
 end
 
-local function replayStop(a, plan)
+local function replayStop(a, plan, variant)
+	variant = variant or 1
 	local c = api.engine.getComponent(plan.E, api.type.ComponentType.BASE_EDGE)
 	if not c then log("NATIVE REPLAY " .. tostring(a.uid) .. ": stop segment missing"); return end
 	local sp = api.type.SimpleProposal.new()
 	local ssp = sp.streetProposal
 	local e = api.type.SegmentAndEntity.new()
 	e.entity = -1
-	e.type = 0
+	e.type = (type(plan.segType) == "number") and plan.segType or 0   -- 1: a track (a signal)
 	local cc = e.comp
 	local sc = plan.seg.comp or {}
 	cc.node0 = c.node0; cc.node1 = c.node1
@@ -1158,7 +1262,8 @@ local function replayStop(a, plan)
 		if plan.removeIdx and plan.removeIdx[i] then removeIds[#removeIds + 1] = c.objects[i][1]
 		else list[#list + 1] = { c.objects[i][1], c.objects[i][2] } end
 	end
-	for k, o in ipairs(plan.objs) do list[#list + 1] = { -400000000 - (k - 1), o.left and 0 or 1 } end
+	-- the kind of each new object on the segment: a stop on the left (0) or the right (1), or a signal (2)
+	for k, o in ipairs(plan.objs) do list[#list + 1] = { -400000000 - (k - 1), (o.category == 2) and 2 or (o.left and 0 or 1) } end
 	cc.objects = list
 	e.comp = cc
 	local se = e.streetEdge
@@ -1172,7 +1277,8 @@ local function replayStop(a, plan)
 		eo.param = o.param or 0.5
 		eo.oneWay = o.oneWay == true
 		eo.left = o.left == true
-		eo.model = (o.model:gsub("^::/", ""))
+		-- (variant 2, for what the stop tool does not place: the model name as the capture has it)
+		eo.model = (variant == 2) and o.model or (o.model:gsub("^::/", ""))
 		eo.playerEntity = api.engine.util.getPlayer()
 		pcall(function() eo.name = o.name or "" end)
 		eos[k] = eo
@@ -1190,7 +1296,8 @@ local function replayStop(a, plan)
 	sp.streetProposal = ssp
 	local okf, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, sContext(), false, true) end)
 	if not okf or not cmd then
-		log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: factory " .. shortErr(cmd))
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: factory (variant " .. variant .. ") " .. shortErr(cmd))
+		if variant < 2 then return replayStop(a, plan, variant + 1) end
 		return
 	end
 	local function stopCount()
@@ -1491,6 +1598,14 @@ local function replayNative(a, formIndex)
 			for _, sg in ipairs(st.addedSegments or {}) do
 				kinds[#kinds + 1] = tostring(sg.comp and sg.comp.type) .. "/" .. tostring(sg.comp and sg.comp.typeIndex)
 			end
+			do
+				local at = {}
+				for _, ce in ipairs(m.toAdd or {}) do
+					local t = ce.transf
+					at[#at + 1] = tostring(ce.fileName):match("[^/]+$") .. "@" .. string.format("%.1f,%.1f", t and t[13] or 0, t and t[14] or 0)
+				end
+				if #at > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " originator's constructions: " .. table.concat(at, " ") .. "; removed " .. #(m.toRemove or {})) end
+			end
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " detail: constructions {" .. table.concat(names, ", ") .. "} node heights " ..
 				tostring(zmin) .. ".." .. tostring(zmax) .. " segment type/index {" .. table.concat(kinds, ", ") .. "}")
 		end)
@@ -1633,6 +1748,7 @@ end
 
 H.nat_pending = function(from, p)
 	if p.origin == G.me then return end
+	logMargin("nat_pending", p.at)
 	G.natWait[#G.natWait + 1] = { origin = p.origin, id = p.id, at = p.at, since = G.frames }
 	log("native build of " .. tostring(p.origin) .. " announced for t=" .. tostring(p.at) .. ": holding there")
 end
@@ -1662,7 +1778,36 @@ local function deferredSend(cmd, cb)
 	send("nat_pending", { origin = G.me, at = at, id = id })
 end
 
+-- A released build the engine refused is never shipped: the others, who hold for it, are told at once (they would
+-- wait half a minute), and its id must not be taken by the next build that is shipped.
+local function cancelNativeBuild(entry, why)
+	send("nat_cancel", { origin = G.me, id = entry.id })
+	log("native build " .. tostring(entry.id) .. " produced nothing (" .. why .. "): the others stop holding for it")
+end
+
+local function expireShipIds()
+	local keep = {}
+	for _, e in ipairs(G.natShipIds or {}) do
+		if G.frames - e.frame > 150 then cancelNativeBuild(e, "refused or not built") else keep[#keep + 1] = e end
+	end
+	G.natShipIds = keep
+end
+
+H.nat_cancel = function(from, p)
+	if p.origin == G.me then return end
+	local keep = {}
+	for _, w in ipairs(G.natWait) do
+		if w.origin == p.origin and w.id == p.id and not w.arrived then
+			log("native build of " .. tostring(w.origin) .. " for t=" .. tostring(w.at) .. " cancelled by its originator: no longer holding")
+		else
+			keep[#keep + 1] = w
+		end
+	end
+	G.natWait = keep
+end
+
 local function runNativeRelease()
+	expireShipIds()
 	if #G.natRelease == 0 then return end
 	local now = gameTime()
 	local keep = {}
@@ -1670,7 +1815,7 @@ local function runNativeRelease()
 		if now >= r.at and gameSpeed() == 0 then
 			G.natReleased = G.natReleased + 1
 			G.natShipIds = G.natShipIds or {}
-			G.natShipIds[#G.natShipIds + 1] = r.id
+			G.natShipIds[#G.natShipIds + 1] = { id = r.id, at = now, frame = G.frames }
 			if r.fn then
 				-- a scripted build (autotest) deferred like the tools' ones: sent now, at its announced time
 				G.natReleased = G.natReleased - 1
@@ -1902,7 +2047,17 @@ local function shipNativeBuilds(st)
 			end
 			local a = { fn = o.fn, args = o.args, at = o.at, origin = G.me, oseq = G.oseq, uid = G.me .. ":" .. G.oseq,
 				native = true, paused = o.paused }
-			if G.natShipIds and #G.natShipIds > 0 then a.natId = table.remove(G.natShipIds, 1) end
+			if G.natShipIds and #G.natShipIds > 0 then
+				-- the released build that was built at this time; the ones released before it and not shipped were refused
+				local k = nil
+				for i, e in ipairs(G.natShipIds) do if e.at == o.at then k = i; break end end
+				k = k or 1
+				for i = 1, k - 1 do cancelNativeBuild(G.natShipIds[i], "refused before a later build") end
+				a.natId = G.natShipIds[k].id
+				local rest = {}
+				for i = k + 1, #G.natShipIds do rest[#rest + 1] = G.natShipIds[i] end
+				G.natShipIds = rest
+			end
 			send("act", a)
 			log("native build shipped " .. a.uid .. " (built here at t=" .. o.at .. ", the other games build it at the same time)")
 		end
@@ -3054,6 +3209,19 @@ local function runReplayFile(p)
 			if not ok then line = line .. ", replay error " .. tostring(err) end
 			G.waits[#G.waits + 1] = { at = G.frames + 120, fn = function()
 				line = line .. ", after " .. #R.allEdges()
+				local deco, tram, dist5, track0 = 0, 0, 0, 0
+				pcall(function()
+					for _, e in ipairs(R.allEdges()) do
+						local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+						if c and #c.edgeDecorations > 0 then deco = deco + 1 end
+						local hasTram = false
+						pcall(function() for k = 1, #c.laneConfigs do if c.laneConfigs[k].transportModes[5] then hasTram = true end end end)
+						if hasTram then tram = tram + 1 end
+						if c and c.distance and c.distance > 0 then dist5 = dist5 + 1 end
+						if c and c.type == 1 and c.distance == 0 then track0 = track0 + 1 end
+					end
+				end)
+				line = line .. ", edges with decorations " .. deco .. ", with tram lanes " .. tram .. ", with distance " .. dist5 .. ", tracks with distance 0: " .. track0
 				log("REPLAYFILE " .. line)
 				AUTO.results[#AUTO.results + 1] = line
 				nextAct()
@@ -3745,6 +3913,127 @@ H.split = function(from, p)
 	end
 end
 
+-- Road types scenario: every street/track template the game has, applied with the engine's own upgrade proposal (the
+-- tools' native path: captured here, replayed by the other game); the edge hash (template, style, type, decorations)
+-- then shows what a replay loses.
+local function allTemplateNames()
+	local names = {}
+	local rep = api.res.streetTemplateRep
+	local ok, list = pcall(function() return rep.getAll() end)
+	if ok and type(list) == "table" then
+		for _, n in pairs(list) do names[#names + 1] = n end
+	else
+		log("AUTOTEST roadtypes: getAll failed: " .. tostring(list))
+		for i = 0, 400 do
+			local okg, t = pcall(function() return rep.get(i) end)
+			if not okg or t == nil then break end
+			local okn, nm = pcall(function() return rep.getName(i) end)
+			if okn and nm then names[#names + 1] = nm end
+		end
+	end
+	table.sort(names)
+	return names
+end
+
+local function runRoadTypes(p)
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local names = allTemplateNames()
+	log("AUTOTEST roadtypes (" .. C.ROLE .. "): " .. #names .. " templates: " .. table.concat(names, ", "))
+	local streets, tracks = {}, {}
+	for _, e in ipairs(R.allEdges()) do
+		local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+		if c and c.roadTemplate and c.roadTemplate ~= "" and #c.objects == 0 and not c.roadTemplate:find("entrance", 1, true) then
+			local list = (c.type == 0) and streets or tracks
+			list[#list + 1] = { e = e, c = c }
+		end
+	end
+	log("AUTOTEST roadtypes: " .. #streets .. " plain street segments, " .. #tracks .. " plain track segments")
+	local queue = {}
+	for _, t in ipairs(names) do
+		-- (highway_new_small_*: the engine itself hangs applying it as an upgrade of a country road, with or without MPFever)
+		if not t:find("entrance", 1, true) and not t:find("constructions", 1, true) and not t:find("highway_new_small", 1, true) then queue[#queue + 1] = t end
+	end
+	-- MPFEVER_TOWN=1: town streets widened to the largest town templates (the upgrade moves buildings of the town)
+	if os.getenv("MPFEVER_TOWN") then
+		local town = {}
+		for _, e in ipairs(streets) do if e.c.roadTemplate:find("/town/", 1, true) then town[#town + 1] = e end end
+		streets = town
+		queue = {}
+		for _, t in ipairs(names) do
+			if t:find("/town/town_new_large", 1, true) and not t:find("tram", 1, true) and not t:find("bus", 1, true) then queue[#queue + 1] = t end
+		end
+		for _, t in ipairs(names) do
+			if t:find("/town/town_new_medium", 1, true) and not t:find("tram", 1, true) then queue[#queue + 1] = t end
+		end
+		log("AUTOTEST roadtypes (town mode): " .. #streets .. " town segments, templates " .. table.concat(queue, ", "))
+	end
+	local first = (p.offset or 0) + 1
+	local done, step = 0, 0
+	local limit = tonumber(os.getenv("MPFEVER_ROADTYPES") or "") or 10
+	local used = {}
+	local function nextOne()
+		step = step + 1
+		local stride = os.getenv("MPFEVER_TOWN") and 1 or 3
+		local t = queue[((first - 1) + (step - 1) * stride) % math.max(1, #queue) + 1]
+		if done >= limit or step > #queue + 4 + (os.getenv("MPFEVER_TOWN") and 20 or 0) or not t then return autoFinish() end
+		local isTrack = t:find("track", 1, true) ~= nil
+		local pool = isTrack and tracks or streets
+		local pick = nil
+		for k = 1, #pool do
+			local cand = pool[((p.offset or 0) * 31 + step * 53 + k * 7) % #pool + 1]
+			if cand.c.roadTemplate ~= t and not used[cand.e] then pick = cand; break end
+		end
+		if not pick then
+			AUTO.results[#AUTO.results + 1] = t:match("[^/]+$") .. ": no candidate segment"
+			return nextOne()
+		end
+		used[pick.e] = true
+		local okp, P = pcall(function() return api.engine.util.proposal.replaceSegment(pick.e, t) end)
+		if not okp or not P then
+			local line = t:match("[^/]+$") .. ": replaceSegment failed (" .. shortErr(P) .. ")"
+			log("AUTOTEST roadtypes " .. line)
+			AUTO.results[#AUTO.results + 1] = line
+			return nextOne()
+		end
+		local a = nodePosition(pick.c.node0)
+		local okc, errc = pcall(function()
+			local ctx = playerContext()
+			if os.getenv("MPFEVER_TOOLCTX") then
+				-- the flags of the game's own tools (what a replay of an upgrade uses)
+				ctx.checkTerrainAlignment = true
+				ctx.cleanupStreetGraph = true
+				ctx.gatherBuildings = true
+			end
+			deferredSend(api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true), function(res, success)
+				local why = ""
+				if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+				local line = t:match("[^/]+$") .. " on " .. tostring(pick.c.roadTemplate):match("[^/]+$") .. ": " .. (success and "built" or ("refused " .. why))
+				log("AUTOTEST roadtypes " .. line)
+				AUTO.results[#AUTO.results + 1] = line
+				if success then done = done + 1; AUTO.points[#AUTO.points + 1] = a end
+				G.waits[#G.waits + 1] = { at = G.frames + 90, fn = nextOne }
+			end)
+		end)
+		if not okc then
+			log("AUTOTEST roadtypes command failed: " .. shortErr(errc))
+			nextOne()
+		end
+	end
+	nextOne()
+end
+
+H.roadtypes = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	local ok, err = pcall(runRoadTypes, p)
+	if not ok then
+		log("AUTOTEST roadtypes failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "roadtypes error " .. tostring(err)
+		autoFinish()
+	end
+end
+
 H.upgrade = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
 	local ok, err = pcall(runUpgrade, p)
@@ -3830,6 +4119,17 @@ H.area_dump = function(from, p)
 			lines[#lines + 1] = "edge " .. s1 .. " - " .. s2 .. " " .. tostring(c.roadTemplate) .. (#objs > 0 and (" objects " .. table.concat(objs, ";")) or "")
 		end
 	until true end
+	-- every construction (file and rounded position, as the checkpoint hash sees it): what a moved building changes
+	pcall(function()
+		for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
+			local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+			local m = c and c.transf
+			if m then
+				local pp = R.matPos and R.matPos(m)
+				lines[#lines + 1] = string.format("con %s %.1f,%.1f", tostring(c.fileName), pp and pp.x or 0, pp and pp.y or 0)
+			end
+		end
+	end)
 	table.sort(lines)
 	local f = C.IO.open(C.DIR .. BS .. "area.txt", "wb")
 	if f then

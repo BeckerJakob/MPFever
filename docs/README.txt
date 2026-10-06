@@ -1,5 +1,5 @@
 MPFever - Multiplayer for Transport Fever 3
-Version 0.2.1-experimental
+Version 0.2.5-experimental
 ===========================================
 
 MPFever lets several players run the same Transport Fever 3 company together, each one
@@ -10,40 +10,49 @@ backups of the savegames you play with, and please send feedback (see "Reporting
 problem" below).
 
 
-WHAT WORKS IN 0.1
------------------
+WHAT WORKS
+----------
 - Cooperative play: all players manage the SAME company (shared money, vehicles, lines).
+- Start from the game itself: MPFever.exe starts Transport Fever 3, and a
+  "MULTIJOUEUR / MPFever" button in the main menu opens the multiplayer window.
+  - Host: pick one of your savegames (any of them, even one made without MPFever).
+  - Join: type the host's IP address. The host's game is received and loaded
+    automatically (no file to send). Joining a session already running works.
+  - Steam invitations: friends can join from your Steam friends list.
 - Everything a player builds or changes appears in the other games at the same moment:
-  roads and tracks (new roads, joins in the middle of a road, upgrades), bus and tram
-  stops (also on tram tracks without sidewalks), stations, depots, buildings, the
-  bulldozer, vehicle purchases, lines and vehicle assignments, game speed and pause.
+  roads (all road types, with trees and other decorations), tracks, tram tracks laid on
+  roads, rail signals, noise barriers, bus and tram stops, stations, depots (also those
+  built against a street), buildings, the bulldozer, vehicle purchases, lines and
+  vehicle assignments, game speed and pause. The dust cloud of a construction going up
+  is shown on every game.
 - The host is the authority: every 10 seconds the games compare their state (money,
   loans, company, contracts, towns, industries, cargo in buildings and vehicles,
-  vehicles, roads...).
+  vehicles, roads, road decorations...).
   - Money differences are corrected automatically.
   - Any other lasting difference triggers an automatic RESYNCHRONISATION: the game
     pauses, the host's game is saved and sent to every player, everybody reloads it,
     and the game resumes (about 20 seconds).
-- The mod is built into the game: no extra button in the game interface. Everything is
-  driven by the small MPFever.exe window.
-- Direct connection by IP address (host and join).
+  - A build one game cannot reproduce makes the host resynchronise at once.
+- If the connection is lost, the player's MPFever reconnects by itself (for 5 minutes).
+- The mod is built into the game: the only addition to the game interface is the
+  MPFever button in the main menu.
 
 
 KNOWN LIMITATIONS
 -----------------
 - Only cooperative mode (one shared company). Separate companies come later.
-- Every player must load THE SAME savegame file before starting (the host sends their
-  .sav file to the others; see INSTALL.txt). Automatic transfer at join is planned.
-- Joining a session that is already running is not possible yet: everybody connects,
-  loads the save, then the host starts the game.
-- If the games ever differ, the automatic resynchronisation reloads the host's game
-  (about 20 seconds).
-- No Steam invites yet: connection by IP address only (port forwarding or a virtual LAN
-  such as Radmin VPN, ZeroTier or Tailscale).
+- Each build waits about 1 to 2 seconds before it appears: the games apply every
+  construction at the same game time, which needs a safety margin.
+- When a road upgrade moves several town buildings, the town may place one extra
+  building differently on each game; the automatic resynchronisation then corrects it
+  after a few seconds.
 - Tested with 2 players. More players should work but are untested.
+- No player list or chat in the game yet.
 - Windows only. Made for the current Steam version of Transport Fever 3 (build 40408).
   After a game update, the mod still runs but synchronisation may be worse until
   MPFever is updated.
+- Without port forwarding on the host's box, players need a virtual LAN (Radmin VPN,
+  ZeroTier, Tailscale) or Steam invitations will not reach the host.
 
 
 WHAT MPFEVER CHANGES ON YOUR PC

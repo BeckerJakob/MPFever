@@ -1,6 +1,47 @@
 MPFever - Changelog
 ===================
 
+0.2.5-experimental - noise barriers on tracks
+  - A noise barrier on a track built by another player no longer appears in the middle
+    of the track. The tracks rebuilt on the other games had lost their distance from the
+    axis (5 m for the tracks the tool lays), which is where the barrier is placed. The
+    distance is now copied, and the synchronisation check compares it.
+
+0.2.4-experimental - tram on roads, walls, menu
+  - Tram tracks laid on an existing road are now reproduced on the other players'
+    games (the road kept its template, only its lanes change; the other games used to
+    rebuild the lanes from the template and lose the tram).
+  - A noise barrier placed on a track is put on the right side of the track on every
+    game, whichever way each game's segment runs.
+  - The checkpoint compares the decorations (side, model) and the vehicles each lane
+    takes, independently of the segment's direction.
+  - The MPFever window now closes as soon as the game starts to load (host: when
+    hosting starts; player: when the host's game is received). It stayed over the
+    game before, as a leftover that could not be closed.
+
+0.2.3-experimental - road decorations, signals, noise barriers
+  - Rail signals placed on an existing track are now reproduced on the other players'
+    games (they were refused with an engine error).
+  - Noise barriers added to an existing track or road are now reproduced (the other
+    games only received the same track again, without the barrier).
+  - The MPFever window closes by itself once the game is loaded and connected (it used
+    to stay over the game, with a close button that did nothing).
+  - A road built with trees (or any other road decoration) now keeps them on the other
+    players' games. The decorations were not sent, so the road appeared bare.
+  - The synchronisation check now compares road decorations too, so that a difference
+    is detected instead of going unnoticed.
+  - A build that the engine refuses (collision...) no longer makes the other players
+    wait half a minute before their next build: the player who built tells the others
+    at once that nothing is coming.
+  - The checkpoint compares more of every road (style, type, decorations).
+  - The dust cloud of a construction going up is now shown on the other players' games
+    too (it used to appear only for the player who placed the building).
+  - Road upgrades that move town buildings: the buildings are now placed exactly where
+    the player's game put them (the other games used to pick other places).
+  - Known issue: when a road upgrade moves several town buildings, the town may still
+    place one extra building differently on each game. The host's automatic
+    resynchronisation then corrects it after a few seconds.
+
 0.2.1-experimental - constructions on streets, reconnection
   - Depots and stations built against a street (road and tram depots, street stations)
     are now reproduced exactly on the other players' games, entrance included. They

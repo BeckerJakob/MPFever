@@ -368,6 +368,36 @@ function C.templateLanes(roadTemplate)
 	return lanes or nil
 end
 
+-- Which vehicles each lane takes and its direction: lanes of a template and lanes captured on a segment (tables) compare
+-- by this signature. Tram tracks laid on a road change it while the road's template stays the same.
+function C.laneSignature(lanes)
+	local parts = {}
+	local ok = pcall(function()
+		for i = 1, #lanes do
+			local l = lanes[i]
+			local modes = {}
+			for j = 0, 15 do
+				local on = false
+				pcall(function() on = l.transportModes[j] == true end)
+				if on then modes[#modes + 1] = j end
+			end
+			parts[#parts + 1] = tostring(l.forward) .. ":" .. table.concat(modes, ",")
+		end
+	end)
+	return ok and table.concat(parts, "|") or nil
+end
+
+-- the captured lanes of a segment when they are not the lanes of its template (nil: the template's lanes are right)
+function C.customLanes(src)
+	local c = type(src) == "table" and src.comp
+	if type(c) ~= "table" or type(c.laneConfigs) ~= "table" or #c.laneConfigs == 0 then return nil end
+	local tl = C.templateLanes(c.roadTemplate)
+	if not tl then return nil end
+	local a, b = C.laneSignature(c.laneConfigs), C.laneSignature(tl)
+	if a and b and a ~= b then return c.laneConfigs end
+	return nil
+end
+
 -- transportModes reads from index 0 but its writes may be shifted by one (tm[j] = x lands at j-1, tm[0] wraps to the
 -- end): measured once, so that a rebuilt lane keeps its modes (a shifted PERSON flag drops the platform of a stop)
 function C.transportModesWriteShift()
@@ -432,6 +462,14 @@ function C.minimalSegment(s, noOwner, bare)
 	for _, k in ipairs({ "tangent0", "tangent1", "position0", "position1" }) do
 		if c[k] ~= nil then pcall(function() comp[k] = plain(c[k]) end) end
 	end
+	-- the distance of a track from its axis (5 for the tracks the tool lays: a noise barrier is placed at that distance, so a
+	-- track rebuilt with 0 gets its barrier in the middle of the track)
+	if type(c.distance) == "number" and c.distance ~= 0 then pcall(function() comp.distance = c.distance end) end
+	-- the road's decorations (the trees of a "_trees" template...) are not derived from the template
+	if type(c.edgeDecorations) == "table" and #c.edgeDecorations > 0 then
+		local okd, errd = pcall(function() comp.edgeDecorations = plain(c.edgeDecorations) end)
+		if not okd then C.errors[#C.errors + 1] = "edgeDecorations: " .. tostring(errd):sub(1, 100) end
+	end
 	pcall(function() se.comp = comp end)
 	if type(s.streetEdge) == "table" then
 		pcall(function()
@@ -494,6 +532,37 @@ function C.renumberStreet(st)
 		end
 	end
 	return nodeMap, edgeMap
+end
+
+-- The objects (signals, stops) that stay on a segment a build replaces carry the originator's entity ids, which differ from
+-- this game's: they are matched by their rank on the removed segment (the removed segments are already this game's own).
+function C.existingObjectIds(st)
+	local map = {}
+	for _, rm in ipairs(st.removedSegments or st.edgesToRemove or {}) do
+		if type(rm) == "table" and type(rm.entity) == "number" and rm.entity >= 0 and type(rm.comp) == "table" and type(rm.comp.objects) == "table" then
+			local okc, lc = pcall(function() return api.engine.getComponent(rm.entity, api.type.ComponentType.BASE_EDGE) end)
+			if okc and lc then
+				for k, o in ipairs(rm.comp.objects) do
+					local okl, lo = pcall(function() return lc.objects[k][1] end)
+					if okl and type(lo) == "number" and type(o) == "table" and type(o[1]) == "number" then map[o[1]] = lo end
+				end
+			end
+		end
+	end
+	return map
+end
+
+-- the existing objects of a captured added segment, as this game's ({ id, kind } pairs)
+function C.localObjects(src, idMap)
+	local list = {}
+	local objs = type(src) == "table" and type(src.comp) == "table" and src.comp.objects
+	if type(objs) ~= "table" then return list end
+	for _, o in ipairs(objs) do
+		if type(o) == "table" and type(o[1]) == "number" and o[1] >= 0 then
+			list[#list + 1] = { idMap[o[1]] or o[1], o[2] }
+		end
+	end
+	return list
 end
 
 -- Proposal (native, from the construction tools) or SimpleProposal -> SimpleProposal for makeWorldBuildProposalCmd
@@ -569,7 +638,8 @@ function C.rebuildProposal(m, opts)
 		for i, e in ipairs(edges) do
 			local src = (st.edgesToAdd or st.addedSegments)[i]
 			local tmpl = src and src.comp and src.comp.roadTemplate
-			local lanes = C.templateLanes(tmpl)
+			local custom = C.customLanes(src)
+			local lanes = custom and C.rebuildLanes(custom) or C.templateLanes(tmpl)
 			if not lanes and src and src.comp and type(src.comp.laneConfigs) == "table" then lanes = C.rebuildLanes(src.comp.laneConfigs) end
 			if lanes then
 				local c = e.comp
@@ -672,8 +742,12 @@ end
 -- The engine accepts it as is (a SimpleProposal replacing existing segments is refused).
 local function segmentFrom(s, where)
 	local e = rebuild("SegmentAndEntity", s, where)
+	if type(s.comp) == "table" and type(s.comp.distance) == "number" and s.comp.distance ~= 0 then
+		pcall(function() local cd = e.comp; cd.distance = s.comp.distance; e.comp = cd end)
+	end
 	local tmpl = s.comp and s.comp.roadTemplate
-	local lanes = C.templateLanes(tmpl)
+	local custom = C.customLanes(s)
+	local lanes = custom and C.rebuildLanes(custom) or C.templateLanes(tmpl)
 	if not lanes and s.comp and type(s.comp.laneConfigs) == "table" then lanes = C.rebuildLanes(s.comp.laneConfigs) end
 	if lanes then
 		local c = e.comp
@@ -714,12 +788,13 @@ function C.rebuildNativeProposal(m, stage, rm)
 	local P = api.type.Proposal.new()
 	local sp = P.proposal
 	local nodes, edges, rnodes, redges = {}, {}, {}, {}
+	local objIds = C.existingObjectIds(st)
 	for i, n in ipairs(st.addedNodes or {}) do nodes[i] = rebuild("NodeAndEntity", n, "addedNodes[" .. i .. "]") end
 	for i, s in ipairs(st.addedSegments or {}) do
 		local c = s.comp or {}
 		if type(c.objects) == "table" then
 			local keep = {}
-			for _, o in ipairs(c.objects) do if type(o) == "table" and type(o[1]) == "number" and o[1] >= 0 then keep[#keep + 1] = o end end
+			for _, o in ipairs(c.objects) do if type(o) == "table" and type(o[1]) == "number" and o[1] >= 0 then keep[#keep + 1] = { objIds[o[1]] or o[1], o[2] } end end
 			c.objects = keep
 		end
 		edges[i] = segmentFrom(s, "addedSegments[" .. i .. "]")
@@ -767,12 +842,13 @@ function C.rebuildNativeWithConstruction(m, conv, rm)
 	P.toAdd = conList
 	local sp = P.proposal
 	local nodes, edges = {}, {}
+	local objIds = C.existingObjectIds(st)
 	for i, n in ipairs(st.addedNodes or {}) do nodes[i] = rebuild("NodeAndEntity", n, "addedNodes[" .. i .. "]") end
 	for i, sg in ipairs(st.addedSegments or {}) do
 		local c = sg.comp or {}
 		if type(c.objects) == "table" then
 			local keep = {}
-			for _, o in ipairs(c.objects) do if type(o) == "table" and type(o[1]) == "number" and o[1] >= 0 then keep[#keep + 1] = o end end
+			for _, o in ipairs(c.objects) do if type(o) == "table" and type(o[1]) == "number" and o[1] >= 0 then keep[#keep + 1] = { objIds[o[1]] or o[1], o[2] } end end
 			c.objects = keep
 		end
 		edges[i] = segmentFrom(sg, "addedSegments[" .. i .. "]")

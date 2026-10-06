@@ -36,6 +36,8 @@ local function matPos(m)
 	return nil
 end
 
+R.matPos = matPos
+
 local function dist(a, b)
 	if not a or not b then return math.huge end
 	local dx, dy, dz = a.x - b.x, a.y - b.y, (a.z or 0) - (b.z or 0)
@@ -456,8 +458,34 @@ function R.contentHash(hashStr, dumpFn)
 		if not a or not b then return nil end
 		local s1 = r1(a.x) .. "," .. r1(a.y)
 		local s2 = r1(b.x) .. "," .. r1(b.y)
-		if s1 > s2 then s1, s2 = s2, s1 end
-		return s1 .. "-" .. s2 .. tostring(c.roadTemplate)
+		local swapped = false
+		if s1 > s2 then s1, s2 = s2, s1; swapped = true end
+		-- what the road carries beyond its template: decorations (side and model) and which vehicles each lane takes (tram)
+		local deco, lanesig = "", ""
+		pcall(function()
+			local t = {}
+			for k = 1, #c.edgeDecorations do
+				-- (the side is relative to the segment's direction, which may differ between games: the canonical one is used)
+				local left = c.edgeDecorations[k][2] and true or false
+				if swapped then left = not left end
+				t[#t + 1] = tostring(c.edgeDecorations[k][1]) .. (left and "l" or "r")
+			end
+			table.sort(t)
+			deco = table.concat(t, ",")
+		end)
+		pcall(function()
+			local t = {}
+			for k = 1, #c.laneConfigs do
+				local m = 0
+				for j = 0, 15 do if c.laneConfigs[k].transportModes[j] then m = m + 2 ^ j end end
+				t[#t + 1] = m
+			end
+			table.sort(t)
+			lanesig = table.concat(t, ",")
+		end)
+		local okd, nd = pcall(function() return #c.edgeDecorations end)
+		return s1 .. "-" .. s2 .. tostring(c.roadTemplate) .. "/" .. tostring(okd and nd or 0) .. "/" .. tostring(c.roadStyle)
+			.. "/" .. tostring(c.roadType) .. "/" .. tostring(c.type) .. "/" .. tostring(c.typeIndex) .. "/" .. deco .. "/" .. lanesig .. "/d" .. tostring(c.distance)
 	end) end)
 	part("vehicles", function() return count("TRANSPORT_VEHICLE", function(e)
 		local c = comp(e, "MOVE_PATH")

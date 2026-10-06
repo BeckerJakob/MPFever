@@ -40,7 +40,7 @@ namespace MPFever
 
     sealed class MainForm : Form
     {
-        public const string Version = "0.2.1-experimental";
+        public const string Version = "0.2.5-experimental";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -428,6 +428,7 @@ namespace MPFever
             Thread.Sleep(1000);
             if (started) return;
             StartSession();
+            menuPhase = "ingame";
             menuText = T("Partie en cours.", "Game running."); MenuStatus();
         }
 
