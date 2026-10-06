@@ -753,6 +753,96 @@ function C.rebuildNativeProposal(m, stage, rm)
 	return P
 end
 
+-- The native proposal of a construction placed against a street (depot, station), rebuilt in this game from the tool's
+-- capture: the construction itself (an engine-made native object, taken from the engine's own conversion of the same
+-- construction: `conv` is that converted proposal), the street part as the tool made it (the junction node where the
+-- entrance is stretched to the street, the split street), and the removed segments as the engine's own removal
+-- proposal `rm` makes them. Returns the native Proposal.
+function C.rebuildNativeWithConstruction(m, conv, rm)
+	local st = m.proposal
+	if type(st) ~= "table" then error("no street part") end
+	local P = api.type.Proposal.new()
+	local conList = {}
+	conList[1] = conv.toAdd[1]
+	P.toAdd = conList
+	local sp = P.proposal
+	local nodes, edges = {}, {}
+	for i, n in ipairs(st.addedNodes or {}) do nodes[i] = rebuild("NodeAndEntity", n, "addedNodes[" .. i .. "]") end
+	for i, sg in ipairs(st.addedSegments or {}) do
+		local c = sg.comp or {}
+		if type(c.objects) == "table" then
+			local keep = {}
+			for _, o in ipairs(c.objects) do if type(o) == "table" and type(o[1]) == "number" and o[1] >= 0 then keep[#keep + 1] = o end end
+			c.objects = keep
+		end
+		edges[i] = segmentFrom(sg, "addedSegments[" .. i .. "]")
+	end
+	sp.addedNodes = nodes
+	sp.addedSegments = edges
+	if rm then
+		local rsp = rm.proposal
+		local ok1, e1 = pcall(function() sp.removedSegments = rsp.removedSegments end)
+		if not ok1 then C.errors[#C.errors + 1] = "removedSegments: " .. tostring(e1):sub(1, 100) end
+		local ok2, e2 = pcall(function() sp.removedNodes = rsp.removedNodes end)
+		if not ok2 then C.errors[#C.errors + 1] = "removedNodes: " .. tostring(e2):sub(1, 100) end
+	end
+	-- the node configurations (lane connections...) the tool removed: only those this game has (removing one that does not
+	-- exist is an engine assertion), and those it added, with the native ids
+	local cfgRemove = {}
+	for _, n in ipairs(entityList(st.nodeConfigsToRemove)) do
+		local okn, nc = pcall(function() return api.engine.getComponent(n, api.type.ComponentType.BASE_NODE_CONFIG) end)
+		if okn and nc then cfgRemove[#cfgRemove + 1] = n end
+	end
+	if #cfgRemove > 0 then
+		local okc, ec = pcall(function() sp.nodeConfigsToRemove = cfgRemove end)
+		if not okc then C.errors[#C.errors + 1] = "nodeConfigsToRemove: " .. tostring(ec):sub(1, 100) end
+	end
+	if #(st.nodeConfigsToAdd or {}) > 0 then
+		local okc, errc = pcall(function()
+			local cfgs = {}
+			for i, mcfg in ipairs(st.nodeConfigsToAdd) do
+				local o = api.type.BaseNodeLaneConnectionAndEntity.new()
+				o.entity = mcfg.entity
+				local cfg = o.comp
+				local mc = mcfg.comp or {}
+				local lcs = {}
+				for j, l in ipairs(mc.laneConnections or {}) do
+					local lc = api.type.LaneConnection.new()
+					lc.segment0 = l.segment0; lc.lane0 = l.lane0; lc.segment1 = l.segment1; lc.lane1 = l.lane1
+					lc.withRoad = l.withRoad == true; lc.withTram = l.withTram == true
+					lcs[j] = lc
+				end
+				cfg.laneConnections = lcs
+				local cw = {}
+				for j, x in ipairs(mc.crosswalks or {}) do cw[j] = x end
+				cfg.crosswalks = cw
+				pcall(function() cfg.trafficLightPreference = mc.trafficLightPreference end)
+				pcall(function() cfg.doubleSlipSwitch = mc.doubleSlipSwitch == true end)
+				pcall(function() cfg.userModifiedLaneConnections = mc.userModifiedLaneConnections == true end)
+				o.comp = cfg
+				cfgs[i] = o
+			end
+			sp.nodeConfigsToAdd = cfgs
+		end)
+		if not okc then C.errors[#C.errors + 1] = "nodeConfigsToAdd: " .. tostring(errc):sub(1, 120) end
+	end
+	if type(st.frozenNodes) == "table" and #st.frozenNodes > 0 then
+		local fz = {}
+		for i, v in ipairs(st.frozenNodes) do fz[i] = v end
+		local okf, ef = pcall(function() sp.frozenNodes = fz end)
+		if not okf then C.errors[#C.errors + 1] = "frozenNodes: " .. tostring(ef):sub(1, 100) end
+	end
+	for _, k in ipairs({ "new2oldSegments", "old2newSegments", "new2oldNodes", "old2newNodes" }) do
+		local mm = idMap(st[k])
+		if mm then
+			local okm, errm = pcall(function() sp[k] = mm end)
+			if not okm then C.errors[#C.errors + 1] = k .. ": " .. tostring(errm):sub(1, 100) end
+		end
+	end
+	P.proposal = sp
+	return P
+end
+
 function C.proposalHasConstructions(m)
 	return type(m) == "table" and #(m.constructionsToAdd or m.toAdd or {}) > 0
 end

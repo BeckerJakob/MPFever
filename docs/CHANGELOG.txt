@@ -15,6 +15,11 @@ MPFever - Changelog
     to it automatically when it is loaded for a multiplayer game.
   - Lost connection: the player's MPFever reconnects to the host by itself (for 5
     minutes) and receives the host's game again.
+  - Depots and stations built against a street (road and tram depots, street stations)
+    are now reproduced exactly on the other players' games, entrance included. They
+    used to be refused by the engine and only corrected by a resynchronisation.
+    A build that still cannot be reproduced makes the host reload its game for
+    everybody at once (no more waiting for two failed checks and a two-minute delay).
   - The old launcher window stays available with MPFever.exe --dev.
 
 0.1.1-experimental - synchronisation fixes

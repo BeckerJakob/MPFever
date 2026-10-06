@@ -1219,16 +1219,160 @@ end
 -- and the native proposal type refuses the removed segments we rebuild ("Unknown exception"). So it is replayed in two
 -- steps, in the order the engine needs: the street part alone (the forms that rebuild roads), then the construction
 -- alone on the street that is now cut.
+-- why the engine refused a build: error state, colliding entities and what they are
+local function logRefusal(a, res)
+	pcall(function()
+		local rpd = res.resultProposalData
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " refusal: errorState " .. C.ser(C.marshal(rpd.errorState)):sub(1, 400))
+		pcall(function() log("NATIVE REPLAY " .. tostring(a.uid) .. " refusal: collisionInfo " .. C.ser(C.marshal(rpd.collisionInfo)):sub(1, 500)) end)
+		pcall(function()
+			local ent = rpd.collisionInfo.collisionEntities[1].entity
+			local have = {}
+			for _, name in ipairs({ "BASE_EDGE", "BASE_NODE", "CONSTRUCTION", "TOWN_BUILDING", "STATION", "MODEL_INSTANCE_LIST", "NAME", "PLAYER_OWNED",
+				"VEHICLE_DEPOT", "SUBCONSTRUCTION", "EDGE_OBJECT", "INDUSTRY", "WAREHOUSE" }) do
+				local okc, c = pcall(function() return api.engine.getComponent(ent, api.type.ComponentType[name]) end)
+				if okc and c then have[#have + 1] = name end
+			end
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " refusal: colliding entity " .. tostring(ent) .. " components {" .. table.concat(have, ",") .. "}")
+			pcall(function()
+				local be = api.engine.getComponent(ent, api.type.ComponentType.BASE_EDGE)
+				if be then
+					local function pos(n) local c = api.engine.getComponent(n, api.type.ComponentType.BASE_NODE) return c and string.format("(%.1f %.1f %.1f)", c.position.x, c.position.y, c.position.z) or "?" end
+					log("NATIVE REPLAY " .. tostring(a.uid) .. " refusal: edge " .. ent .. " " .. be.node0 .. pos(be.node0) .. " -> " .. be.node1 .. pos(be.node1) .. " " .. tostring(be.roadTemplate))
+				end
+			end)
+			local okt, tf = pcall(function() return api.engine.getComponent(ent, api.type.ComponentType.CONSTRUCTION) end)
+			if okt and tf then log("NATIVE REPLAY " .. tostring(a.uid) .. " refusal: construction " .. tostring(tf.fileName)) end
+		end)
+	end)
+end
+
 -- a build this game could not reproduce: the host reloads its game for everybody at once (without waiting for the
 -- next checkpoints to notice the difference)
 local function replayFailed(a, why)
 	pcall(send, "replay_failed", { uid = tostring(a.uid), why = tostring(why):sub(1, 120) })
 end
 
+-- the street segments a construction brings with it (the entrance of a depot or of a street station, the paths of a
+-- rail station): they belong to the construction, whose own script makes them
+local function isConstructionSegment(sg)
+	local tpl = tostring(sg and sg.comp and sg.comp.roadTemplate or "")
+	return tpl:find("/constructions/", 1, true) ~= nil or tpl:find("simple.street_template", 1, true) ~= nil
+end
+
+local function hasConstructionSegments(m)
+	if type(m) ~= "table" or #(m.toAdd or {}) == 0 or type(m.proposal) ~= "table" then return false end
+	for _, sg in ipairs(m.proposal.addedSegments or {}) do if isConstructionSegment(sg) then return true end end
+	return false
+end
+
 local STREET_FORMS = {
 	{ v = "minimal", raw = true, ctx = "terrainNoCleanup" }, { v = "minimal", raw = true, ctx = "terrain" },
 	{ v = "minimal", raw = true, ctx = "plain" }, { v = "full", raw = true, ctx = "terrain" },
 }
+
+-- Construction against a street, rebuilt as the tool's own native proposal (see C.rebuildNativeWithConstruction): the
+-- engine converts the construction for us (the converted proposal comes back with the result of a command that is
+-- refused on purpose: the same construction twice at the same place collides with itself, nothing is built).
+local function replayNativeConstruction(a)
+	local m0 = a.args[1]
+	if not hasConstructionSegments(m0) then return false end
+	local cArgs = C.deser(C.ser(a.args))
+	local miss = R.translateIn(cArgs, G.bind)
+	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: unresolved " .. table.concat(miss, ",")) return false end
+	local m = cArgs[1]
+	-- the engine's conversion of the construction (twice: guaranteed collision, so that nothing is built)
+	local spCon = C.rebuildProposal(m, { noStreet = true, seed = 7919 })
+	local cons = {}
+	do
+		local one = spCon.constructionsToAdd
+		cons[1] = one[1]
+		local two = C.rebuildProposal(m, { noStreet = true, seed = 7919 }).constructionsToAdd
+		cons[2] = two[1]
+		spCon.constructionsToAdd = cons
+	end
+	local ctx = api.type.Context.new()
+	ctx.checkTerrainAlignment = false
+	ctx.cleanupStreetGraph = false
+	ctx.gatherBuildings = true
+	ctx.gatherFields = true
+	ctx.player = api.engine.util.getPlayer()
+	local okc, dry = pcall(function() return api.cmd.makeWorldBuildProposalCmd(spCon, ctx, false, true) end)
+	if not okc or not dry then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: conversion command " .. shortErr(dry)) return false end
+	toSim("replaying", {})
+	local edgesBefore = #R.allEdges()
+	replaySend(dry, function(res, success)
+		if success then
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: the conversion command was built instead of refused (desync)")
+			replayFailed(a, "conversion built")
+			return
+		end
+		local conv = res.proposal
+		local okn, nconv = pcall(function() return #conv.toAdd end)
+		if not okn or nconv < 1 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: no converted construction in the result (" .. tostring(nconv) .. ")") replayFailed(a, "no converted construction") return end
+		-- the removed segments as the engine's own removal proposal makes them
+		local rmIds = {}
+		for _, sg in ipairs(m.proposal.removedSegments or {}) do if type(sg.entity) == "number" then rmIds[#rmIds + 1] = sg.entity end end
+		local okr, rm = pcall(function() return api.engine.util.proposal.makeSegmentsRemoveProposal(rmIds) end)
+		if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: removal proposal " .. shortErr(rm)) rm = nil end
+		-- the engine's removal must be the tool's removal (same number of segments and nodes), else nothing is built
+		local function ids(list, field)
+			local t = {}
+			pcall(function() for i = 1, #list do t[#t + 1] = tostring(field and list[i][field] or list[i]) end end)
+			return table.concat(t, ",")
+		end
+		local capNodes = {}
+		for _, nd in ipairs(m.proposal.removedNodes or {}) do capNodes[#capNodes + 1] = tostring(nd.entity) end
+		local engSeg, engNodes = "?", "?"
+		local nSeg, nNodes = -1, -1
+		pcall(function() nSeg = #rm.proposal.removedSegments engSeg = ids(rm.proposal.removedSegments, "entity") end)
+		pcall(function() nNodes = #rm.proposal.removedNodes engNodes = ids(rm.proposal.removedNodes, "entity") end)
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: removal segments tool {" .. table.concat((function() local t = {} for i, v in ipairs(rmIds) do t[i] = tostring(v) end return t end)(), ",") .. "} engine {" .. engSeg .. "}; nodes tool {" .. table.concat(capNodes, ",") .. "} engine {" .. engNodes .. "}")
+		if nSeg ~= #rmIds or nNodes ~= #capNodes then
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: the engine's removal differs from the tool's (desync)")
+			replayFailed(a, "removal differs")
+			return
+		end
+		C.errors = {}
+		local okp, P = pcall(C.rebuildNativeWithConstruction, m, conv, rm)
+		if not okp or not P then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: not rebuilt (" .. shortErr(P) .. ")") replayFailed(a, "native rebuild") return end
+		do
+			local notes = {}
+			for _, e in ipairs(C.errors) do if not tostring(e):find("no writable member 'params'", 1, true) then notes[#notes + 1] = e end end
+			if #notes > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: rebuild notes " .. table.concat(notes, "; ")) end
+		end
+		local ctx2 = api.type.Context.new()
+		ctx2.checkTerrainAlignment = true
+		ctx2.cleanupStreetGraph = false
+		ctx2.gatherBuildings = true
+		ctx2.gatherFields = true
+		ctx2.player = api.engine.util.getPlayer()
+		local okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx2, false, true) end)
+		if not okk or not cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: command " .. shortErr(cmd)) replayFailed(a, "native command") return end
+		toSim("replaying", {})
+		replaySend(cmd, function(res2, success2)
+			if not success2 then
+				local why = ""
+				pcall(function() why = C.ser(C.marshal(res2.resultProposalData.errorState.messages)) end)
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: refused " .. why .. " (desync)")
+				logRefusal(a, res2)
+				replayFailed(a, "native construction refused " .. why)
+				return
+			end
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction BUILT")
+			pcall(function()
+				local st = res2.proposal.proposal
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " engine applied: +nodes " .. #st.addedNodes .. " -nodes " .. #st.removedNodes .. " +segments " .. #st.addedSegments .. " -segments " .. #st.removedSegments .. " +constructions " .. #res2.proposal.toAdd)
+			end)
+			local expected = #(m.proposal.addedSegments or {}) - #(m.proposal.removedSegments or {})
+			G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
+				local got = #R.allEdges() - edgesBefore
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " edges here " .. got .. ", originator " .. expected .. (got == expected and "" or " SEGMENT COUNT DIFFERS"))
+			end }
+		end)
+	end)
+	return true
+end
 
 local function replayTwoStep(a)
 	local m0 = a.args[1]
@@ -1240,6 +1384,7 @@ local function replayTwoStep(a)
 	local function buildConstruction()
 		local okr, args, n = pcall(C.rebuildArgs, a.fn, C.deser(C.ser(cArgs)), { seed = 7919, variant = "minimal", raw = true, ctx = "terrainNoCleanup", noStreet = true })
 		if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction not rebuilt (" .. shortErr(args) .. ")") replayFailed(a, "construction not rebuilt") return end
+		args[3] = true args[4] = false   -- (non-critical collision with its own street connection: ignored)
 		local okk, cmd2 = pcall(function() return api.cmd[a.fn](table.unpack(args, 1, n)) end)
 		if not okk or not cmd2 then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction command " .. shortErr(cmd2)) replayFailed(a, "construction command") return end
 		toSim("replaying", {})
@@ -1247,35 +1392,84 @@ local function replayTwoStep(a)
 			local why = ""
 			if not success2 then pcall(function() why = C.ser(C.marshal(res2.resultProposalData.errorState.messages)) end) end
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction " .. (success2 and "BUILT" or ("refused " .. why .. " (desync)")))
-			if not success2 then replayFailed(a, "construction refused " .. why) end
+			if success2 then pcall(function()
+				local st2 = res2.proposal.proposal
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " construction engine applied: +nodes " .. #st2.addedNodes .. " -nodes " .. #st2.removedNodes .. " +segments " .. #st2.addedSegments .. " -segments " .. #st2.removedSegments .. " +constructions " .. #res2.proposal.toAdd)
+			end) end
+			if not success2 then logRefusal(a, res2) replayFailed(a, "construction refused " .. why) end
 		end)
 	end
 
-	local function streetStep(k)
+	-- the street part without the construction's own entrance (see above); `together`: with the construction in the same
+	-- proposal (the engine then connects the construction's free node to the street node itself)
+	local edgesBefore = #R.allEdges()
+	local function streetStep(k, together)
 		local form = STREET_FORMS[k]
-		if not form then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street part refused by every form (desync)") replayFailed(a, "street part refused") return end
+		if not form then
+			if together then return streetStep(1, false) end
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street part refused by every form (desync)")
+			replayFailed(a, "street part refused")
+			return
+		end
 		local sArgs = C.deser(C.ser(cArgs))
-		sArgs[1].toAdd = {}
-		sArgs[1].toRemove = {}
-		local label = form.v .. "/" .. form.ctx
+		if not together then
+			sArgs[1].toAdd = {}
+			sArgs[1].toRemove = {}
+		end
+		local dropped = {}
+		pcall(function()
+			local st = sArgs[1].proposal
+			local keepSeg, usedNode = {}, {}
+			for _, sg in ipairs(st.addedSegments or {}) do
+				if isConstructionSegment(sg) then dropped[#dropped + 1] = sg.entity else keepSeg[#keepSeg + 1] = sg end
+			end
+			if #dropped > 0 then
+				for _, sg in ipairs(keepSeg) do usedNode[sg.comp.node0] = true usedNode[sg.comp.node1] = true end
+				local keepNodes = {}
+				for _, nd in ipairs(st.addedNodes or {}) do if usedNode[nd.entity] then keepNodes[#keepNodes + 1] = nd end end
+				st.addedSegments = keepSeg
+				st.addedNodes = keepNodes
+				-- (the lane connections this tool computed around the entrance are left to the engine: sending them back
+				-- makes the command factory throw)
+				st.nodeConfigsToAdd = {}
+			end
+		end)
+		local label = (together and "with the construction, " or "") .. form.v .. "/" .. form.ctx
 		local okr, args, n = pcall(C.rebuildArgs, a.fn, sArgs, { seed = 7919, variant = form.v, ctx = form.ctx, raw = form.raw })
-		if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street " .. label .. " rebuild " .. shortErr(args)) return streetStep(k + 1) end
+		if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street " .. label .. " rebuild " .. shortErr(args)) return streetStep(k + 1, together) end
+		-- with the construction: the collisions the engine reports are the construction against its own street connection
+		-- (non-critical errors): the build goes on, as the game's own scripts do (ignoreErrors = true)
+		if together then args[3] = true args[4] = false end
 		local okc, cmd = pcall(function() return api.cmd[a.fn](table.unpack(args, 1, n)) end)
-		if not okc or not cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street " .. label .. " command " .. shortErr(cmd)) return streetStep(k + 1) end
+		if not okc or not cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street " .. label .. " command " .. shortErr(cmd)) return streetStep(k + 1, together) end
 		toSim("replaying", {})
 		replaySend(cmd, function(res, success)
 			if not success then
 				local why = ""
 				pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street " .. label .. " refused " .. why)
-				G.waits[#G.waits + 1] = { at = G.frames + 1, fn = function() streetStep(k + 1) end }
+				logRefusal(a, res)
+				G.waits[#G.waits + 1] = { at = G.frames + 1, fn = function() streetStep(k + 1, together) end }
+				return
+			end
+			if together then
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " BUILT street part and construction together with " .. label)
+				pcall(function()
+					local st = res.proposal.proposal
+					log("NATIVE REPLAY " .. tostring(a.uid) .. " engine applied: +nodes " .. #st.addedNodes .. " -nodes " .. #st.removedNodes .. " +segments " .. #st.addedSegments .. " -segments " .. #st.removedSegments .. " +constructions " .. #res.proposal.toAdd)
+				end)
+				local expected = #(m0.proposal.addedSegments or {}) - #(m0.proposal.removedSegments or {})
+				G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
+					local got = #R.allEdges() - edgesBefore
+					log("NATIVE REPLAY " .. tostring(a.uid) .. " edges here " .. got .. ", originator " .. expected .. (got == expected and "" or " SEGMENT COUNT DIFFERS"))
+				end }
 				return
 			end
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street part BUILT with " .. label)
 			G.waits[#G.waits + 1] = { at = G.frames + 3, fn = buildConstruction }
 		end)
 	end
-	streetStep(1)
+	streetStep(1, true)
 	return true
 end
 
@@ -1315,6 +1509,11 @@ local function replayNative(a, formIndex)
 			if okp and plan then return replayStop(a, plan) end
 			log("NATIVE REPLAY " .. tostring(a.uid) .. ": stop not replicable (" .. tostring(plan) .. ")")
 			return
+		end
+		-- a construction with its street connection: not replayable as one rebuilt proposal (see replayTwoStep)
+		if hasConstructionSegments(a.args[1]) then
+			if replayNativeConstruction(a) then return end
+			if replayTwoStep(a) then return end
 		end
 		local removal = (#missing == 0) and removalPlan(probe) or nil
 		if removal then

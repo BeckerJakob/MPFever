@@ -792,6 +792,7 @@ static DWORD WINAPI Init(void*)
     { HANDLE st = CreateThread(0, 0, SteamThread, 0, 0, 0); if (st) CloseHandle(st); }
     SetupSerial();
     // ArmMapSites();   (diagnostic: map lookup failures, see sites_gen.h)
+    { char v[4]; if (GetEnvironmentVariableA("MPFEVER_SITES", v, 3) > 0) ArmSites(); }   // diagnostic: which check says "not possible"
     return 0;
 }
 
