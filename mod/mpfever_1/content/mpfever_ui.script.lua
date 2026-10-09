@@ -78,7 +78,7 @@ local function install()
 		if tag.name == "makeGameSetSpeedCmd" then
 			U.stats.speed = U.stats.speed + 1
 			-- the interface repeats its request every frame while the game holds another speed: one per second at most
-			local now = os.clock()
+			local now = C.clock()
 			if tag.args[1] ~= U.lastSpeedReq or now - (U.lastSpeedAt or -10) > 1 then
 				U.lastSpeedReq, U.lastSpeedAt = tag.args[1], now
 				sendLine("speed_req", { speed = tag.args[1] })
@@ -112,7 +112,7 @@ local function install()
 				local okc, errc = pcall(cb, nil, true, {})
 				if not okc then log("tool callback error (ignored): " .. tostring(errc):sub(1, 160)) end
 			else
-				U.pending[U.seq] = { cb = cb, name = tag.name, t0 = os.clock() }
+				U.pending[U.seq] = { cb = cb, name = tag.name, t0 = C.clock() }
 			end
 		end
 	end
@@ -146,7 +146,7 @@ local function pollResults()
 				local data = type(r.data) == "table" and C.plain(r.data) or nil
 				local entities = type(r.entities) == "table" and C.plain(r.entities) or {}
 				local okc, errc = pcall(p.cb, data, r.success == true, entities)
-				log("result #" .. tostring(r.id) .. " " .. tostring(p.name) .. " success=" .. tostring(r.success) .. " after " .. string.format("%.2f", os.clock() - p.t0) .. "s" .. (okc and "" or (" (callback error: " .. tostring(errc):sub(1, 160) .. ")")))
+				log("result #" .. tostring(r.id) .. " " .. tostring(p.name) .. " success=" .. tostring(r.success) .. " after " .. string.format("%.2f", C.clock() - p.t0) .. "s" .. (okc and "" or (" (callback error: " .. tostring(errc):sub(1, 160) .. ")")))
 			end
 		end
 		if last then U.resOff = U.resOff + last end
@@ -253,7 +253,7 @@ local function pollControl()
 			if kind == "resync_save" or kind == "resync_load" then
 				-- the game script bridge may handle it first (it runs every frame, even paused): wait for its claim
 				U.resyncQueue = U.resyncQueue or {}
-				U.resyncQueue[#U.resyncQueue + 1] = { kind = kind, p = C.deser(payload) or {}, t = os.clock() }
+				U.resyncQueue[#U.resyncQueue + 1] = { kind = kind, p = C.deser(payload) or {}, t = C.clock() }
 			end
 		end
 		U.ctlOff = U.ctlOff + consumed
@@ -261,7 +261,7 @@ local function pollControl()
 	f:close()
 	local keep = {}
 	for _, r in ipairs(U.resyncQueue or {}) do
-		if os.clock() - r.t < 1.5 then
+		if C.clock() - r.t < 1.5 then
 			keep[#keep + 1] = r
 		else
 			local claims = ""

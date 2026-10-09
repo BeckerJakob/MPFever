@@ -35,5 +35,7 @@ def compute(run):
         "checksum_seconds_max": max(run["launcher"]["checksum_seconds"], default=None),
         "checksums_expensive": len(run["launcher"]["checksum_seconds"]),
         "speed_changes": len(run["launcher"]["speed_changes"]),
+        # engine assertions during the run (the asserting game stops with a 'Fatal error' dialog)
+        "engine_assertions": len(run.get("engine_errors", [])),
     }
     return {name: v for name, v in k.items() if v is not None}

@@ -46,8 +46,23 @@ gebautes `MPFever.exe` mit Begründung übersprungen.
   ein Simulationsschritt-Paket = 200 ms = 1 Schritt bei Speed 1. `os.clock()`/`os.time()` laufen **virtuell**
   (sonst sind Läufe nicht reproduzierbar, siehe Befund F4).
 - **Locale:** Die Tests laufen mit `LC_CTYPE=C` (Python setzt sonst die Code-Page des Benutzers, Befund F2).
-- **`lua.py`** – lädt die Mod-Dateien in lupa (Lua 5.2 wie das Spiel); `load_bridge(expose=True)` macht lokale
-  Funktionen der Bridge (`valueHash`, `before`, `pacing`, …) für Unit-Tests erreichbar, ohne die Datei zu ändern.
+- **`lua.py`** – lädt die Mod-Dateien in lupa (Lua 5.2 wie das Spiel) über ein nachgebildetes `ug_require` (jede Datei
+  des Content-Ordners); `load_bridge(expose=True)` macht die gemeinsame Umgebung der Bridge-Teile (`valueHash`,
+  `before`, `pacing`, `G`, `H`, …) als `MPF_T` erreichbar, ohne eine Datei zu ändern. Die Autotest-Teile lädt die
+  Bridge nur mit `MPFEVER_AUTOTEST=1` (oder `MPFEVER_SAVE`).
+
+## Aufbau der Mod (seit Phase 1)
+
+| Datei | Inhalt |
+|---|---|
+| `mpfever_bridge.script.lua` | Einstieg (Spielskript): lädt die Teile mit **einer** gemeinsamen Umgebung, `data()` |
+| `mpfever_br_base/exec/sim/gui/replay/native/resync/frame.lua` | die Teile der Bridge (`return function(_ENV) … end`) |
+| `mpfever_dev_autotest1-3.lua` | Autotest-Szenarien (nur Test/Dev) |
+| `mpfever_link.lua` | Kanäle zu MPFever.exe, UI-Hook und Native-Modul (Dateien / Speicher) |
+| `mpfever_common.lua` + `mpfever_proposal.lua` | Serializer, Marshalling, Nachbau von Proposals |
+| `mpfever_refs.lua`, `mpfever_ui.script.lua`, `mpfever_auto.lua`, `mpfever_menu.lua` | unverändert aufgeteilt |
+
+Neue Dateien müssen in `mod/mpfever_1/_content.json` stehen (das Spiel lädt nur diese) – `test_modules.py` prüft das.
 - **`pe.py`, `game.py`** – PE-Leser (nur lesen), Spielordner über Steam finden, `BUILDS[]`/`UI_SITES_*` aus dem
   C++-Quelltext lesen.
 - **`reporting.py`** – Report + KPI-Schwellen.
@@ -83,7 +98,8 @@ prüfen die Auswertung zusätzlich gegen die Logs, die die echte Bridge in der S
    ein paar Straßen, ein Straßendepot, eine Bushaltestelle; speichern unter genau diesem Namen. Für Dauerläufe
    `MPF-Test-Busy` (mittlere Karte mit Verkehr). Andere Namen: `MPF_SAVE=<name>`.
 4. `test.bat e2e` – drei Sessions mit je zwei Spielinstanzen (viel RAM/VRAM: Grafik niedrig stellen), ~25 min:
-   eine Haupt-Session spielt **alle** Szenarien nacheinander (Host, dann Client; `stops` zuletzt, siehe F10), dazu
+   eine Haupt-Session spielt die sicheren Szenarien nacheinander (Host, dann Client); `stops`, `bulldoze`, `tramstop`, `roadtypes`
+   können die Engine abstürzen lassen (F10) und laufen je in einer eigenen kurzen Session; dazu
    je eine kurze Session mit Speed 4 und pausiert, außerdem die Lua-Probe (eine Instanz, ~15 s). Die Ergebnisse der
    Haupt-Session werden über die Startzeiten im Launcher-Log den Szenarien zugeordnet (`analyze.per_scenario`).
    Schnelltest: `set MPF_SCENARIOS=newroad,upgrade` vor `test.bat e2e`.

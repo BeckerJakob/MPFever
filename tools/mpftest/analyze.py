@@ -95,7 +95,7 @@ RE_RESYNC_START = re.compile(TIME + r"=== Resynchronisation (?:#|n°)(\d+) (?:on
 RE_RESYNC_DONE = re.compile(TIME + r"=== Resynchronisation (?:#|n°)(\d+) (?:done in|terminée en) (\d+) s ===")
 RE_RESYNC_CANCEL = re.compile(TIME + r"Resynchronisation (?:cancelled|abandonnée)")
 # the state checksum a game computed in one frame (the game stands still meanwhile); decimal comma or point
-RE_CHECKSUM = re.compile(TIME + r"(\S+) ?: (?:expensive checksum|empreinte coûteuse) \((\d+)[,.](\d+) s\)")
+RE_CHECKSUM = re.compile(TIME + r"(\S+) ?: (?:expensive checksum|empreinte coûteuse) \((\d+)[,.](\d+) s(?:, [^)]*)?\)")
 RE_SPEED = re.compile(TIME + r"(?:Speed|Vitesse) ?: x(\d+) \((?:asked by|demandée par) (.+)\)")
 RE_SCENARIO = re.compile(TIME + r"AUTOTEST scenario (\S+) by (\w+)$")
 RE_OUT_OF_SYNC = re.compile(TIME + r"!!! (?:OUT OF SYNC|DÉSYNCHRONISATION|DESYNCHRONISATION)")
@@ -129,6 +129,31 @@ def parse_launcher_log(lines):
         elif RE_RESYNC_CANCEL.match(line):
             r["resyncs_cancelled"] += 1
     return r
+
+
+# ------------------------------------------------------------------ the game's own log (crash_dump/stdout.txt)
+
+RE_STDOUT_HEAD = re.compile(r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)Z - (\w+)\s*- ([^-]+?)\s*- ")
+RE_ASSERTION = re.compile(r"Assertion Failure: (.*)$")
+
+
+def parse_game_stdout(lines, since=None):
+    """Engine assertions ('Fatal error' dialogs: the game stops there) in the game's stdout.txt. since: UTC text
+    'YYYY-MM-DD HH:MM:SS' - only the entries from then on (both instances of a local test write the same file).
+    -> [{"time", "thread", "text"}], one per assertion (the engine logs each twice: deduplicated)."""
+    out, cur_time, cur_thread, seen = [], None, None, set()
+    for line in lines:
+        m = RE_STDOUT_HEAD.match(line)
+        if m:
+            cur_time, cur_thread = m.group(1), m.group(3).strip()
+            continue
+        a = RE_ASSERTION.search(line)
+        if a and cur_time and (since is None or cur_time >= since):
+            key = (cur_time, cur_thread, a.group(1))
+            if key not in seen:
+                seen.add(key)
+                out.append({"time": cur_time, "thread": cur_thread, "text": a.group(1)})
+    return out
 
 
 def per_scenario(run):

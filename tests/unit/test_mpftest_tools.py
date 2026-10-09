@@ -32,6 +32,7 @@ LAUNCHER = """10:00:00.123 === Resynchronisation #1 on the host's game (differen
 10:05:00.000 === Resynchronisation n°2 sur la partie de l'hôte (écart : money) ===
 10:05:01.000 Resynchronisation abandonnée : les jeux ne se sont pas arrêtés.
 12:03:07.859 Hote: expensive checksum (4,06 s)
+12:03:08.100 Client#1 : empreinte coûteuse (3,50 s, prochaine dans 41 s)
 12:03:07.929 Speed: x3 (asked by Hote)
 12:03:14.104 Speed: x2 (asked by Client#1)""".splitlines()
 
@@ -59,7 +60,7 @@ def test_mod_log():
 def test_launcher_log_in_both_languages():
     r = analyze.parse_launcher_log(LAUNCHER)
     assert (r["resyncs_started"], r["resync_seconds"], r["resyncs_cancelled"]) == (2, [21], 1)
-    assert r["checksum_seconds"] == [4.06]
+    assert r["checksum_seconds"] == [4.06, 3.5]
     assert r["speed_changes"] == [{"speed": 3, "by": "Hote"}, {"speed": 2, "by": "Client#1"}]
 
 
@@ -97,3 +98,20 @@ def test_per_scenario_windows():
         "newroad": {"late_actions": 2, "late_steps_max": 4, "desyncs": 1},
         "company": {"late_actions": 1, "late_steps_max": 1, "desyncs": 1},      # #4, #5: the same desync still there
     }
+
+
+def test_engine_assertions_from_game_stdout():
+    lines = """[2026-10-09 14:35:22Z - MESSAGE  - Main             - Main           ]  Application startup. Hello!
+[2026-10-09 14:37:45Z - VERBOSE  - Main Thread      - Main           ]+ Exception type: Fatal error
+    | Details:
+    | Assertion Failure: Assertion `be.roadType == RoadType::STREET' failed.
+[2026-10-09 14:37:59Z - VERBOSE  - Simulation Threa - Main           ]+ Exception type: Fatal error
+    | Assertion Failure: Assertion `AreAllNodesEmpty(tpNetData, entity, (int)tn.nodes.size())' failed.
+[2026-10-09 14:37:59Z - VERBOSE  - Simulation Threa - Main           ]+ Exception type: Fatal error
+    | Assertion Failure: Assertion `AreAllNodesEmpty(tpNetData, entity, (int)tn.nodes.size())' failed.""".splitlines()
+    errs = analyze.parse_game_stdout(lines)
+    assert [(e["time"][-8:], e["thread"]) for e in errs] == [("14:37:45", "Main Thread"), ("14:37:59", "Simulation Threa")]
+    assert analyze.parse_game_stdout(lines, since="2026-10-09 14:37:50")[0]["text"].startswith("Assertion `AreAllNodesEmpty")
+    run = {"autotest": analyze.parse_autotest_result([]), "launcher": analyze.parse_launcher_log([]), "games": {},
+           "engine_errors": errs}
+    assert kpi.compute(run)["engine_assertions"] == 2

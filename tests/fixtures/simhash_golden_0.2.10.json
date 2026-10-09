@@ -1,0 +1,16 @@
+{
+ "conParams": "7/2927244446",
+ "constructions": "7/68783743",
+ "edgeObjects": "ERR [string \"mpfever_refs.lua\"]:565: attempt to call field 'getEdgeObject2EdgeMap' (a nil value)",
+ "edges": "5/1064463376",
+ "lines": "6/0",
+ "money": "1000/0",
+ "names": "12/4289448828",
+ "nodeConfigs": "0/0",
+ "persons": "0/0",
+ "stations": "0/0",
+ "terrain": "7",
+ "townBuildings": "0/0",
+ "vehicleState": "6/652145688",
+ "vehicles": "6/572833080"
+}

@@ -19,13 +19,16 @@ pytestmark = pytest.mark.e2e
 
 SAVE = os.environ.get("MPF_SAVE", runner.DEFAULT_SAVE)
 
-# the scenarios the bridge implements (H.<name>); stops last: after the host's stop build its simulation can stand
-# still for minutes (F10), which must not spoil the scenarios after it
-FULL = ["newroad", "upgrade", "tramstop", "bulldoze", "buy", "line", "split", "roadtypes", "terrain", "company", "stops"]
-SCENARIOS = [s for s in os.environ.get("MPF_SCENARIOS", ",".join(FULL)).split(",") if s]
+# the scenarios the bridge implements (H.<name>). The main session plays the safe ones; the RISKY ones build
+# proposals by hand that remove or replace a street segment (with vehicles on it the engine asserts) or build special
+# road types (roadtypes: lane assertion in StreetShapeFactory) - that game then stops (finding F10). Each gets its own
+# short session so that a crash spoils nothing else.
+SAFE = ["newroad", "upgrade", "buy", "line", "split", "terrain", "company"]
+RISKY = ["stops", "bulldoze", "tramstop", "roadtypes"]
+SCENARIOS = [s for s in os.environ.get("MPF_SCENARIOS", ",".join(SAFE)).split(",") if s]
 SMOKE = ["newroad", "upgrade"]
 
-F10 = pytest.mark.xfail(strict=False, reason="F10: the host's simulation stands still after its own stop build (docs/dev/BASELINE.md)")
+F10 = pytest.mark.xfail(strict=False, reason="F10: hand-made proposal on a segment with traffic -> engine assertion (docs/dev/BASELINE.md)")
 
 # session-wide KPIs reported as they are; the per-scenario ones carry the names of tests/kpi_thresholds.toml
 SESSION_KPIS = ["checksum_seconds_max", "checksums_expensive", "barrier_stall_ratio", "stamp_distance_steps",
@@ -59,6 +62,9 @@ def check_session(out, metrics, prefix=""):
     metrics[prefix + "session_late_actions"] = out["kpi"].get("late_actions", 0)
     metrics[prefix + "session_desyncs"] = out["kpi"].get("desyncs", 0)
     metrics["run_seconds"] = out["seconds"]
+    metrics["engine_assertions"] = out["kpi"].get("engine_assertions", 0)
+    errs = out["analysis"].get("engine_errors", [])
+    assert not errs, "engine assertion (the game stopped with 'Fatal error'): %s" % ["%s %s: %s" % (e["time"], e["thread"], e["text"]) for e in errs]
     assert a["ready"], "the two games did not get ready with savegame %r: %s" % (SAVE, a["errors"])
     assert not a["errors"], a["errors"]
     assert out["kpi"].get("failed_lines", 0) == 0, "FAILED lines in the games' logs"
@@ -70,7 +76,7 @@ def test_session(session, metrics):
     check_session(session, metrics)
 
 
-@pytest.mark.parametrize("scenario", [pytest.param(s, marks=F10) if s == "stops" else s for s in SCENARIOS])
+@pytest.mark.parametrize("scenario", SCENARIOS)
 def test_scenario(session, scenario, metrics):
     """T0.13: one scenario of the session, as host and as client: both roles answered (no timeout); late builds and
     failed sync checks in its time window are its KPIs."""
@@ -91,3 +97,15 @@ def test_smoke_at_speed_and_paused(exe, speed, paused, metrics):
     for k in ("late_actions", "late_steps_max", "desyncs"):
         metrics[k] = out["kpi"].get(k, 0)
     assert not [s for s in out["analysis"]["autotest"]["scenarios"] if s["timeout"]], out["analysis"]["autotest"]["scenarios"]
+
+
+@F10
+@pytest.mark.parametrize("scenario", RISKY)
+def test_risky_scenario(exe, scenario, metrics):
+    """The scenarios that can make the engine assert, each in its own session (as host and as client)."""
+    out = runner.run_autotest(exe, [scenario], SAVE)
+    for k in ("late_actions", "late_steps_max", "desyncs", "engine_assertions"):
+        metrics[k] = out["kpi"].get(k, 0)
+    check_session(out, metrics, prefix=scenario + "_")
+    results = [x for x in out["analysis"]["autotest"]["scenarios"] if x["name"] == scenario]
+    assert sorted(x["role"] for x in results) == ["client", "host"] and not [x for x in results if x["timeout"]], results

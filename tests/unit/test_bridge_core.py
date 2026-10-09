@@ -83,9 +83,10 @@ def test_value_hash_depth_limit(L, T):
     assert T.valueHash(deep, 0) == T.valueHash(deep2, 0)
 
 
-@pytest.mark.xfail(strict=True, reason="F1: %d of Lua 5.2 is 32 bits on Windows (docs/dev/BASELINE.md)")
 def test_value_hash_large_integer(T):
-    T.valueHash(3000000000, 0)
+    # F1 (fixed in Phase 1): integers beyond 32 bits are hashed like the others
+    assert T.valueHash(3000000000, 0) != T.valueHash(3000000001, 0)
+    assert T.valueHash(7, 0) == T.valueHash(7.0, 0)
 
 
 def test_counts_hash_is_a_multiset(L, T):

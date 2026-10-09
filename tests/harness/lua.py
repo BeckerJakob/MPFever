@@ -7,12 +7,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 CONTENT = os.path.join(REPO, "mod", "mpfever_1", "content")
 
-# local functions and tables of mpfever_bridge.script.lua that the unit tests reach (the file keeps them local: the
-# harness appends one line that collects them, the file itself is not changed)
-BRIDGE_LOCALS = [
-    "valueHash", "countsHash", "before", "pacing", "stampFor", "pausedStamp", "adaptAhead", "parseLine",
-    "readLines", "simHash", "G", "O", "H", "STEP", "STAMP_AHEAD", "GAME_SCRIPTS",
-]
 
 
 def source(name):
@@ -25,11 +19,25 @@ def harness_source(name):
         return f.read()
 
 
-REQUIRE = '''ug_require = function(p)
-  if p == "mpfever_common.lua" then if not COMMON then COMMON = load(COMMON_SRC, "mpfever_common.lua")() end return COMMON end
-  if p == "mpfever_refs.lua" then if not REFS then REFS = load(REFS_SRC, "mpfever_refs.lua")() end return REFS end
-  error("no " .. p)
+# the game's ug_require: any file of the mod's content folder, by its name (or "mpfever_1::/<name>"), loaded once
+REQUIRE = '''MOD_CACHE = {}
+ug_require = function(p)
+  p = p:gsub("^mpfever_1::/", "")
+  if MOD_CACHE[p] == nil then
+    local src = MPF_SRC[p]
+    if not src then error("no " .. p) end
+    MOD_CACHE[p] = assert(load(src, p))()
+  end
+  return MOD_CACHE[p]
 end'''
+
+
+def module_sources():
+    out = {}
+    for name in os.listdir(CONTENT):
+        if name.endswith(".lua"):
+            out[name] = source(name)
+    return out
 
 
 def new_runtime(env=None, encoding="utf-8"):
@@ -42,8 +50,10 @@ def new_runtime(env=None, encoding="utf-8"):
     L = lupa.LuaRuntime(unpack_returned_tuples=True, encoding=encoding)
     L.execute(harness_source("mock_engine.lua"))
     enc = (lambda t: t) if encoding else (lambda t: t.encode("utf-8"))
-    L.globals().COMMON_SRC = enc(source("mpfever_common.lua"))
-    L.globals().REFS_SRC = enc(source("mpfever_refs.lua"))
+    srcs = L.table()
+    for name, text in module_sources().items():
+        srcs[enc(name)] = enc(text)
+    L.globals().MPF_SRC = srcs
     L.execute(REQUIRE)
     return L
 
@@ -57,10 +67,11 @@ def load_refs(L):
 
 
 def load_bridge(L, expose=True):
-    """Runs the bridge in L (defines data()); with expose, its locals are reachable as the Lua global MPF_T."""
+    """Runs the bridge in L (defines data()); with expose, the bridge's shared environment (every top-level name of
+    its parts: valueHash, pacing, G, O, H...) is reachable as the Lua global MPF_T. The file itself is not changed."""
     src = source("mpfever_bridge.script.lua")
     if expose:
-        src += "\nMPF_T = { " + ", ".join("%s = %s" % (n, n) for n in BRIDGE_LOCALS) + " }\n"
+        src += "\nMPF_T = ENV\n"
     L.execute(src)
     return L.globals().MPF_T if expose else None
 

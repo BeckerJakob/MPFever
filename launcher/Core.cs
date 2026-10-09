@@ -248,6 +248,8 @@ namespace MPFever
 
         /// <summary>Autotest: savegame loaded by the autopilot script (null = the player loads one).</summary>
         public static string AutoSave;
+        /// <summary>--autotest / --dev: the games load the autotest scenarios of the mod (MPFEVER_AUTOTEST=1).</summary>
+        public static bool DevScenarios;
 
         public void Kill()
         {
@@ -265,6 +267,7 @@ namespace MPFever
             // application script: starts the host's savegame after a resynchronisation (and loads the autotest save)
             psi.Arguments = "--script mpfever_1::/mpfever_auto.lua";
             if (AutoSave != null) psi.EnvironmentVariables["MPFEVER_SAVE"] = AutoSave;
+            if (DevScenarios) psi.EnvironmentVariables["MPFEVER_AUTOTEST"] = "1";
             proc = Process.Start(psi);
             proc.EnableRaisingEvents = true;
             proc.Exited += (s, e) => Exited?.Invoke();

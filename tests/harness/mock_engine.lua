@@ -211,5 +211,19 @@ for _, n in ipairs({ "makeGameSetSpeedCmd", "makeScriptingSendEventCmd", "makeWo
   api.cmd[n] = mk(n)
 end
 debugPrint = function(s) end
-toString = function(v) return tostring(v) end
+-- the game's toString dumps a value deterministically (tostring of a table would give its address, different in
+-- every run: the state hashes of the mock depended on it)
+toString = function(v)
+  local function dump(x, d)
+    if type(x) ~= "table" then return tostring(x) end
+    if d > 10 then return "{...}" end
+    local keys = {}
+    for k in pairs(x) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    local parts = {}
+    for _, k in ipairs(keys) do parts[#parts + 1] = tostring(k) .. "=" .. dump(x[k], d + 1) end
+    return "{" .. table.concat(parts, ",") .. "}"
+  end
+  return dump(v, 0)
+end
 getBuildVersion = function() return "test" end

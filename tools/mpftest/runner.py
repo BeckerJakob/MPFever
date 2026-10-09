@@ -5,6 +5,7 @@ autotest_result.txt next to itself and quits.
 What MPFever.exe changes on this PC when it starts (docs/README.txt): it copies winhttp.dll and steam_appid.txt into the
 game folder, adds the mod to settings.lua (backup settings.lua.bak_mpfever) and installs the mod in the user mods folder.
 """
+import datetime
 import glob
 import os
 import socket
@@ -51,6 +52,17 @@ def wait_idle(timeout=120):
         timeout, running("MPFever.exe"), running("TransportFever3.exe"), PORT, port_free()))
 
 
+def game_stdout_files():
+    """crash_dump/stdout.txt of every Steam user of this PC (the game's own log)."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+            steam = winreg.QueryValueEx(k, "SteamPath")[0]
+    except OSError:
+        return []
+    return glob.glob(os.path.join(steam, "userdata", "*", "3493540", "local", "crash_dump", "stdout.txt"))
+
+
 def find_exe():
     env = os.environ.get("MPF_EXE")
     if env:
@@ -72,13 +84,19 @@ def run_autotest(exe, scenarios, save=DEFAULT_SAVE, speed=None, paused=False, ti
         os.remove(result_file)
     env = dict(os.environ)
     env["MPFEVER_SCENARIO"] = ",".join(scenarios) if isinstance(scenarios, (list, tuple)) else scenarios
-    env["MPFEVER_TIMING"] = "1"
+    # the native module's timing probe (extra hooks on the simulation loop, Sync and Swap, a log line per command):
+    # a diagnostic players never run; the games stalled with it in a sync call (finding F10) - off unless asked for
+    if os.environ.get("MPF_TIMING") == "1":
+        env["MPFEVER_TIMING"] = "1"
+    else:
+        env.pop("MPFEVER_TIMING", None)
     if speed:
         env["MPFEVER_SPEED"] = str(speed)
     if paused:
         env["MPFEVER_PAUSED"] = "1"
     env.update(extra_env or {})
     t0 = time.time()
+    since = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     proc = subprocess.Popen([exe, "--autotest", save], cwd=exe_dir, env=env)
     try:
         rc = proc.wait(timeout=timeout)
@@ -88,4 +106,5 @@ def run_autotest(exe, scenarios, save=DEFAULT_SAVE, speed=None, paused=False, ti
         rc = None
     seconds = round(time.time() - t0, 1)
     run = analyze.analyze_run(result_file, newest(os.path.join(exe_dir, "logs", "launcher-*.log")))
+    run["engine_errors"] = [e for f in game_stdout_files() for e in analyze.parse_game_stdout(analyze.read_lines(f), since)]
     return {"analysis": run, "kpi": kpi.compute(run), "returncode": rc, "seconds": seconds, "result_file": result_file}

@@ -27,6 +27,7 @@ namespace MPFever
             Log.Init(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs"));
             bool auto = args.Length > 0 && args[0] == "--autotest";
             MainForm.Dev = auto || args.Contains("--dev");
+            GameLink.DevScenarios = MainForm.Dev;
             // default: the game starts at once and the session is set up from its main menu (MPFever window)
             MainForm.MenuModeDefault = !MainForm.Dev;
             if (auto) GameLink.AutoSave = args.Length > 1 ? args[1] : "test multi";
@@ -57,6 +58,12 @@ namespace MPFever
         const long Step = 200;                 // game time units per simulation step
         const double UnitsPerSecond = 1000;    // game time units per real second at x1
         const double HashEverySeconds = 10;
+        // A state check stops the simulation of every game while it hashes (4-5 s on a mid-size map, finding F9): the
+        // next check waits at least HashCostFactor times the last check's cost, so checking takes at most ~10% of the time.
+        const double HashCostFactor = 10;
+        double lastHashCost;
+        int costRound = -1;
+        double HashInterval() => Math.Max(HashEverySeconds, HashCostFactor * lastHashCost);
 
         readonly TextBox nameBox = new TextBox { Text = Environment.UserName, Width = 140 };
         readonly TextBox hostBox = new TextBox { Text = "127.0.0.1", Width = 140 };
@@ -796,7 +803,7 @@ namespace MPFever
 
                 if (Now - lastSession > 3) { lastSession = Now; BroadcastSession(); }   // late joiners and lost messages
                 bool paused; lock (sessionGate) paused = pauseAt.HasValue;
-                if (started && !paused && !detRunning && !resyncing && Now - lastHash > HashEverySeconds) { lastHash = Now; RequestHash(); }
+                if (started && !paused && !detRunning && !resyncing && Now - lastHash > HashInterval()) { lastHash = Now; RequestHash(); }
             }
         }
 
@@ -944,7 +951,13 @@ namespace MPFever
             if (t == null || !t.TryGetValue("n", out var nv) || !(nv is double nd)) return;
             int n = (int)nd;
             var parts = t.TryGetValue("parts", out var p) ? p as Dictionary<object, object> : null;
-            if (t.TryGetValue("cost", out var cost) && cost is double c && c > 0.1) Log.W(T($"{m.From} : empreinte coûteuse ({c:0.00} s)", $"{m.From}: expensive checksum ({c:0.00} s)"));
+            if (t.TryGetValue("cost", out var cost) && cost is double c)
+            {
+                // the slowest game of this round sets the pace of the next checks
+                if (n != costRound) { costRound = n; lastHashCost = 0; }
+                lastHashCost = Math.Max(lastHashCost, c);
+                if (c > 0.1) Log.W(T($"{m.From} : empreinte coûteuse ({c:0.00} s, prochaine dans {HashInterval():0} s)", $"{m.From}: expensive checksum ({c:0.00} s, next in {HashInterval():0} s)"));
+            }
             // host authority: the host's values at this checkpoint go to every other game, which corrects itself
             if (m.From == hostName && t.TryGetValue("auth", out var av) && av is Dictionary<object, object> auth)
             {

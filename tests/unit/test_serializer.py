@@ -27,18 +27,10 @@ def roundtrip(L, C, value):
     return s, lua.to_py(C.deser(s))
 
 
-# Finding F1 (Phase 0): C.ser writes integers with string.format("%d"). Lua 5.2 formats %d with LUA_INTFRM_T, which is
-# `long` unless LUA_USE_LONGLONG - 32 bits on Windows. Integers outside +-2^31 then raise "not a number in proper range".
-# The game embeds Lua 5.2.2 (same message in TransportFever3.exe); whether its %d is 32 bits is verified in the game
-# (tests/e2e/test_game_lua.py). Affected: authValues (balance/loan in sync_hash) above 2.147 billion, valueHash of game
-# script states. Fix (not in Phase 0, no functional change): format integers with "%.0f".
-F1 = pytest.mark.xfail(strict=True, reason="F1: %d of Lua 5.2 is 32 bits on Windows (docs/dev/BASELINE.md)")
-
-
+# Finding F1 (fixed in Phase 1): integers went through string.format("%d"), which is 32 bits in the game's Lua 5.2
+# (confirmed in the game, tests/e2e/test_game_lua.py) - beyond +-2^31 it raised. C.ser now writes them with C.int.
 @pytest.mark.parametrize("value", [
-    0, 1, -1, 42, 2 ** 31 - 1, -(2 ** 31),
-    pytest.param(2 ** 31, marks=F1), pytest.param(2 ** 32, marks=F1),
-    pytest.param(2 ** 53 - 1, marks=F1), pytest.param(-(2 ** 53 - 1), marks=F1),
+    0, 1, -1, 42, 2 ** 31 - 1, -(2 ** 31), 2 ** 31, 2 ** 32, 2 ** 53 - 1, -(2 ** 53 - 1),
     0.5, -0.25, 1e-300, 1e300, 0.1 + 0.2, math.pi, 123456.789,
 ])
 def test_numbers_roundtrip_exactly(L, C, value):
@@ -48,10 +40,11 @@ def test_numbers_roundtrip_exactly(L, C, value):
 
 def test_integers_are_written_without_exponent(C):
     assert C.ser(2147483647) == "2147483647"
+    assert C.ser(4294967295) == "4294967295"
     assert C.ser(-7) == "-7"
+    assert C.ser(-0.0) == "0"
 
 
-@F1
 def test_large_balance_serializes(C):
     # a company balance of 3 billion, as authValues() sends it with sync_hash
     assert C.ser(3000000000) == "3000000000"
@@ -113,10 +106,8 @@ def test_line_format(L, C):
 
 
 lua_values = st.recursive(
-    st.none() | st.booleans() | st.integers(-(2 ** 31), 2 ** 31 - 1)
-    # (integral values in [2^31, 2^53) are finding F1, tested above)
-    | st.floats(allow_nan=False, allow_infinity=False).filter(lambda f: not (f == int(f) and 2 ** 31 <= abs(f) < 2 ** 53))
-    | st.text(max_size=40),
+    st.none() | st.booleans() | st.integers(-(2 ** 53 - 1), 2 ** 53 - 1)
+    | st.floats(allow_nan=False, allow_infinity=False) | st.text(max_size=40),
     lambda children: st.dictionaries(st.text(min_size=1, max_size=8) | st.integers(1, 50), children, max_size=6),
     max_leaves=25,
 )
@@ -140,13 +131,9 @@ def test_property_roundtrip(L, C, value):
     assert normalise(back) == normalise(value), s
 
 
-# Finding F2 (Phase 0): C.ser escapes the bytes Lua's %c matches, which follows the process locale (LC_CTYPE). Under a
-# Windows code page locale (1252: bytes 0x81 0x8D 0x8F 0x90 0x9D 0xAD count as control characters) it escapes single
-# bytes INSIDE UTF-8 characters - "í" (C3 AD) becomes C3 "{": invalid UTF-8 in out.log. MPFever.exe reads the line
-# as UTF-8 (U+FFFD) and relays that: the other games get another text (names of lines, stations, vehicles: the state
-# check compares names since 0.2.6 -> resynchronisation). Only if the game sets such a locale: verified in the game
-# (tests/e2e/test_game_lua.py). Fix (not in Phase 0): escape only bytes < 32 and 127 explicitly.
-@pytest.mark.xfail(strict=True, reason="F2: C.ser breaks UTF-8 under a code page locale (docs/dev/BASELINE.md)")
+# Finding F2 (fixed in Phase 1): C.ser escaped the bytes Lua's %c matches, which follows the process locale; under a
+# code page locale it escaped bytes inside UTF-8 characters ("í" -> C3 "{": invalid UTF-8 for MPFever.exe). It now
+# escapes the control bytes 0-31 and 127 explicitly. (The game itself runs with the C locale - tests/e2e.)
 def test_utf8_survives_code_page_locale():
     Lb = lua.new_runtime({}, encoding=None)
     Cb = lua.load_common(Lb)

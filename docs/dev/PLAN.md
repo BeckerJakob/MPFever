@@ -8,6 +8,41 @@
 
 ---
 
+## Umsetzungsstand
+
+### Phase 0 – Testfundament und Baseline ✅ (09.10.2026)
+- [x] T0.1 alter Lockstep-Test als pytest (Mock korrigiert, Befund F3)
+- [x] T0.2 `MPFever.exe --selftest`
+- [x] T0.3 Serializer inkl. Property-Test
+- [ ] T0.4 C#-`LuaLit` ↔ Lua-Serializer – verschoben: braucht Test-Einstieg im Launcher (Rust-Port, Phase 4/11)
+- [x] T0.5–T0.8 `valueHash`, `before`, `pacing`/Stempel, Entity-Referenzen
+- [x] T0.9 3 Spiele, T0.10 Netzwerk-Emulation + Ausweichpfad ohne DLL
+- [x] T0.11 Spiel-Exe vs. Native-Modul, T0.11b Lua-Probe im Spiel
+- [x] T0.12–T0.14 E2E: Session mit allen Szenarien, Speed 4, pausiert, KPIs
+- [ ] T0.15 Dauerlauf – vorbereitet (`test.bat soak`), noch nicht gelaufen
+- [x] Baseline + Befunde F1–F13: [BASELINE.md](BASELINE.md)
+
+### Phase 1 – Lua-Bridge modularisieren ✅ (09.10.2026)
+- [x] Bridge (5041 Zeilen) in Teile mit gemeinsamer Umgebung zerlegt (`mpfever_br_*.lua`, Werkzeug `tools/dev/split_bridge.py`);
+      `mpfever_bridge.script.lua` lädt nur noch die Teile (44 Zeilen)
+- [x] Autotest-Szenarien ausgelagert (`mpfever_dev_autotest1-3.lua`), geladen nur mit `MPFEVER_AUTOTEST=1`/`MPFEVER_SAVE`
+      (der Launcher setzt `MPFEVER_AUTOTEST=1` bei `--dev`/`--autotest`)
+- [x] `mpfever_common.lua` geteilt (Nachbau von Proposals → `mpfever_proposal.lua`); größtes Produktionsmodul 730 Zeilen
+- [x] Verbindungsschicht `mpfever_link.lua` (Kanäle out/in/ui/results/bindings/native_ctl/native_events; Datei- und
+      Speicher-Implementierung mit gemeinsamem Vertrag) – die UI-Hook-Seite (`mpfever_ui.script.lua`) liest noch selbst (Phase 3)
+- [x] T1.1 Module kompilieren, Teile sind Umgebungs-Funktionen, keine echten Globals außer `data`
+- [x] T1.2/T1.3 Link-Vertrag für beide Implementierungen
+- [~] T1.4 Aktionsarten im Mock: Fahrzeug, Linie, Zuweisung, Straße (nativ, beide Richtungen), Geschwindigkeit/Pause;
+      Konstruktion, Haltestelle, Terrain, Abriss nur über E2E (Mock-Grenze F7)
+- [x] T1.5 Zustands-Hash identisch zu 0.2.10 (Golden-Datei)
+- [x] T1.6 Produktionsteile benutzen keine Autotest-Namen
+- [x] T1.7 Regression: alle Gates von Phase 0 grün, Simulations-KPIs unverändert
+- [~] Linting: `selene`/`stylua` nicht installiert – ersetzt durch Kompilierprüfung aller Dateien + Wächter gegen globale Schreibzugriffe
+- [x] Befunde behoben: **F1** (ganze Zahlen über 2³¹: `C.int`), **F2** (Escapen ohne Locale), **F4** (eine Zeitquelle `C.clock`),
+      **F8** (Autostart nach dem Laden: Anforderung in `autoload.txt`), **F9 kurzfristig** (Prüfintervall ≥ 10 × letzte Prüfdauer)
+
+---
+
 ## Inhalt
 
 1. [Zielbild und Messgrößen](#1-zielbild-und-messgrößen)

@@ -23,6 +23,27 @@ end
 
 local S = { requested = false, frames = 0, readyStarted = false }
 
+-- The autotest's load request is kept in a file too (autoload.txt in the session folder): the game restarts this
+-- application script with the loaded game, which loses S - the loaded game then waited for a key press for ever when
+-- the engine wanted one (finding F8: "game loaded, starting it" was never logged).
+local function autoloadPending()
+	if not (DIR and IO) then return false end
+	local f = IO.open(DIR .. BS .. "autoload.txt", "rb")
+	if not f then return false end
+	local s = f:read("*a") or ""
+	f:close()
+	return s:find("1", 1, true) ~= nil
+end
+
+local function setAutoload(on)
+	if not (DIR and IO) then return end
+	local f = IO.open(DIR .. BS .. "autoload.txt", "wb")
+	if f then
+		if on then f:write("1") end
+		f:close()
+	end
+end
+
 local function loadSave(name)
 	name = name or SAVE
 	local ns = app.SaveGameNamespace.getSavegame()
@@ -143,8 +164,9 @@ function data()
 	return {
 		handleEvent = function(id, name, param)
 			if name == "mainMenuReady" then S.menuReady = true end
-			if name == "mainMenuReady" and SAVE and not S.requested then
+			if name == "mainMenuReady" and SAVE and not S.requested and not autoloadPending() then
 				S.requested = true
+				setAutoload(true)
 				local ok, err = pcall(loadSave)
 				if not ok then log("load failed: " .. tostring(err)) end
 			end
@@ -156,8 +178,9 @@ function data()
 				local ok, err = pcall(loadPending)
 				if not ok then log("load failed: " .. tostring(err)) S.pending = nil end
 			end
-			if S.requested and not S.readyStarted and startWhenReady() then
+			if (S.requested or autoloadPending()) and not S.readyStarted and startWhenReady() then
 				S.readyStarted = true
+				setAutoload(false)
 				log("game loaded, starting it")
 			end
 			pcall(menuLoad)
