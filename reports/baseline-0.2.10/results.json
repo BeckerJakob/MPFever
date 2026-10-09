@@ -1,0 +1,1153 @@
+{
+  "started": "2026-10-09T13:28:45",
+  "args": [
+    "-m",
+    "unit or sim or native",
+    "-p",
+    "no:cacheprovider",
+    "--report-dir",
+    "reports/baseline-0.2.10"
+  ],
+  "summary": {
+    "passed": 99,
+    "failed": 0,
+    "skipped": 1,
+    "xfailed": 7,
+    "xpassed": 0
+  },
+  "kpi_violations": [],
+  "results": [
+    {
+      "nodeid": "tests/native/test_game_build.py::test_native_module_knows_builds",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "native"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/native/test_game_build.py::test_exe_is_x64",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "native"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/native/test_game_build.py::test_installed_build_is_supported",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "native"
+      ],
+      "metrics": {
+        "game_build": 40420
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/native/test_game_build.py::test_entry_points_are_function_starts",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "native"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/native/test_game_build.py::test_command_list_add_prologue",
+      "outcome": "passed",
+      "duration": 0.001,
+      "markers": [
+        "native"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/native/test_game_build.py::test_ui_sites_follow_a_call",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "native"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/native/test_game_build.py::test_steam_and_lua_of_the_game",
+      "outcome": "passed",
+      "duration": 0.025,
+      "markers": [
+        "native"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/native/test_game_build.py::test_game_folder_state",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "native"
+      ],
+      "metrics": {
+        "mpfever_native_installed": 1,
+        "steam_appid_txt": 1
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/sim/test_lockstep_scenario.py::test_lockstep_scenario[T0.1-2games]",
+      "outcome": "passed",
+      "duration": 11.644,
+      "markers": [
+        "sim"
+      ],
+      "metrics": {
+        "barrier_spread_steps_max": 2,
+        "stamp_distance_steps_x1": 7,
+        "action_delay_steps": 7,
+        "action_delay_ticks": 11,
+        "native_delay_steps_host": 8,
+        "native_delay_steps_client": 8,
+        "steps_in_30_ticks_at_x2": 60,
+        "stamp_distance_steps_x2": 10,
+        "messages_delivered": 544,
+        "log_native_delay_steps_max": 8
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/sim/test_lockstep_scenario.py::test_lockstep_scenario[T0.9-3games]",
+      "outcome": "passed",
+      "duration": 17.807,
+      "markers": [
+        "sim"
+      ],
+      "metrics": {
+        "barrier_spread_steps_max": 2,
+        "stamp_distance_steps_x1": 7,
+        "action_delay_steps": 7,
+        "action_delay_ticks": 11,
+        "native_delay_steps_host": 8,
+        "native_delay_steps_client": 8,
+        "steps_in_30_ticks_at_x2": 60,
+        "stamp_distance_steps_x2": 10,
+        "messages_delivered": 1615,
+        "log_native_delay_steps_max": 8
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/sim/test_lockstep_scenario.py::test_lockstep_scenario[T0.10-2games-lat3]",
+      "outcome": "passed",
+      "duration": 10.764,
+      "markers": [
+        "sim"
+      ],
+      "metrics": {
+        "barrier_spread_steps_max": 2,
+        "stamp_distance_steps_x1": 7,
+        "action_delay_steps": 7,
+        "action_delay_ticks": 11,
+        "native_delay_steps_host": 8,
+        "native_delay_steps_client": 8,
+        "steps_in_30_ticks_at_x2": 60,
+        "stamp_distance_steps_x2": 10,
+        "messages_delivered": 544,
+        "log_native_delay_steps_max": 8
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/sim/test_lockstep_scenario.py::test_lockstep_scenario[T0.10-2games-lat3-jit4]",
+      "outcome": "passed",
+      "duration": 10.588,
+      "markers": [
+        "sim"
+      ],
+      "metrics": {
+        "barrier_spread_steps_max": 1,
+        "stamp_distance_steps_x1": 7,
+        "action_delay_steps": 7,
+        "action_delay_ticks": 11,
+        "native_delay_steps_host": 8,
+        "native_delay_steps_client": 8,
+        "steps_in_30_ticks_at_x2": 60,
+        "stamp_distance_steps_x2": 10,
+        "messages_delivered": 544,
+        "log_native_delay_steps_max": 8
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/sim/test_lockstep_scenario.py::test_lockstep_scenario[T0.10-3games-lat8-jit4]",
+      "outcome": "passed",
+      "duration": 20.361,
+      "markers": [
+        "sim"
+      ],
+      "metrics": {
+        "barrier_spread_steps_max": 2,
+        "stamp_distance_steps_x1": 7,
+        "action_delay_steps": 7,
+        "action_delay_ticks": 15,
+        "native_delay_steps_host": 8,
+        "native_delay_steps_client": 8,
+        "steps_in_30_ticks_at_x2": 26,
+        "stamp_distance_steps_x2": 10,
+        "messages_delivered": 1312,
+        "log_native_delay_steps_max": 8
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/sim/test_lockstep_scenario.py::test_native_build_without_native_module",
+      "outcome": "passed",
+      "duration": 2.723,
+      "markers": [
+        "sim"
+      ],
+      "metrics": {
+        "fallback_late_games": 2
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_value_hash_ignores_insertion_order",
+      "outcome": "passed",
+      "duration": 0.001,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_value_hash_ignores_local_counters",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_value_hash_sees_differences[a0-b0]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_value_hash_sees_differences[a1-b1]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_value_hash_sees_differences[a2-b2]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_value_hash_sees_differences[a3-b3]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_value_hash_sees_differences[a4-b4]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_value_hash_sees_differences[a5-b5]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_value_hash_float_precision",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_value_hash_depth_limit",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_value_hash_large_integer",
+      "outcome": "xfailed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": "F1: %d of Lua 5.2 is 32 bits on Windows (docs/dev/BASELINE.md)"
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_counts_hash_is_a_multiset",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_before_gives_the_same_order_from_any_arrival_order",
+      "outcome": "passed",
+      "duration": 0.372,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_before_is_a_strict_order",
+      "outcome": "passed",
+      "duration": 0.107,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_before_missing_origin_and_seq_sort_first",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_pacing_not_started_is_paused",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_pacing_alone_runs_at_session_speed",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_pacing_waits_for_the_slowest_peer",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_pacing_uses_the_minimum_of_all_peers",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_pacing_stops_at_the_pause",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_pacing_steps_exactly_to_a_stop_point",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_pacing_without_step_command_slows_down_near_a_stop_point",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_pacing_held_action_runs_at_least_at_speed_one",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_stamp_distance_formula",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_stamp_for_respects_the_floor",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_paused_stamp_is_the_latest_clock",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_bridge_core.py::test_parse_line",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_launcher.py::test_launcher_selftest",
+      "outcome": "passed",
+      "duration": 0.944,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_launcher.py::test_lualit_matches_lua_serializer",
+      "outcome": "skipped",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": "Skipped: T0.4: LuaLit (C#) is only reachable through --selftest; a direct test needs a test entry in the launcher - planned with the Rust port (Phase 4/11), where the protocol gets its own crate"
+    },
+    {
+      "nodeid": "tests/unit/test_mpftest_tools.py::test_autotest_result",
+      "outcome": "passed",
+      "duration": 0.001,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_mpftest_tools.py::test_mod_log",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_mpftest_tools.py::test_launcher_log_in_both_languages",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_mpftest_tools.py::test_kpis",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_mpftest_tools.py::test_per_scenario_windows",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_reference_resolves_to_the_local_entity[con-50010-51010]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_reference_resolves_to_the_local_entity[station-50012-51012]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_reference_resolves_to_the_local_entity[depot-50022-51022]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_reference_resolves_to_the_local_entity[node-50030-51030]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_reference_resolves_to_the_local_entity[edge-50040-51040]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_reference_resolves_to_the_local_entity[depot-55-55]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_reference_resolves_to_the_local_entity[node-60-60]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_edge_resolves_whatever_its_direction",
+      "outcome": "passed",
+      "duration": 0.005,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_construction_position_tolerance[0.5-True]",
+      "outcome": "passed",
+      "duration": 0.004,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_construction_position_tolerance[2.5-True]",
+      "outcome": "passed",
+      "duration": 0.003,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_construction_position_tolerance[3.5-False]",
+      "outcome": "passed",
+      "duration": 0.003,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_reference_to_something_missing_resolves_to_nothing",
+      "outcome": "passed",
+      "duration": 0.003,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_plain_ids_and_player",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_translate_out_and_in_with_creation_keys",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_translate_in_reports_what_is_missing",
+      "outcome": "passed",
+      "duration": 0.003,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_refs.py::test_translate_out_road_proposal",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[0]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[1]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[-1]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[42]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[2147483647]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[-2147483648]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[2147483648]",
+      "outcome": "xfailed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": "F1: %d of Lua 5.2 is 32 bits on Windows (docs/dev/BASELINE.md)"
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[4294967296]",
+      "outcome": "xfailed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": "F1: %d of Lua 5.2 is 32 bits on Windows (docs/dev/BASELINE.md)"
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[9007199254740991]",
+      "outcome": "xfailed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": "F1: %d of Lua 5.2 is 32 bits on Windows (docs/dev/BASELINE.md)"
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[-9007199254740991]",
+      "outcome": "xfailed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": "F1: %d of Lua 5.2 is 32 bits on Windows (docs/dev/BASELINE.md)"
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[0.5]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[-0.25]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[1e-300]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[1e+300]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[0.30000000000000004]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[3.141592653589793]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_numbers_roundtrip_exactly[123456.789]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_integers_are_written_without_exponent",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_large_balance_serializes",
+      "outcome": "xfailed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": "F1: %d of Lua 5.2 is 32 bits on Windows (docs/dev/BASELINE.md)"
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_nan_and_infinity_become_zero[nan]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_nan_and_infinity_become_zero[inf]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_nan_and_infinity_become_zero[-inf]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_strings_roundtrip[]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_strings_roundtrip[plain]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_strings_roundtrip[tab\\there]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_strings_roundtrip[new\\nline]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_strings_roundtrip[cr\\rlf\\n]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_strings_roundtrip[quote \" inside]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_strings_roundtrip[back\\\\slash]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_strings_roundtrip[\\\\n literally]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_strings_roundtrip[all control: \\x00\\x01\\x02\\x03\\x04\\x05\\x06\\x07\\x08\\t\\n\\x0b\\x0c\\r\\x0e\\x0f\\x10\\x11\\x12\\x13\\x14\\x15\\x16\\x17\\x18\\x19\\x1a\\x1b\\x1c\\x1d\\x1e\\x1f\\x7f]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_strings_roundtrip[\\xdcmlaut \\xdf \\xe9 \\u65e5\\u672c \\U0001f682]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_strings_roundtrip[Ligne 1]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_strings_roundtrip[]] [[ { } , = ]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_tables_roundtrip",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_depth_limit_cuts_deep_tables",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_cycle_does_not_hang",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_functions_and_userdata_become_nil",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_deser_rejects_code_and_garbage",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_line_format",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_property_roundtrip",
+      "outcome": "passed",
+      "duration": 1.794,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_utf8_survives_code_page_locale",
+      "outcome": "xfailed",
+      "duration": 0.003,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": "F2: C.ser breaks UTF-8 under a code page locale (docs/dev/BASELINE.md)"
+    },
+    {
+      "nodeid": "tests/unit/test_serializer.py::test_utf8_survives_c_locale",
+      "outcome": "passed",
+      "duration": 0.002,
+      "markers": [
+        "unit"
+      ],
+      "metrics": {},
+      "message": ""
+    }
+  ]
+}

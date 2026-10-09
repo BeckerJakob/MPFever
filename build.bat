@@ -13,7 +13,7 @@ echo === 1/3 native module
 call native\build.bat || exit /b 1
 
 echo === 2/3 launcher
-"%MSBUILD%" launcher\MPFever.csproj -p:Configuration=Release -v:minimal -nologo || exit /b 1
+"%MSBUILD%" launcher\MPFever.csproj -restore -p:Configuration=Release -v:minimal -nologo || exit /b 1
 
 echo === 3/3 package
 set "VERSION=0.2.10-experimental"

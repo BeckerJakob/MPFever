@@ -1,0 +1,39 @@
+# KPI limits checked on every run (tests/harness/reporting.py): a measured metric outside its limit fails the run.
+# Phase 0: the measured baseline of 0.2.10 (docs/dev/BASELINE.md) as a regression guard. Later phases tighten them to
+# the targets of docs/dev/PLAN.md, section 1.
+
+# ---- L2 simulation (tests/sim), steps of 200 game-time units
+[metric.action_delay_steps]          # K1 (sim): Lua command (purchase...) issued -> applied on every game
+max = 8
+[metric.native_delay_steps_host]     # K1 (sim): construction tool of the host -> built everywhere
+max = 9
+[metric.native_delay_steps_client]
+max = 9
+[metric.stamp_distance_steps_x1]     # G.ahead at speed 1: window + (2*speed+1) + 1
+max = 7
+[metric.barrier_spread_steps_max]    # no game more than the barrier window ahead of another
+max = 3
+[metric.fallback_late_games]         # without the native module (unknown game build), 3 games, emulated latency
+max = 2
+
+# ---- L4/L5 real games (tests/e2e, tests/soak) - tools/mpftest/kpi.py
+# Baseline of two complete e2e passes on 09.10.2026 (build 40420, MPF-Test-Small = copy of a 67 MB savegame), docs/dev/BASELINE.md.
+# These are known defects, not targets: the limits only guard against getting worse.
+[metric.native_delay_steps_max]
+max = 9
+[metric.late_actions]                # F11: builds applied late on the other game, per scenario (max seen 4)
+max = 4
+[metric.late_steps_max]              # max seen 6 steps
+max = 6
+[metric.desyncs]                     # F12: desyncs that START in the scenario's window (max seen 1; roadtypes)
+max = 2
+[metric.checksum_seconds_max]        # F9: one state checksum stops the simulation (max seen 4.9 s; target: Phase 9)
+max = 6.0
+[metric.barrier_stall_ratio]         # share of frames held by the barrier (max seen 0.51)
+max = 0.6
+[metric.failed_lines]
+max = 0
+[metric.scenario_timeouts]           # (stops: F10, xfail)
+max = 0
+[metric.resyncs]
+max = 0

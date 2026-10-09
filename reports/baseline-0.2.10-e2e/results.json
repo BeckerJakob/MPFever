@@ -1,0 +1,283 @@
+{
+  "started": "2026-10-09T13:04:26",
+  "args": [
+    "tests/e2e",
+    "--run-e2e",
+    "-p",
+    "no:cacheprovider",
+    "--report-dir",
+    "reports/e2e-session-1"
+  ],
+  "summary": {
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "xfailed": 2,
+    "xpassed": 0
+  },
+  "kpi_violations": [],
+  "results": [
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_session",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "checksum_seconds_max": 4.98,
+        "checksums_expensive": 150,
+        "barrier_stall_ratio": 0.0886,
+        "stamp_distance_steps": 10,
+        "speed_changes": 266,
+        "margin_steps_min": -5,
+        "released_late_steps_max": 1,
+        "autotest_build_wall_seconds_max": 14,
+        "session_late_actions": 12,
+        "session_desyncs": 25,
+        "run_seconds": 1034.6
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_scenario[newroad]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "late_actions": 2,
+        "late_steps_max": 1,
+        "desyncs": 0,
+        "scenario_errors": 0
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_scenario[upgrade]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "late_actions": 0,
+        "late_steps_max": 0,
+        "desyncs": 0,
+        "scenario_errors": 0
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_scenario[tramstop]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "late_actions": 0,
+        "late_steps_max": 0,
+        "desyncs": 0,
+        "scenario_errors": 2
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_scenario[bulldoze]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "late_actions": 1,
+        "late_steps_max": 1,
+        "desyncs": 0,
+        "scenario_errors": 0
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_scenario[buy]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "late_actions": 0,
+        "late_steps_max": 0,
+        "desyncs": 0,
+        "scenario_errors": 0
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_scenario[line]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "late_actions": 0,
+        "late_steps_max": 0,
+        "desyncs": 0,
+        "scenario_errors": 0
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_scenario[split]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "late_actions": 1,
+        "late_steps_max": 5,
+        "desyncs": 0,
+        "scenario_errors": 0
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_scenario[roadtypes]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "late_actions": 4,
+        "late_steps_max": 1,
+        "desyncs": 1,
+        "scenario_errors": 2
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_scenario[terrain]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "late_actions": 2,
+        "late_steps_max": 2,
+        "desyncs": 0,
+        "scenario_errors": 0
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_scenario[company]",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "late_actions": 1,
+        "late_steps_max": 5,
+        "desyncs": 0,
+        "scenario_errors": 0
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_scenario[stops]",
+      "outcome": "xfailed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "late_actions": 1,
+        "late_steps_max": 3,
+        "desyncs": 0,
+        "scenario_errors": 0
+      },
+      "message": "F10: the host's simulation stands still after its own stop build (docs/dev/BASELINE.md)"
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_smoke_at_speed_and_paused[4-False]",
+      "outcome": "passed",
+      "duration": 151.548,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "checksum_seconds_max": 3.91,
+        "checksums_expensive": 20,
+        "barrier_stall_ratio": 0.1576,
+        "stamp_distance_steps": 13,
+        "speed_changes": 16,
+        "margin_steps_min": 0,
+        "released_late_steps_max": 1,
+        "autotest_build_wall_seconds_max": 3,
+        "session_late_actions": 0,
+        "session_desyncs": 0,
+        "run_seconds": 151.3,
+        "late_actions": 0,
+        "late_steps_max": 0,
+        "desyncs": 0
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_autotest.py::test_smoke_at_speed_and_paused[1-True]",
+      "outcome": "passed",
+      "duration": 193.41,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "checksum_seconds_max": 3.06,
+        "checksums_expensive": 2,
+        "barrier_stall_ratio": 0.0115,
+        "stamp_distance_steps": 13,
+        "speed_changes": 8,
+        "margin_steps_min": 0,
+        "released_late_steps_max": 0,
+        "autotest_build_wall_seconds_max": 12,
+        "session_late_actions": 0,
+        "session_desyncs": 0,
+        "run_seconds": 191.0,
+        "late_actions": 0,
+        "late_steps_max": 0,
+        "desyncs": 0
+      },
+      "message": ""
+    },
+    {
+      "nodeid": "tests/e2e/test_game_lua.py::test_f1_integer_format_in_game",
+      "outcome": "xfailed",
+      "duration": 0.001,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "game_fmt_d_64bit": 0
+      },
+      "message": "F1 confirmed in the game on 09.10.2026 (build 40420): %d is 32 bits"
+    },
+    {
+      "nodeid": "tests/e2e/test_game_lua.py::test_f2_locale_in_game",
+      "outcome": "passed",
+      "duration": 0.0,
+      "markers": [
+        "e2e"
+      ],
+      "metrics": {
+        "game_ctl_bytes_above_127": 0
+      },
+      "message": ""
+    }
+  ],
+  "note": "per-scenario late_actions/desyncs recomputed with desync onsets (tools/mpftest/analyze.per_scenario after the fix)"
+}
