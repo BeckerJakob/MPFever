@@ -188,6 +188,13 @@ api = {
       lineSystem = { getLines = function() local r = {} for e, w in pairs(WORLD) do if w.LINE then r[#r + 1] = e end end table.sort(r) return r end },
       streetSystem = {
         getEdgeForEdgeObject = function(o) return -1 end,
+        getEdgeObject2EdgeMap = function()
+          local m = {}
+          for e, w in pairs(WORLD) do
+            if w.BASE_EDGE then for _, o in ipairs(w.BASE_EDGE.objects or {}) do m[o[1]] = e end end
+          end
+          return m
+        end,
         -- node -> list of the edges ending at it
         getNode2SegmentMap = function()
           local m = {}

@@ -119,8 +119,10 @@ namespace MPFever
         int resyncId;
         readonly HashSet<string> resyncWaiting = new HashSet<string>();
         Dictionary<object, object> saveDone;
-        string lastDiffKeys = "";
-        int diffStreak;
+        // per measured part: how many checks in a row it differed (Phase 9: a check measures a rotating group of parts,
+        // so "in a row" counts the checks that measured that part, not every check)
+        readonly Dictionary<string, int> keyStreak = new Dictionary<string, int>();
+        readonly Dictionary<string, double> driftSinceKey = new Dictionary<string, double>();
         int postResyncHashN = -1;
         readonly HashSet<string> ignoredParts = new HashSet<string>();
         // parts every game corrects by itself from the host's values (not a reason to reload)
@@ -134,7 +136,6 @@ namespace MPFever
             // proven as a check, so it only reloads when it lasts)
             "nodeConfigs" };
         const double DriftResyncSeconds = 300;
-        double driftSince = -1;
         double lastNotStartedLog = -1e9;
 
         readonly bool autotest;
@@ -994,7 +995,8 @@ namespace MPFever
                 Log.W(T("Mesures propres à chaque jeu (ignorées désormais) : ", "Local measures (ignored from now on): ") + string.Join(", ", diffKeys));
             }
             diffs = diffs.Where(d => !ignoredParts.Contains(DiffKey(d))).ToList();
-            CheckResync(diffs.Select(d => DiffKey(d)).Where(k => !CorrectedParts.Contains(k)).ToList(), n);
+            CheckResync(diffs.Select(d => DiffKey(d)).Where(k => !CorrectedParts.Contains(k)).ToList(),
+                keys.Where(k => !ignoredParts.Contains(k) && !CorrectedParts.Contains(k)).ToList(), n);
             if (diffs.Count == 0)
             {
                 bool changed = !syncText.StartsWith("SYNC");
@@ -1022,37 +1024,41 @@ namespace MPFever
 
         /// <summary>A difference the games cannot correct by themselves, seen at two checkpoints in a row: every game
         /// reloads the host's savegame.</summary>
-        void CheckResync(List<string> keys, int n)
+        /// <summary>keys: the parts that differ at check n; measured: every part check n compared.</summary>
+        void CheckResync(List<string> keys, List<string> measured, int n)
         {
             if (resyncing || autotest) return;
-            string k = string.Join(",", keys.OrderBy(x => x));
-            if (keys.Count == 0) { diffStreak = 0; lastDiffKeys = ""; driftSince = -1; return; }
-            if (keys.All(DriftParts.Contains))
+            var diff = new HashSet<string>(keys);
+            foreach (var m in measured)
             {
-                // simulation drift only: reload once it has lasted DriftResyncSeconds
-                diffStreak = 0; lastDiffKeys = "";
-                if (driftSince < 0) driftSince = Now;
-                if (Now - driftSince < DriftResyncSeconds || Now - lastResync < ResyncCooldownSeconds) return;
-                driftSince = -1;
-                int others; lock (players) others = players.Count(p => p != hostName);
-                if (others == 0) return;
+                if (diff.Contains(m)) keyStreak[m] = keyStreak.TryGetValue(m, out var st) ? st + 1 : 1;
+                else { keyStreak.Remove(m); driftSinceKey.Remove(m); }
+            }
+            // a part that is not simulation drift and differed at two checks in a row that measured it: reload
+            var hard = keyStreak.Where(kv => !DriftParts.Contains(kv.Key) && kv.Value >= 2).Select(kv => kv.Key).OrderBy(x => x).ToList();
+            if (hard.Count > 0)
+            {
+                string k = string.Join(",", hard);
+                if (Now - lastResync < ResyncCooldownSeconds)
+                {
+                    if (hard.Any(h => keyStreak[h] == 2)) Log.W(T($"Écart persistant ({k}) : resynchronisation possible dans {ResyncCooldownSeconds - (Now - lastResync):0} s", $"Persistent difference ({k}): resynchronisation possible in {ResyncCooldownSeconds - (Now - lastResync):0} s"));
+                    return;
+                }
+                int remote; lock (players) remote = players.Count(p => p != hostName);
+                if (remote == 0) return;
                 resyncing = true;
-                new Thread(() => Resync(T("dérive de la simulation : ", "simulation drift: ") + k)) { IsBackground = true, Name = "Resync" }.Start();
+                new Thread(() => Resync(k)) { IsBackground = true, Name = "Resync" }.Start();
                 return;
             }
-            driftSince = -1;
-            diffStreak = k == lastDiffKeys ? diffStreak + 1 : 1;
-            lastDiffKeys = k;
-            if (diffStreak < 2) return;
-            if (Now - lastResync < ResyncCooldownSeconds)
-            {
-                if (diffStreak == 2) Log.W(T($"Écart persistant ({k}) : resynchronisation possible dans {ResyncCooldownSeconds - (Now - lastResync):0} s", $"Persistent difference ({k}): resynchronisation possible in {ResyncCooldownSeconds - (Now - lastResync):0} s"));
-                return;
-            }
-            int remote; lock (players) remote = players.Count(p => p != hostName);
-            if (remote == 0) return;
+            // simulation drift only: reload once it has lasted DriftResyncSeconds
+            var drift = keyStreak.Keys.Where(DriftParts.Contains).OrderBy(x => x).ToList();
+            foreach (var d in drift) if (!driftSinceKey.ContainsKey(d)) driftSinceKey[d] = Now;
+            if (drift.Count == 0 || !drift.Any(d => Now - driftSinceKey[d] >= DriftResyncSeconds) || Now - lastResync < ResyncCooldownSeconds) return;
+            int others; lock (players) others = players.Count(p => p != hostName);
+            if (others == 0) return;
             resyncing = true;
-            new Thread(() => Resync(k)) { IsBackground = true, Name = "Resync" }.Start();
+            string dk = string.Join(",", drift);
+            new Thread(() => Resync(T("dérive de la simulation : ", "simulation drift: ") + dk)) { IsBackground = true, Name = "Resync" }.Start();
         }
 
         void Resync(string reason)
@@ -1106,7 +1112,8 @@ namespace MPFever
             finally
             {
                 lastResync = Now;
-                diffStreak = 0;
+                keyStreak.Clear();
+                driftSinceKey.Clear();
                 resyncing = false;
                 SetSpeed(prevSpeed, T("fin de resynchronisation", "end of resynchronisation"));
             }

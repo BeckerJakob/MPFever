@@ -33,3 +33,27 @@ def test_sim_hash_is_deterministic():
         T = lua.load_bridge(L, expose=True)
         return {k: v for k, v in T.simHash(7).items() if k != "time"}
     assert run() == run()
+
+
+def test_rotating_groups_cover_the_full_hash():
+    """Phase 9 (F9): check n hashes group n % 3; together the groups give exactly the full hash, every part in one
+    group, money/time/terrain in every check."""
+    L = lua.new_runtime({})
+    with open(os.path.join(FIX, "simhash_world.lua"), encoding="utf-8") as f:
+        L.execute(f.read())
+    T = lua.load_bridge(L, expose=True)
+    full = {k: v for k, v in T.simHash(7).items() if k != "time"}
+    seen = {}
+    for n in range(3):
+        part = {k: v for k, v in T.simHash(7, n).items() if k != "time"}
+        for always in ("money", "terrain"):
+            assert always in part
+        for k, v in part.items():
+            if k not in ("money", "terrain"):
+                assert k not in seen, "%s in two groups" % k
+                seen[k] = v
+        assert len(part) < len(full)
+    seen.update({k: full[k] for k in ("money", "terrain")})
+    assert seen == full
+    # the same n gives the same group on every game
+    assert dict(T.simHash(7, 4).items()).keys() == dict(T.simHash(7, 1).items()).keys()

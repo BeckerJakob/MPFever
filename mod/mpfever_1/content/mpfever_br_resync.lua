@@ -241,7 +241,7 @@ function runPausedActions()
 				local okA, auth = pcall(authValues)
 				G.authOwn = G.authOwn or {}
 				G.authOwn[a.n] = okA and auth or nil
-				send("sync_hash", { n = a.n, parts = simHash(G.simTerrainSig), cost = 0, auth = okA and auth or nil })
+				send("sync_hash", { n = a.n, parts = simHash(G.simTerrainSig, a.n), cost = 0, auth = okA and auth or nil })
 			else
 				toSim("replaying", {})
 				-- paused: the engine answers in a callback, a frame later; the result is reported then

@@ -22,7 +22,7 @@ function simApplyDue(state)
 				if a.kind == "hash" then
 					local c0 = C.clock()
 					local okA, auth = pcall(authValues)
-					st.hash = { n = a.n, parts = simHash(st.terrainSig), cost = C.clock() - c0, auth = okA and auth or nil }
+					st.hash = { n = a.n, parts = simHash(st.terrainSig, a.n), cost = C.clock() - c0, auth = okA and auth or nil }
 					st.authOwn = st.authOwn or {}
 					st.authOwn[#st.authOwn + 1] = { n = a.n, auth = okA and auth or nil }
 					while #st.authOwn > 10 do table.remove(st.authOwn, 1) end

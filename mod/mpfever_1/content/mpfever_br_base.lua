@@ -92,9 +92,10 @@ function flatten(v, path, out, d)
 	end
 end
 
-function extendedParts(parts)
+function extendedParts(parts, want)
+	want = want or function() return true end
 	local dump = SDUMP and sdumps < 40 and {}
-	for name, res in pairs(GAME_SCRIPTS) do
+	for name, res in pairs(want("script") and GAME_SCRIPTS or {}) do
 		local ok, v = pcall(function()
 			local e = api.engine.system.gameScriptSystem.getEntityForGameScript(res)
 			if not e or e < 0 then return "absent" end
@@ -115,13 +116,13 @@ function extendedParts(parts)
 		end)
 	end
 	-- cargo waiting in buildings (industries, warehouses, stations)
-	pcall(function()
+	if want("stocks") then pcall(function()
 		local counts = {}
 		for _, list in pairs(api.engine.system.simEntityAtStockSystem.getStock2SimEntityMap() or {}) do counts[#counts + 1] = #list end
 		parts.stocks = countsHash(counts)
-	end)
+	end) end
 	-- cargo and passengers on board of vehicles
-	pcall(function()
+	if want("onboard") then pcall(function()
 		local counts = {}
 		for _, byCargo in pairs(api.engine.system.simEntityAtVehicleSystem.getVehicle2Cargo2SimEntitesMap() or {}) do
 			local n = 0
@@ -129,11 +130,29 @@ function extendedParts(parts)
 			counts[#counts + 1] = n
 		end
 		parts.onboard = countsHash(counts)
-	end)
-	pcall(function()
+	end) end
+	if want("timeOfDay") then pcall(function()
 		local gt = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME)
 		parts.timeOfDay = gt.timeOfDaySec
-	end)
+	end) end
+end
+
+-- Phase 9 (finding F9): one state check hashes ONE of these groups (n % #HASH_GROUPS + 1), every game the same one, so
+-- that a check stops the simulation for a third of the time. The groups hold about the same work. money, time and the
+-- terrain sum are in every check. MPFEVER_HASH_FULL=1: every check hashes everything (as before).
+HASH_GROUPS = {
+	{ "constructions", "conParams", "stations", "townBuildings", "lines", "names", "timeOfDay" },
+	{ "edges", "edgeObjects", "nodeConfigs" },
+	{ "vehicles", "vehicleState", "persons", "script", "stocks", "onboard" },
+}
+HASH_FULL = os.getenv("MPFEVER_HASH_FULL") == "1"
+
+-- the filter for check n (nil: everything)
+function hashWant(n)
+	if HASH_FULL or type(n) ~= "number" then return nil end
+	local set = {}
+	for _, name in ipairs(HASH_GROUPS[(n % #HASH_GROUPS) + 1]) do set[name] = true end
+	return function(name) return set[name] == true end
 end
 
 -- values the host imposes on the other games (corrected at every checkpoint)
@@ -156,11 +175,13 @@ function correctMoney(own, host, n, sendCommand)
 end
 
 hashShown = false
-function simHash(terrainSig)
-	local parts = R.contentHash(C.hashStr, C.dump)
+-- n: the number of the state check (its group of parts, see HASH_GROUPS); nil: every part
+function simHash(terrainSig, n)
+	local want = hashWant(n)
+	local parts = R.contentHash(C.hashStr, C.dump, want)
 	-- the terrain edits applied so far (the sum of their cells' checksums, kept in the simulation state)
 	parts.terrain = tostring(terrainSig or 0)
-	local okx, errx = pcall(extendedParts, parts)
+	local okx, errx = pcall(extendedParts, parts, want)
 	if not okx then parts.extended = "ERR " .. tostring(errx):sub(1, 80) end
 	if not hashShown then
 		hashShown = true

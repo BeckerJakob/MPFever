@@ -67,6 +67,14 @@
       bzw. Eingaben (Spike S6, im Spiel zu klären); Präsenz über eigenen unzuverlässigen Kanal → Phase 4
 - [ ] Phase 7: echtes Geisterbild der Bau-Geometrie (die DLL hält den Befehl, Lua kennt nur die Klickposition)
 
+### Phase 9 – Zustandsprüfung (Teil-Umsetzung, 09.10.2026)
+- [x] Rotierende Prüfung: jede Prüfung hasht eine von drei Gruppen (`HASH_GROUPS`, Gruppe = Prüfnummer mod 3), Geld,
+      Zeit und Terrain immer; `MPFEVER_HASH_FULL=1` = alles wie bisher; die Gruppen ergeben zusammen exakt den vollen
+      Hash (Test) – ein Stillstand pro Prüfung wird etwa auf ein Drittel kürzer (F9)
+- [x] Launcher: Abweichungen werden pro Teil über die Prüfungen gezählt, die ihn gemessen haben (sonst würde die
+      Rotation jede Zählung zurücksetzen); Drift-Zeit pro Teil
+- [ ] Merkle-Lokalisierung bis zur Entity, gezielte Reparatur, Replay-Rekorder – offen
+
 ---
 
 ## Inhalt

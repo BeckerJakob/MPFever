@@ -427,11 +427,13 @@ function R.translateIn(margs, bind)
 end
 
 -- id-independent world fingerprint parts
-function R.contentHash(hashStr, dumpFn)
+-- want: nil (every part) or function(name) -> true for the parts to compute (Phase 9: a rotating group per check)
+function R.contentHash(hashStr, dumpFn, want)
 	local parts = {}
 	local off = os.getenv("MPFEVER_HASHOFF") or ""
 	local function part(name, fn)
 		if off:find(name, 1, true) then return end
+		if want and not want(name) then return end
 		local ok, v = pcall(fn)
 		parts[name] = ok and v or ("ERR " .. tostring(v):sub(1, 100))
 	end
