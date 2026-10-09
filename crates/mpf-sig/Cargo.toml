@@ -1,0 +1,10 @@
+[package]
+name = "mpf-sig"
+description = "Byte signatures with wildcards: unique search in a code section, generation from an RVA"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+mpf-pe = { path = "../mpf-pe" }
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info"] }

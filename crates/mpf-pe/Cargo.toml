@@ -1,0 +1,8 @@
+[package]
+name = "mpf-pe"
+description = "Minimal reader for PE images (sections, link timestamp, bytes at an RVA) - read only"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]

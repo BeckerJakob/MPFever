@@ -192,6 +192,7 @@ struct Site {
 };
 
 #include "sites_gen.h"
+#include "signatures_gen.h"   // tools/sigtool: signatures of the hooked addresses (Phase 2)
 static Site g_sites[] = {
     { "notPossible@5f4c0b", 0x5f4c0b }, { "notPossible@609fe5", 0x609fe5 }, { "notPossible@60a05f", 0x60a05f },
     { "notPossible@60a0de", 0x60a0de }, { "notPossible@a1c427", 0xa1c427 }, { "notPossible@a1c4c8", 0xa1c4c8 },
@@ -1369,6 +1370,79 @@ static bool SelectBuild(u32 stamp)
     return false;
 }
 
+// ---------------------------------------------------------------- signatures (Phase 2)
+// A game build the module does not know: the addresses of BUILDS[] are found again by their signatures
+// (signatures_gen.h, made by tools/sigtool on a known build: rel32 / RIP-relative displacements are wildcards).
+// MPFEVER_SIGSCAN=1 only compares them with a known build's addresses (native.log), =2 uses them even then.
+static bool StrEq(const char* a, const char* b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
+static bool StartsWith(const char* a, const char* p) { while (*p) { if (*a++ != *p++) return false; } return true; }
+
+// the address of the only match of a masked pattern in .text, or 0 (none, or more than one)
+static u8* FindUniqueMasked(const u8* pat, const u8* mask, int len)
+{
+    int key = -1;
+    for (int j = 0; j < len; j++) if (mask[j]) { key = j; break; }
+    if (key < 0 || g_textEnd - g_textStart < (uptr)len) return 0;
+    const u8* start = (const u8*)g_textStart;
+    u64 size = g_textEnd - g_textStart;
+    u8* found = 0;
+    for (u64 k = 0; k + len <= size; k++) {
+        if (start[k + key] != pat[key]) continue;
+        bool ok = true;
+        for (int j = 0; j < len; j++) if (mask[j] && start[k + j] != pat[j]) { ok = false; break; }
+        if (!ok) continue;
+        if (found) return 0;
+        found = (u8*)(start + k);
+    }
+    return found;
+}
+
+static u32 g_sigSites[32];
+
+// resolves every signature; use=false: only logs them next to the known addresses
+static bool ResolveBySignatures(bool use)
+{
+    u32 rv[64];
+    if (N_SIGS > 64) return false;
+    bool all = true;
+    for (int i = 0; i < N_SIGS; i++) {
+        u8* p = FindUniqueMasked(SIGS[i].bytes, SIGS[i].mask, SIGS[i].len);
+        rv[i] = p ? (u32)((uptr)p - g_base + SIGS[i].offset) : 0;
+        if (!p) { all = false; Buf w; w.str("signature ").str(SIGS[i].name).str(": not found (or not unique)"); LogLine(w); }
+    }
+    int nSites = 0;
+    for (int i = 0; i < N_SIGS; i++) {
+        const char* n = SIGS[i].name;
+        u32 known = 0;
+        if (StrEq(n, "add")) known = RVA_ADD; else if (StrEq(n, "move")) known = RVA_CMD_MOVE;
+        else if (StrEq(n, "dtor")) known = RVA_CMD_DTOR; else if (StrEq(n, "handleDtor")) known = RVA_HANDLE_DTOR;
+        else if (StrEq(n, "apply")) known = RVA_APPLY; else if (StrEq(n, "swap")) known = RVA_SWAP;
+        else if (StrEq(n, "sync")) known = RVA_SYNC; else if (StrEq(n, "preIter")) known = RVA_PREITER;
+        else if (StrEq(n, "lua")) known = g_knownLua; else if (StrEq(n, "pool")) known = g_knownPool;
+        else if (StrEq(n, "loopRet")) known = RVA_LOOP_RET;
+        else if (StartsWith(n, "site") && nSites < UI_ADD_N) known = UI_ADD_SITES[nSites];
+        if (!use) {
+            Buf c; c.str("signature ").str(n).str(" -> ").hex(rv[i]).str(known == rv[i] ? " = known" : " DIFFERS from known ").hex(known);
+            LogLine(c);
+        }
+        if (StartsWith(n, "site")) { if (nSites < 32 && rv[i]) g_sigSites[nSites++] = rv[i]; }
+    }
+    if (!use) return all;
+    if (!all) return false;
+    for (int i = 0; i < N_SIGS; i++) {
+        const char* n = SIGS[i].name;
+        if (StrEq(n, "add")) RVA_ADD = rv[i]; else if (StrEq(n, "move")) RVA_CMD_MOVE = rv[i];
+        else if (StrEq(n, "dtor")) RVA_CMD_DTOR = rv[i]; else if (StrEq(n, "handleDtor")) RVA_HANDLE_DTOR = rv[i];
+        else if (StrEq(n, "apply")) RVA_APPLY = rv[i]; else if (StrEq(n, "swap")) RVA_SWAP = rv[i];
+        else if (StrEq(n, "sync")) RVA_SYNC = rv[i]; else if (StrEq(n, "preIter")) RVA_PREITER = rv[i];
+        else if (StrEq(n, "lua")) g_knownLua = rv[i]; else if (StrEq(n, "pool")) g_knownPool = rv[i];
+        else if (StrEq(n, "loopRet")) RVA_LOOP_RET = rv[i];
+    }
+    UI_ADD_SITES = g_sigSites;
+    UI_ADD_N = nSites;
+    return true;
+}
+
 // Finds a code pattern in the game's .text (the whole section); returns its address if it occurs exactly once.
 static u8* FindUnique(uptr base, const u8* pat, int len, u32 hintRva = 0)
 {
@@ -1426,9 +1500,21 @@ static DWORD WINAPI Init(void*)
     { Buf t; t.str(g_scriptPoolPatched ? "game scripts: own pool, one worker" : "game scripts: pool NOT patched"); LogLine(t); }
     if (g_simPoolA || g_simPoolB) { Buf t; t.str("pool sizes forced: ").hex(g_simPoolA).str(",").hex(g_simPoolB); LogLine(t); }
     if (g_threads) { Buf t; t.str("engine told it has ").hex(g_threads).str(" processor(s)").str(g_realGetSystemInfo ? "" : " (GetSystemInfo not patched)"); LogLine(t); }
-    if (!SelectBuild(fh->TimeDateStamp)) {
-        Buf w; w.str("unknown game build: hooks off"); LogLine(w);
-        return 0;
+    {
+        char sv[4] = {};
+        DWORD sn = GetEnvironmentVariableA("MPFEVER_SIGSCAN", sv, 3);
+        bool known = SelectBuild(fh->TimeDateStamp);
+        if (known && sn > 0 && sv[0] == '1') {
+            Buf t; t.str("signature check on a known build:"); LogLine(t);
+            ResolveBySignatures(false);
+        }
+        if (!known || (sn > 0 && sv[0] == '2')) {
+            if (!ResolveBySignatures(true)) {
+                Buf w; w.str(known ? "signatures incomplete: hooks off" : "unknown game build, signatures incomplete: hooks off"); LogLine(w);
+                return 0;
+            }
+            Buf w; w.str(known ? "addresses taken from the signatures (MPFEVER_SIGSCAN=2)" : "unknown game build: addresses found by their signatures"); LogLine(w);
+        }
     }
     InstallDetour(RVA_ADD, P_ADD, sizeof(P_ADD), (void*)&AddDetour, (void**)&g_addOrig);
     InstallDetour(RVA_APPLY, P_APPLY, sizeof(P_APPLY), (void*)&ApplyDetour, (void**)&g_applyOrig);

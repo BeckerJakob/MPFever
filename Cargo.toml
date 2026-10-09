@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/mpf-pe", "crates/mpf-sig", "tools/sigtool"]
+
+[workspace.package]
+edition = "2021"
+version = "0.3.0"
+license = "MIT"
+
+[profile.release]
+opt-level = 3

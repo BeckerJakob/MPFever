@@ -107,6 +107,16 @@ prüfen die Auswertung zusätzlich gegen die Logs, die die echte Bridge in der S
 
 ## Neuer Spiel-Build
 
-`test.bat native` meldet „installed game build … is not supported“, wenn Steam das Spiel aktualisiert hat: Die
-Konstruktions-Hooks bleiben dann aus (die Mod läuft auf dem Ausweichpfad, Befund F5). Bis zur signaturbasierten Suche
-(Phase 2) müssen die Adressen in `BUILDS[]` und `UI_SITES_<build>` nachgetragen werden; die Native-Tests prüfen sie.
+Seit Phase 2 findet das Native-Modul seine Hook-Adressen bei einem **unbekannten** Build über Signaturen
+(`signatures/signatures.txt` → `native/signatures_gen.h`, Rel32-/RIP-Verschiebungen sind Wildcards). native.log meldet
+dann „unknown game build: addresses found by their signatures“ – oder „signatures incomplete: hooks off“.
+
+```bat
+cargo build --release -p sigtool
+targetelease\sigtool.exe check "<Spielordner>\TransportFever3.exe" signatures\signatures.txt
+```
+
+`check` zeigt für jede Signatur die gefundene Adresse oder „not found“/„found N times“. Für einen neuen Build, der
+übernommen werden soll: Adressen bestätigen (`MPFEVER_SIGSCAN=1` loggt den Vergleich im Spiel), `signatures/known_<build>.txt`
+anlegen und mit `sigtool make <exe> signatures\known_<build>.txt signatures\signatures.txt --header native\signatures_gen.h`
+neue Signaturen erzeugen; `test.bat native` prüft sie gegen die installierte Exe.

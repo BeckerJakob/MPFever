@@ -21,3 +21,6 @@ __pycache__/
 .pytest_cache/
 reports/*
 !reports/baseline-*/
+
+# rust
+target/

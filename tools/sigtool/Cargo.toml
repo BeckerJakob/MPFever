@@ -1,0 +1,10 @@
+[package]
+name = "sigtool"
+description = "Signatures of the engine functions MPFever hooks: make them from a known build, check them on any build"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+mpf-pe = { path = "../../crates/mpf-pe" }
+mpf-sig = { path = "../../crates/mpf-sig" }

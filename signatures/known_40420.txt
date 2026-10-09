@@ -1,0 +1,26 @@
+# known addresses of TransportFever3.exe build 40420 (from BUILDS[] / UI_SITES_40420 of native/mpfever_native.cpp)
+# name<TAB>rva<TAB>entry|inside   (entry: function start; inside: an address inside a function)
+stamp	0x6ac50427
+add	0x9d4040	entry
+move	0x9d0430	entry
+dtor	0x9d0670	entry
+handleDtor	0x3040c90	entry
+apply	0x9e33b0	entry
+swap	0x9d43a0	entry
+sync	0x11f690	entry
+preIter	0x1578a0	entry
+lua	0x2fc58c0	entry
+pool	0xab00fc	inside
+loopRet	0x11ebdb	inside
+site0	0x4d396f	inside
+site1	0x51b56c	inside
+site2	0x528504	inside
+site3	0x537ee5	inside
+site4	0x538649	inside
+site5	0x5387cd	inside
+site6	0x542eba	inside
+site7	0x5891b4	inside
+site8	0x5948dd	inside
+site9	0x5bf08d	inside
+site10	0x28a3024	inside
+site11	0x28a3871	inside

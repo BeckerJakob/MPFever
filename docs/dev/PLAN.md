@@ -41,6 +41,19 @@
 - [x] Befunde behoben: **F1** (ganze Zahlen über 2³¹: `C.int`), **F2** (Escapen ohne Locale), **F4** (eine Zeitquelle `C.clock`),
       **F8** (Autostart nach dem Laden: Anforderung in `autoload.txt`), **F9 kurzfristig** (Prüfintervall ≥ 10 × letzte Prüfdauer)
 
+### Phase 2 – Signaturbasierte Adressen (Teil-Umsetzung, 09.10.2026)
+- [x] Rust-Workspace: `mpf-pe` (PE-Parser), `mpf-sig` (Signaturen mit Wildcards, eindeutige Suche, Erzeugung per
+      x86-Decoder iced-x86), `tools/sigtool` (`make`, `check`, Header-Generator)
+- [x] `signatures/known_40408.txt`, `known_40420.txt` (aus `BUILDS[]`), `signatures/signatures.txt` (23 Adressen, Build 40420)
+- [x] Native-Modul: unbekannter Build → Adressen per Signatur (`signatures_gen.h`); `MPFEVER_SIGSCAN=1` vergleicht,
+      `=2` nutzt sie auch bei bekanntem Build
+- [x] T2.1/T2.2 Rust-Tests (PE, Muster, Erzeugung, verschobene Aufrufziele), T2.3 alle Signaturen eindeutig an den bekannten
+      Adressen der installierten Exe, Header passt zu `signatures.txt`
+- [x] T2.11 (E2E) Signaturen im Spiel: Vergleich und Hooks aus Signaturen (`tests/e2e/test_native_signatures.py`)
+- [ ] Hook-Logik selbst nach Rust (`mpf-core`), Proxy auf Loader reduzieren – **offen** (ohne Debugging im Spiel zu riskant;
+      die C++-Hooks bleiben), ebenso T2.5–T2.9 (Dummy-Exe)
+- [ ] T2.4 Signaturen gegen Build 40408 – Exe nicht verfügbar
+
 ---
 
 ## Inhalt
