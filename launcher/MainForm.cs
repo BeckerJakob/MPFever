@@ -40,7 +40,7 @@ namespace MPFever
 
     sealed class MainForm : Form
     {
-        public const string Version = "0.2.5-experimental";
+        public const string Version = "0.2.10-experimental";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -122,7 +122,10 @@ namespace MPFever
         // follow): not caused by a missed action; reloaded only when it lasts, so that players are not interrupted
         // every two minutes
         static readonly HashSet<string> DriftParts = new HashSet<string> { "vehicles", "onboard", "persons", "stocks",
-            "script:towns", "script:towncargo", "script:celebrations", "script:progression", "script:industries" };
+            "script:towns", "script:towncargo", "script:celebrations", "script:progression", "script:industries",
+            // (not the engine's drift: lane connections, crosswalks and traffic lights of the road nodes. New and little
+            // proven as a check, so it only reloads when it lasts)
+            "nodeConfigs" };
         const double DriftResyncSeconds = 300;
         double driftSince = -1;
         double lastNotStartedLog = -1e9;
@@ -249,10 +252,13 @@ namespace MPFever
             catch (Exception e) { Log.W("steam_ctl: " + e.Message); }
         }
 
-        /// <summary>The address friends use to reach this host: its public IP (asked to api.ipify.org), else its
-        /// local address.</summary>
+        /// <summary>The address friends use to reach this host: its public IP (asked to api.ipify.org, unless
+        /// lookupip=0 is written in mpfever_settings.txt), else its local address.</summary>
         static string PublicAddress()
         {
+            var st = LoadSettings();
+            if (st.TryGetValue("lookupip", out var lk) && lk.Trim() == "0")
+                return LocalAddresses().Split(',')[0].Trim();
             try
             {
                 var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("https://api.ipify.org");
@@ -509,8 +515,51 @@ namespace MPFever
             }
         }
 
+        DateTime lastAudit = DateTime.MinValue;
+
+        /// <summary>Every 30 s, the command audit of each local game (how many commands of each kind its simulation applied,
+        /// written by the native module in native.log) is copied to logs/audit-NAME.txt, to find actions that one game
+        /// applied and the other never did.</summary>
+        void AuditSnapshot()
+        {
+            if ((DateTime.Now - lastAudit).TotalSeconds < 30) return;
+            lastAudit = DateTime.Now;
+            var list = new List<GameLink>();
+            try { lock (games) list.AddRange(games); } catch { }
+            if (hostGame != null) list.Add(hostGame);
+            if (menuGame != null) list.Add(menuGame);
+            foreach (var g in list.GroupBy(x => x.Dir).Select(x => x.First()))
+            {
+                try
+                {
+                    var f = Path.Combine(g.Dir, "native.log");
+                    if (!File.Exists(f)) continue;
+                    var last = new SortedDictionary<int, string>();
+                    using (var fs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        if (fs.Length > 400000) fs.Seek(-400000, SeekOrigin.End);
+                        using (var r = new StreamReader(fs))
+                        {
+                            string l;
+                            while ((l = r.ReadLine()) != null)
+                            {
+                                int i = l.IndexOf("audit kind ", StringComparison.Ordinal);
+                                if (i < 0) continue;
+                                var p = l.Substring(i + 11).Split(' ');
+                                if (p.Length >= 5 && int.TryParse(p[0], out var k)) last[k] = "kind " + p[0] + " loop " + p[2] + " direct " + p[4];
+                            }
+                        }
+                    }
+                    if (last.Count > 0)
+                        File.WriteAllLines(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs", "audit-" + (g.Name ?? "game") + ".txt"), last.Values);
+                }
+                catch { }
+            }
+        }
+
         void RefreshStatus()
         {
+            AuditSnapshot();
             if (menuMode) MenuStatus();
             if (relay == null) { if (clients.Count > 0) status.Text = T("Client connecté", "Connected to the host"); return; }
             int n; lock (players) n = players.Count;

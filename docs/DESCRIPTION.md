@@ -7,7 +7,7 @@
 ## Features
 
 - **Co-op in one shared company.** Shared money, vehicles, lines and infrastructure.
-- **Real-time sync of what you build.** Roads and tracks (including joins in the middle of a road and upgrades), bus and tram stops, stations, depots, buildings and the bulldozer. Vehicle purchases, lines, vehicle assignments, game speed and pause too.
+- **Real-time sync of what you build.** Roads and tracks (including joins in the middle of a road and upgrades), bus and tram stops, stations, depots, buildings, the bulldozer and terrain editing (raising / lowering the ground). Vehicle purchases, lines, vehicle assignments, game speed and pause too.
 - **Host authority.** Every 10 seconds the games compare their state:
   - money, loans, company progress, contracts, towns and industries;
   - cargo in buildings and vehicles;

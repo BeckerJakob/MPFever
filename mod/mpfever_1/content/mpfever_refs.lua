@@ -429,7 +429,9 @@ end
 -- id-independent world fingerprint parts
 function R.contentHash(hashStr, dumpFn)
 	local parts = {}
+	local off = os.getenv("MPFEVER_HASHOFF") or ""
 	local function part(name, fn)
+		if off:find(name, 1, true) then return end
 		local ok, v = pcall(fn)
 		parts[name] = ok and v or ("ERR " .. tostring(v):sub(1, 100))
 	end
@@ -494,7 +496,70 @@ function R.contentHash(hashStr, dumpFn)
 	part("townBuildings", function() return count("TOWN_BUILDING") end)
 	part("persons", function() return count("SIM_PERSON") end)
 	part("stations", function() return count("STATION") end)
-	part("lines", function() return count("LINE") end)
+	local function nameOf(e)
+		local n = comp(e, "NAME")
+		return n and n.name and tostring(n.name) or ""
+	end
+	-- the lines with what the player sets on them: name, and for every stop its station's name, terminal, loading mode
+	-- and waiting times (the ids of the stations differ between games, their names do not)
+	part("lines", function() return count("LINE", function(e)
+		local c = comp(e, "LINE")
+		if not c then return nil end
+		local t = { nameOf(e) }
+		for i = 1, #c.stops do
+			local st = c.stops[i]
+			t[#t + 1] = nameOf(st.stationGroup) .. "," .. tostring(st.terminal) .. "," .. tostring(st.loadMode) .. ","
+				.. string.format("%.0f/%.0f/%.0f", st.minWaitingTime or 0, st.maxWaitingTime or 0, st.maxAdditionalWaitingTime or 0)
+		end
+		return table.concat(t, "|")
+	end) end)
+	-- the names of stations, lines and vehicles
+	part("names", function()
+		local n, acc = 0, 0
+		for _, cname in ipairs({ "STATION_GROUP", "LINE", "TRANSPORT_VEHICLE" }) do
+			for _, e in ipairs(R.entitiesWith(cname)) do
+				n = n + 1
+				acc = (acc + hashStr(0, cname .. ":" .. nameOf(e))) % 4294967296
+			end
+		end
+		return n .. "/" .. acc
+	end)
+	-- what the player sets on a vehicle: its line, stopped by the player, to be sold
+	part("vehicleState", function() return count("TRANSPORT_VEHICLE", function(e)
+		local c = comp(e, "TRANSPORT_VEHICLE")
+		if not c then return nil end
+		return (c.line and c.line >= 0 and nameOf(c.line) or "-") .. "/" .. tostring(c.userStopped) .. "/" .. tostring(c.sellOnArrival)
+	end) end)
+	-- lane connections, crosswalks and traffic lights of the road nodes
+	part("nodeConfigs", function()
+		local n, acc = 0, 0
+		local dump = os.getenv("MPFEVER_NCDUMP") and {} or nil     -- diagnostic: the line of every node, to diff two games
+		for _, node in ipairs(R.allNodes()) do
+			local nc = comp(node, "BASE_NODE_CONFIG")
+			local p = nc and nodePos(node)
+			if nc and p then
+				n = n + 1
+				local tl = nil
+				pcall(function() tl = nc.trafficLightConfig.trafficLightType end)
+				local line = r1(p.x) .. "," .. r1(p.y) .. "/" .. #nc.laneConnections .. "/" .. #nc.crosswalks .. "/"
+					.. tostring(nc.trafficLightPreference) .. "/" .. tostring(tl) .. "/" .. tostring(nc.doubleSlipSwitch)
+				if dump then dump[#dump + 1] = line .. " #" .. tostring(node) .. " " .. string.format("%.2f,%.2f", p.x, p.y) end
+				acc = (acc + hashStr(0, line)) % 4294967296
+			end
+		end
+		R.ncDump = dump
+		return n .. "/" .. acc
+	end)
+	-- (the height of the ground is not sampled: api.engine.terrain.getHeightAt called from the game script stalls the game)
+	-- the parameters of every construction that is not a town building (the modules of a modular station...)
+	part("conParams", function() return count("CONSTRUCTION", function(e)
+		local c = comp(e, "CONSTRUCTION")
+		if not c or comp(e, "TOWN_BUILDING") then return nil end
+		local p = matPos(c.transf)
+		local d = ""
+		pcall(function() d = dumpFn(c.params) end)
+		return tostring(c.fileName) .. "@" .. r1(p and p.x) .. "," .. r1(p and p.y) .. "#" .. tostring(d)
+	end) end)
 	part("edgeObjects", function()
 		local n, acc = 0, 0
 		for eo, edge in pairs(api.engine.system.streetSystem.getEdgeObject2EdgeMap() or {}) do

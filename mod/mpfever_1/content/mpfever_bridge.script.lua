@@ -161,8 +161,10 @@ local function correctMoney(own, host, n, sendCommand)
 end
 
 local hashShown = false
-local function simHash()
+local function simHash(terrainSig)
 	local parts = R.contentHash(C.hashStr, C.dump)
+	-- the terrain edits applied so far (the sum of their cells' checksums, kept in the simulation state)
+	parts.terrain = tostring(terrainSig or 0)
 	local okx, errx = pcall(extendedParts, parts)
 	if not okx then parts.extended = "ERR " .. tostring(errx):sub(1, 80) end
 	if not hashShown then
@@ -175,6 +177,15 @@ local function simHash()
 	end
 	local ok, t = pcall(gameTime)
 	parts.time = ok and t or "?"
+	if R.ncDump then
+		pcall(function()
+			table.sort(R.ncDump)
+			local f = C.IO.open(C.DIR .. BS .. "nc_" .. string.format("%012d", t) .. ".txt", "wb")
+			f:write(table.concat(R.ncDump, NL), NL)
+			f:close()
+		end)
+		R.ncDump = nil
+	end
 	local okm, money = pcall(function()
 		local acc = api.engine.getComponent(api.engine.util.getPlayer(), api.type.ComponentType.ACCOUNT)
 		return acc.balance .. "/" .. acc.loan
@@ -420,12 +431,15 @@ local function simApplyDue(state)
 				if a.kind == "hash" then
 					local c0 = os.clock()
 					local okA, auth = pcall(authValues)
-					st.hash = { n = a.n, parts = simHash(), cost = os.clock() - c0, auth = okA and auth or nil }
+					st.hash = { n = a.n, parts = simHash(st.terrainSig), cost = os.clock() - c0, auth = okA and auth or nil }
 					st.authOwn = st.authOwn or {}
 					st.authOwn[#st.authOwn + 1] = { n = a.n, auth = okA and auth or nil }
 					while #st.authOwn > 10 do table.remove(st.authOwn, 1) end
 				else
-					if a.at < now then log("LATE action " .. tostring(a.uid) .. " for t=" .. a.at .. " applied at " .. now .. " (" .. ((now - a.at) / STEP) .. " step(s) late)") end
+					if a.at < now then
+						log("LATE action " .. tostring(a.uid) .. " for t=" .. a.at .. " applied at " .. now .. " (" .. ((now - a.at) / STEP) .. " step(s) late)")
+						st.late = (st.late or 0) + 1
+					end
 					if a.fn == "makeVehicleBuyCmd" then bought = true end
 					-- mark the replay so that onPreBuildProposal does not ship it again
 					st.replay = { at = now, n = ((st.replay and st.replay.at == now) and st.replay.n or 0) + 1 }
@@ -666,6 +680,43 @@ local function captureNativeBuild(state, param)
 	local proposal, playerInitiated = nil, nil
 	pcall(function() proposal, playerInitiated = param[1], param[4] end)
 	if proposal == nil or playerInitiated == false then return end
+	-- A terrain modification (raising / lowering the ground) alone: a script cannot read its height cells nor write them, so
+	-- the native module copies them (terrain_out_<n>.txt, announced in native_events.log) when the engine applies the
+	-- command; the other games get them back through an empty grid of the same size (replayTerrain). The terrain tools cannot
+	-- be held like the others: the edit is made here at once and the others make it at the same game time when they can.
+	local okt, terrainOnly = pcall(function()
+		local g = proposal.terrain and proposal.terrain.baseHeightMod
+		if not g or (g.width or 0) * (g.height or 0) <= 0 then return false end
+		if #proposal.toAdd > 0 or #proposal.toRemove > 0 then return false end
+		local sp = proposal.proposal
+		for _, k in ipairs({ "nodesToAdd", "nodesToRemove", "edgesToAdd", "edgesToRemove", "edgeObjectsToAdd", "edgeObjectsToRemove" }) do
+			local v = sp[k]
+			if v ~= nil and #v > 0 then return false end
+		end
+		return true
+	end)
+	if okt and terrainOnly then
+		local dims = nil
+		pcall(function()
+			local g = proposal.terrain.baseHeightMod
+			dims = { x0 = g.x0, y0 = g.y0, w = g.width, h = g.height }
+		end)
+		log("terrain modification at t=" .. now .. (dims and (": " .. dims.w .. "x" .. dims.h .. " cells at " .. dims.x0 .. "," .. dims.y0) or ""))
+		st.terrainEdits = (st.terrainEdits or 0) + 1
+		st.out = st.out or {}
+		st.outSeq = (st.outSeq or 0) + 1
+		st.out[#st.out + 1] = { n = st.outSeq, at = now, paused = (st.pauseAt ~= nil and now >= st.pauseAt) or nil,
+			fn = "terrainEdit", args = dims or {}, terrain = true, captured = now }
+		while #st.out > 50 do table.remove(st.out, 1) end
+		state:set(st)
+		return
+	end
+	pcall(function()
+		local g = proposal.terrain and proposal.terrain.baseHeightMod
+		if g and (g.width or 0) * (g.height or 0) > 0 then
+			log("WARNING: a build at t=" .. now .. " carries " .. g.width .. "x" .. g.height .. " terrain cells besides other content: the cells are not copied to the other games")
+		end
+	end)
 	local c0 = os.clock()
 	log("capture: start t=" .. now)
 	local okc, compact = pcall(C.compactProposal, proposal)
@@ -816,6 +867,8 @@ local function handleEvent(userParams, state, src, id, name, param)
 		elseif name == "bind" then
 			st.bind = st.bind or {}
 			st.bind[param.key] = param.e
+		elseif name == "terrain_note" then
+			st.terrainSig = ((st.terrainSig or 0) + (tonumber(param.v) or 0)) % 4294967296
 		elseif name == "replaying" then
 			st.replay = { at = gameTime(), n = ((st.replay and st.replay.at == gameTime()) and st.replay.n or 0) + 1 }
 		elseif name == "auth" then
@@ -986,17 +1039,36 @@ end
 G.nativeQueue = {}
 local nativeReceived
 -- how far ahead of this game an announced action still is when it arrives (steps): the margin the stamp distance leaves
-local function logMargin(kind, at)
+-- The stamp distance (G.ahead) is the safe worst case. It is shortened (never below 60%) when the margins really left on
+-- the announcements this game receives show that the games stay well within it, and given back for good the first time an
+-- action arrives late.
+G.consumed = {}
+local function adaptAhead(base)
+	-- (opt-in, MPFEVER_ADAPTAHEAD=1: on a loaded PC builds already arrive up to 3 steps late with the full distance, so it is
+	-- not shortened by default)
+	if not os.getenv("MPFEVER_ADAPTAHEAD") or G.aheadLocked or #G.consumed < 8 then return base end
+	local mx = 0
+	for _, c in ipairs(G.consumed) do mx = math.max(mx, c) end
+	return math.max(math.ceil(base * 0.6), math.min(base, math.ceil(mx * 1.5) + 4))
+end
+
+local function logMargin(kind, at, origin)
 	local ok, now = pcall(gameTime)
 	if ok and type(at) == "number" then
 		local m = (at - now) / STEP
+		-- what the stamp's distance lost on the way: the other game's lead and the network
+		local pa = origin and G.peers[origin] and G.peers[origin].ah
+		if pa and (kind == "nat_pending" or kind == "act") then
+			table.insert(G.consumed, pa + (kind == "nat_pending" and 1 or 0) - m)
+			if #G.consumed > 12 then table.remove(G.consumed, 1) end
+		end
 		G.minMargin = math.min(G.minMargin or 99, m)
-		log("MARGIN " .. kind .. " " .. m .. " steps (smallest so far " .. G.minMargin .. ", stamp distance " .. tostring(G.ahead) .. ", speed " .. tostring(G.session.speed) .. ")")
+		log("MARGIN " .. kind .. " " .. m .. " steps (smallest so far " .. G.minMargin .. ", stamp distance " .. tostring(G.ahead) .. ", speed " .. tostring(G.session.speed) .. ") [frame " .. G.frames .. "]")
 	end
 end
 
 H.act = function(from, p)
-	logMargin(p.native and "act(native)" or "act", p.at)
+	logMargin(p.native and "act(native)" or "act", p.at, p.origin)
 	if p.native then
 		G.nativeQueue[#G.nativeQueue + 1] = p
 		if nativeReceived then pcall(nativeReceived, p) end
@@ -1741,28 +1813,86 @@ local function nativeHoldAt()
 		log("replay without engine answer for 600 frames: hold released")
 		G.replayOut = 0
 	end
-	if (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0) then return now end
+	if (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0) or G.terrainBusy then return now end
 	for _, a in ipairs(G.nativeQueue or {}) do if a.at > now and (m == nil or a.at < m) then m = a.at end end
 	return m
 end
 
 H.nat_pending = function(from, p)
 	if p.origin == G.me then return end
-	logMargin("nat_pending", p.at)
+	logMargin("nat_pending", p.at, p.origin)
 	G.natWait[#G.natWait + 1] = { origin = p.origin, id = p.id, at = p.at, since = G.frames }
 	log("native build of " .. tostring(p.origin) .. " announced for t=" .. tostring(p.at) .. ": holding there")
 end
 
+-- While the build waits for its game time (about two seconds), a translucent circle on the ground where the player
+-- clicked shows that it is on its way (no interface element: the world's own zone drawing). Removed once shipped.
+G.pendingMarks = {}
+local function markPending(id, at)
+	local ok, err = pcall(function()
+		local pos = at
+		if not pos then
+			local m = api.gui.mouse
+			if not (m and m.hasTerrainPosition and m.hasTerrainPosition()) then return end
+			pos = m.getTerrainPosition()
+		end
+		api.gui.mission.setZoneCircle("mpfever_pending_" .. id, api.type.Vec2f.new(pos.x, pos.y), 14, true,
+			api.type.Vec4f.new(1.0, 0.75, 0.1, 0.45), false, false)
+		G.pendingMarks[id] = G.frames
+	end)
+	if not ok then log("pending mark failed: " .. tostring(err)) end
+end
+
+local function refreshPendingMarks()
+	if next(G.pendingMarks) == nil then return end
+	local live = {}
+	for _, r in ipairs(G.natRelease) do live[r.id] = true end
+	for _, e in ipairs(G.natShipIds or {}) do live[e.id] = true end
+	for id, since in pairs(G.pendingMarks) do
+		if not live[id] or G.frames - since > 900 then
+			pcall(api.gui.mission.removeZone, "mpfever_pending_" .. id)
+			G.pendingMarks[id] = nil
+		end
+	end
+end
+
+-- terrain edits: the cells the DLL copied when the engine applied an edit here (to ship), and the verdicts on the ones
+-- received (injected into the empty grid the replay sends)
+G.terrainBlobs = {}
+G.terrainIn = {}
+G.lastBlobId = 0
+-- the ground under a patch of cells (a diagnostic: the same sum in two games means the same ground)
+G.terrainSum = function(x0, y0, w, h)
+	local sum, n = 0, 0
+	for i = 0, math.min(w, 24) - 1 do
+		for j = 0, math.min(h, 24) - 1 do
+			local z = nil
+			pcall(function() z = api.engine.terrain.getBaseHeightAt(api.type.Vec2f.new((x0 + i + 0.5) * 4, (y0 + j + 0.5) * 4)) end)
+			if type(z) == "number" then sum = sum + z; n = n + 1 end
+		end
+	end
+	return string.format("%.3f over %d points", sum, n)
+end
 local function pollNativeEvents()
+	refreshPendingMarks()
 	for _, line in ipairs(readLines("native_events.log", "natOff")) do
+		local tid, tx0, ty0, tw, th, tlen, tfnv, textra = line:match("^terrain (%d+) (%-?%d+) (%-?%d+) (%d+) (%d+) (%d+) (%x+) (%d+)")
+		if tid then
+			G.terrainBlobs[#G.terrainBlobs + 1] = { id = tonumber(tid), x0 = tonumber(tx0), y0 = tonumber(ty0), w = tonumber(tw),
+				h = tonumber(th), len = tonumber(tlen), fnv = tfnv, extra = tonumber(textra), frame = G.frames }
+			while #G.terrainBlobs > 12 do table.remove(G.terrainBlobs, 1) end
+		end
+		local rid, rst = line:match("^terrain_in (%d+) (%a+)")
+		if rid then G.terrainIn[tonumber(rid)] = rst end
 		local id = tonumber(line:match("^deferred (%d+)"))
 		if id then
+			markPending(id)
 			local now = gameTime()
 			local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt
 			local at = paused and pausedStamp(now) or (stampFor(now) + STEP)
 			G.natRelease[#G.natRelease + 1] = { id = id, at = at }
 			send("nat_pending", { origin = G.me, at = at, id = id })
-			log("native build " .. id .. " held by the DLL, released at t=" .. at .. " (now " .. now .. ")")
+			log("native build " .. id .. " held by the DLL, released at t=" .. at .. " (now " .. now .. ") [frame " .. G.frames .. "]")
 		end
 	end
 end
@@ -1775,6 +1905,8 @@ local function deferredSend(cmd, cb)
 	local id = 100000 + G.autoBuildSeq
 	local at = stampFor(now) + STEP
 	G.natRelease[#G.natRelease + 1] = { id = id, at = at, fn = function() O.sendCommand(cmd, cb) end }
+	markPending(id, { x = 0, y = 0 })
+	log("pending mark drawn for autotest build " .. id)
 	send("nat_pending", { origin = G.me, at = at, id = id })
 end
 
@@ -1806,6 +1938,24 @@ H.nat_cancel = function(from, p)
 	G.natWait = keep
 end
 
+-- the held build goes to the engine; it is built at game time `at` (the time the game is at now, or the one the steps
+-- queued just before it end at)
+local function releaseOne(r, at, how)
+	G.natReleased = G.natReleased + 1
+	G.natShipIds = G.natShipIds or {}
+	G.natShipIds[#G.natShipIds + 1] = { id = r.id, at = at, frame = G.frames, combined = how ~= nil }
+	if r.fn then
+		-- a scripted build (autotest) deferred like the tools' ones: sent now, at its announced time
+		G.natReleased = G.natReleased - 1
+		pcall(r.fn)
+	else
+		nativeCtl("release " .. G.natReleased)
+		-- any command reaching CommandList::Add lets the DLL release the held build just before it
+		O.sendCommand(O.event("mpfever", "mpfever", "nop", {}))
+	end
+	log("native build " .. r.id .. " released at t=" .. at .. (how or "") .. (at > r.at and (" (" .. ((at - r.at) / STEP) .. " step(s) late)") or "") .. " [frame " .. G.frames .. "]")
+end
+
 local function runNativeRelease()
 	expireShipIds()
 	if #G.natRelease == 0 then return end
@@ -1813,19 +1963,7 @@ local function runNativeRelease()
 	local keep = {}
 	for _, r in ipairs(G.natRelease) do
 		if now >= r.at and gameSpeed() == 0 then
-			G.natReleased = G.natReleased + 1
-			G.natShipIds = G.natShipIds or {}
-			G.natShipIds[#G.natShipIds + 1] = { id = r.id, at = now, frame = G.frames }
-			if r.fn then
-				-- a scripted build (autotest) deferred like the tools' ones: sent now, at its announced time
-				G.natReleased = G.natReleased - 1
-				pcall(r.fn)
-			else
-				nativeCtl("release " .. G.natReleased)
-				-- any command reaching CommandList::Add lets the DLL release the held build just before it
-				O.sendCommand(O.event("mpfever", "mpfever", "nop", {}))
-			end
-			log("native build " .. r.id .. " released at t=" .. now .. (now > r.at and (" (" .. ((now - r.at) / STEP) .. " step(s) late)") or ""))
+			releaseOne(r, now)
 		else
 			keep[#keep + 1] = r
 		end
@@ -1866,16 +2004,96 @@ local function nativeArrived(a)
 	G.natWait = keep
 end
 
+-- Another game's terrain edit, in two phases so that a failure never reaches the engine: (1) the cells go to the DLL (a file and
+-- a control line, read when the next command enters the command list: a nop event is sent for that) and the DLL says "ready";
+-- (2) only then a command with an empty grid of the same size goes to the engine, and the DLL copies the cells into it as it
+-- enters the command list ("injected"). An empty grid applied by itself would flatten the ground it covers.
+local function terrainFail(a, why)
+	G.terrainBusy = nil
+	log("TERRAIN REPLAY " .. tostring(a.uid) .. ": " .. why)
+	replayFailed(a, why)
+end
+
+local function replayTerrain(a)
+	local t = a.args or {}
+	if type(t.blob) ~= "string" or type(t.w) ~= "number" or type(t.h) ~= "number" then
+		return terrainFail(a, "no cells received")
+	end
+	G.terrainInSeq = (G.terrainInSeq or 0) + 1
+	local okT, tm = pcall(os.time)
+	local id = ((okT and tm or 0) % 100000) * 1000 + G.terrainInSeq % 1000
+	local f = C.IO.open(C.DIR .. BS .. "terrain_in_" .. id .. ".txt", "wb")
+	if not f then return terrainFail(a, "cannot write the cells") end
+	f:write(t.blob)
+	f:close()
+	G.terrainBusy = { id = id, frame = G.frames, a = a, phase = "load" }
+	nativeCtl("tin " .. id)
+	O.sendCommand(O.event("mpfever", "mpfever", "nop", {}))     -- the DLL reads the control line when this command enters the list
+end
+
+local function sendTerrainCarrier(busy)
+	local a, id = busy.a, busy.id
+	local t = a.args
+	local okc, cmd = pcall(function()
+		local prop = api.type.Proposal.new()
+		prop.terrain.baseHeightMod = api.type.GridVec2f.new(t.x0, t.y0, t.w, t.h)
+		local ctx = api.type.Context.new()
+		ctx.player = api.engine.util.getPlayer()
+		return api.cmd.makeWorldBuildProposalCmd(prop, ctx, false, true)
+	end)
+	if not okc or not cmd then return terrainFail(a, "command not made (" .. shortErr(cmd) .. ")") end
+	busy.phase = "inject"
+	busy.frame = G.frames
+	toSim("replaying", {})
+	toSim("terrain_note", { v = tonumber(tostring(t.fnv):sub(-8), 16) or 0 })
+	local hx, hy = (t.x0 + math.floor(t.w / 2)) * 4 + 2, (t.y0 + math.floor(t.h / 2)) * 4 + 2
+	local h0 = nil
+	pcall(function() h0 = api.engine.terrain.getBaseHeightAt(api.type.Vec2f.new(hx, hy)) end)
+	replaySend(cmd, function(res, success)
+		local h1 = nil
+		pcall(function() h1 = api.engine.terrain.getBaseHeightAt(api.type.Vec2f.new(hx, hy)) end)
+		log("TERRAIN REPLAY " .. tostring(a.uid) .. (success and " applied" or " REFUSED") .. " (" .. t.w .. "x" .. t.h .. " cells at " .. t.x0 .. ","
+			.. t.y0 .. "; DLL: " .. tostring(G.terrainIn[id]) .. "; height at the centre " .. tostring(h0) .. " -> " .. tostring(h1) .. ")")
+		G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function()
+			log("TERRAIN REPLAY " .. tostring(a.uid) .. ": ground now sum " .. tostring(G.terrainSum(t.x0, t.y0, t.w, t.h)))
+		end }
+		if not success then replayFailed(a, "terrain refused") end
+	end)
+end
+
+-- every frame: moves the edit being replayed from one phase to the next
+local function pumpTerrain()
+	local busy = G.terrainBusy
+	if not busy then return end
+	local st = G.terrainIn[busy.id]
+	local age = G.frames - busy.frame
+	if busy.phase == "load" then
+		if st == "ready" then sendTerrainCarrier(busy)
+		elseif st == "failed" then terrainFail(busy.a, "the native module could not read the cells")
+		elseif age > 180 then terrainFail(busy.a, "the native module did not answer (" .. tostring(st) .. ")") end
+	else
+		if st == "injected" then G.terrainBusy = nil
+		elseif age > 300 then terrainFail(busy.a, "the cells were not injected (" .. tostring(st) .. ")") end
+	end
+end
+
 local function runNativeReplays()
+	pumpTerrain()
 	if #G.nativeQueue == 0 then return end
 	local now = gameTime()
 	table.sort(G.nativeQueue, before)
 	local keep = {}
 	for _, a in ipairs(G.nativeQueue) do
-		if a.at <= now then
-			if a.at < now then log("LATE native build " .. tostring(a.uid) .. " for t=" .. a.at .. " applied at " .. now .. " (" .. ((now - a.at) / STEP) .. " step(s) late)") end
+		if a.at <= now and a.fn == "terrainEdit" and G.terrainBusy then
+			keep[#keep + 1] = a      -- the cells of the previous edit are still being handed to the engine
+		elseif a.at <= now then
+			if a.at < now then
+				log("LATE native build " .. tostring(a.uid) .. " for t=" .. a.at .. " applied at " .. now .. " (" .. ((now - a.at) / STEP) .. " step(s) late)")
+				G.aheadLocked = true
+			end
 			nativeArrived(a)
-			local okr, errr = pcall(replayNative, a, 1)
+			local okr, errr
+			if a.fn == "terrainEdit" then okr, errr = pcall(replayTerrain, a) else okr, errr = pcall(replayNative, a, 1) end
 			if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " failed: " .. tostring(errr)) end
 		else
 			keep[#keep + 1] = a
@@ -2033,10 +2251,58 @@ local function needsEnrich(compact)
 	return false
 end
 
+-- A terrain edit made here: the cells the DLL copied go to the others with the time the engine applied it. Without them
+-- (no native module, cells not read) the games differ for sure: the host's game is reloaded everywhere.
+local function shipTerrain(o)
+	local d = o.args or {}
+	local k = nil
+	-- the edits are applied in the order the DLL copies them: the oldest copy of the right size that is not too old (an edit
+	-- the engine refused leaves a copy no edit comes for), and never one older than the last used
+	local first = G.outFirstSeen[o.n] or G.frames
+	for i = 1, #G.terrainBlobs do
+		local b = G.terrainBlobs[i]
+		if b.id > (G.lastBlobId or 0) and first - b.frame < 240 and b.x0 == d.x0 and b.y0 == d.y0 and b.w == d.w and b.h == d.h then k = i; break end
+	end
+	local function fail(why)
+		log("terrain edit made here at t=" .. tostring(o.at) .. " cannot be copied to the other games: " .. why .. " (the host's game will be reloaded)")
+		send("replay_failed", { uid = "terrain", why = "terrain modification" })
+		return "failed"
+	end
+	if not k then
+		if G.frames - (G.outFirstSeen[o.n] or G.frames) < 150 then return "wait" end
+		return fail("the native module did not copy the cells")
+	end
+	local b = table.remove(G.terrainBlobs, k)
+	G.lastBlobId = b.id
+	local f = C.IO.open(C.DIR .. BS .. "terrain_out_" .. b.id .. ".txt", "rb")
+	local txt = f and f:read("*a")
+	if f then f:close() end
+	if type(txt) ~= "string" or #txt ~= b.len then return fail("the file of the cells is missing or damaged") end
+	if (b.extra or 0) > 0 then
+		log("terrain edit at t=" .. tostring(o.at) .. " carries " .. b.extra .. " more grid(s) (ground paint?) that are not copied")
+	end
+	G.oseq = G.oseq + 1
+	local a = { fn = "terrainEdit", args = { x0 = d.x0, y0 = d.y0, w = d.w, h = d.h, fnv = b.fnv, blob = txt }, at = o.at, origin = G.me,
+		oseq = G.oseq, uid = G.me .. ":" .. G.oseq, native = true, paused = o.paused }
+	send("act", a)
+	toSim("terrain_note", { v = tonumber(b.fnv:sub(-8), 16) or 0 })
+	G.waits[#G.waits + 1] = { at = G.frames + 60, fn = function()
+		log("terrain edit " .. a.uid .. ": ground here now sum " .. tostring(G.terrainSum(d.x0, d.y0, d.w, d.h)))
+	end }
+	log("terrain edit shipped " .. a.uid .. " (" .. d.w .. "x" .. d.h .. " cells, " .. #txt .. " bytes as text, made here at t=" .. tostring(o.at) .. ") [frame " .. G.frames .. "]")
+	return "sent"
+end
+
 local function shipNativeBuilds(st)
 	G.outFirstSeen = G.outFirstSeen or {}
 	for _, o in ipairs(st.out or {}) do
-		if o.n > G.outSent then
+		if o.n > G.outSent and o.terrain then
+			G.outFirstSeen[o.n] = G.outFirstSeen[o.n] or G.frames
+			local okT, r = pcall(shipTerrain, o)
+			if not okT then log("terrain shipping failed: " .. tostring(r)); r = "failed" end
+			if r == "wait" then return end
+			G.outSent = o.n
+		elseif o.n > G.outSent then
 			G.outFirstSeen[o.n] = G.outFirstSeen[o.n] or G.frames
 			if o.ready == false and G.frames - G.outFirstSeen[o.n] < 30 then return end
 			G.outSent = o.n
@@ -2052,6 +2318,9 @@ local function shipNativeBuilds(st)
 				local k = nil
 				for i, e in ipairs(G.natShipIds) do if e.at == o.at then k = i; break end end
 				k = k or 1
+				if G.natShipIds[k].at ~= o.at then
+					log("WARNING: a native build landed at t=" .. tostring(o.at) .. " instead of t=" .. tostring(G.natShipIds[k].at) .. " (desync risk)")
+				end
 				for i = 1, k - 1 do cancelNativeBuild(G.natShipIds[i], "refused before a later build") end
 				a.natId = G.natShipIds[k].id
 				local rest = {}
@@ -2059,7 +2328,7 @@ local function shipNativeBuilds(st)
 				G.natShipIds = rest
 			end
 			send("act", a)
-			log("native build shipped " .. a.uid .. " (built here at t=" .. o.at .. ", the other games build it at the same time)")
+			log("native build shipped " .. a.uid .. " (built here at t=" .. o.at .. ", the other games build it at the same time) [frame " .. G.frames .. "]")
 		end
 	end
 end
@@ -2092,7 +2361,7 @@ local function runPausedActions()
 				local okA, auth = pcall(authValues)
 				G.authOwn = G.authOwn or {}
 				G.authOwn[a.n] = okA and auth or nil
-				send("sync_hash", { n = a.n, parts = simHash(), cost = 0, auth = okA and auth or nil })
+				send("sync_hash", { n = a.n, parts = simHash(G.simTerrainSig), cost = 0, auth = okA and auth or nil })
 			else
 				toSim("replaying", {})
 				-- paused: the engine answers in a callback, a frame later; the result is reported then
@@ -2744,6 +3013,346 @@ local function runNewRoad(p)
 		if not okc then log("AUTOTEST new road command failed: " .. shortErr(errc)); attempt(k + 1) end
 	end
 	attempt((p.offset or 0) + 20)
+end
+
+-- Exploration for separate companies: can a second player be created, and do builds / purchases honour it?
+local runCompanyBuild
+local function runCompany(p)
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("AUTOTEST company " .. t); AUTO.results[#AUTO.results + 1] = t end
+	local P1 = api.engine.util.getPlayer()
+	local function bal(P)
+		local ok, v = pcall(function() local a = api.engine.getComponent(P, api.type.ComponentType.ACCOUNT); return a.balance end)
+		return ok and v or ("err " .. tostring(v))
+	end
+	say("player 1 = " .. tostring(P1) .. ", balance " .. tostring(bal(P1)))
+	local function comps(P)
+		local out = {}
+		for _, n in ipairs({ "PLAYER", "ACCOUNT", "NAME", "PLAYER_OWNED" }) do
+			local ok, c = pcall(api.engine.getComponent, P, api.type.ComponentType[n])
+			out[#out + 1] = n .. "=" .. ((ok and c) and "yes" or "no")
+		end
+		return table.concat(out, " ")
+	end
+	say("player 1 components: " .. comps(P1))
+	local cmd = api.cmd.makeGameAddPlayerCmd("MPF Company 2", api.type.Vec3f.new(0.9, 0.2, 0.2))
+	O.sendCommand(cmd, function(res, success)
+		local P2 = nil
+		pcall(function() P2 = res.resultEntity end)
+		if not P2 then pcall(function() P2 = res.data and res.data.resultEntity end) end
+		say("add player: success=" .. tostring(success) .. ", new entity " .. tostring(P2))
+		if not success or not P2 then return autoFinish() end
+		G.waits[#G.waits + 1] = { at = G.frames + 60, fn = function()
+			say("player 2 exists=" .. tostring(api.engine.entityExists(P2)) .. " balance " .. tostring(bal(P2)) .. " components: " .. comps(P2))
+			local acc = nil
+			pcall(function() acc = api.engine.getComponent(P2, api.type.ComponentType.ACCOUNT) end)
+			if acc then say("player 2 account balance " .. tostring(acc.balance) .. " loan " .. tostring(acc.loan)) end
+			nativeCtl("setplayer " .. P2)
+			G.waits[#G.waits + 1] = { at = G.frames + 120, fn = function()
+				local now = api.engine.util.getPlayer()
+				say("after writing the game's local-player field: getPlayer() = " .. tostring(now) .. " (player 2 is " .. tostring(P2) .. ")")
+				if now == P2 then say("balance seen through getPlayer: " .. tostring(bal(api.engine.util.getPlayer()))) end
+				G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function() runCompanyBuild(P1, P2, say, bal) end }
+			end }
+		end }
+	end)
+end
+
+runCompanyBuild = function(P1, P2, say, bal)
+	do
+		do
+			local p = {}
+			local entry = api.type.JournalEntry.new()
+			entry.amount = 5000000
+			entry.time = -1
+			entry.category.type = api.type.JournalEntry.Type.OTHER
+			O.sendCommand(api.cmd.makeJournalBookAssetCmd(P2, entry), function() end)
+			local n, info, pn, a = matrixPlace((p.offset or 0) + 20)
+			local o = { tlanes = true, template = true, roadType = true, street = true, owner = true, positions = true, sharedIds = true,
+				tmpl = { roadTemplate = info.c.roadTemplate, roadStyle = info.c.roadStyle, roadType = info.c.roadType } }
+			local realGet = api.engine.util.getPlayer
+			local swapped = pcall(function() api.engine.util.getPlayer = function() return P2 end end)
+			local okb, sp = pcall(buildMatrixProposal, o, n, pn, a)
+			if swapped then pcall(function() api.engine.util.getPlayer = realGet end) end
+			say("owner override " .. tostring(swapped))
+			if not okb then say("road proposal error " .. shortErr(sp)); return autoFinish() end
+			local known = {}
+			for _, e in ipairs(R.allEdges()) do known[e] = true end
+			local b1, b2 = bal(P1), bal(P2)
+			local ctx = api.type.Context.new()
+			ctx.checkTerrainAlignment = true
+			ctx.cleanupStreetGraph = true
+			ctx.gatherBuildings = true
+			ctx.gatherFields = true
+			ctx.player = P2
+			O.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), function(res2, ok2)
+				G.waits[#G.waits + 1] = { at = G.frames + 40, fn = function()
+					local owners = {}
+					for _, e in ipairs(R.allEdges()) do
+						if not known[e] then
+							local po = nil
+							pcall(function() po = api.engine.getComponent(e, api.type.ComponentType.PLAYER_OWNED) end)
+							owners[#owners + 1] = e .. ":" .. (po and tostring(po.player) or "none")
+						end
+					end
+					say("road built with player 2 context: " .. tostring(ok2) .. "; new edges (owner) " .. table.concat(owners, ",")
+						.. "; balance P1 " .. tostring(b1) .. " -> " .. tostring(bal(P1)) .. ", P2 " .. tostring(b2) .. " -> " .. tostring(bal(P2)))
+					-- a vehicle bought for player 2
+					local vehicles = R.entitiesWith("TRANSPORT_VEHICLE")
+					local pick = nil
+					for _, v in ipairs(vehicles) do
+						local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+						if tv and type(tv.depot) == "number" and tv.depot >= 0 and api.engine.entityExists(tv.depot) then pick = tv; break end
+					end
+					if not pick then say("no vehicle to copy"); return autoFinish() end
+					local c1, c2, nv = bal(P1), bal(P2), #vehicles
+					O.sendCommand(api.cmd.makeVehicleBuyCmd(P2, pick.depot, pick.transportVehicleConfig), function(res3, ok3)
+						G.waits[#G.waits + 1] = { at = G.frames + 40, fn = function()
+							local newOwner = "?"
+							for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+								if v > 0 then
+									local po = nil
+									pcall(function() po = api.engine.getComponent(v, api.type.ComponentType.PLAYER_OWNED) end)
+									if po and po.player == P2 then newOwner = tostring(v) end
+								end
+							end
+							say("vehicle bought for player 2: " .. tostring(ok3) .. ", vehicles " .. nv .. " -> " .. #R.entitiesWith("TRANSPORT_VEHICLE")
+								.. ", vehicle owned by P2: " .. newOwner .. "; balance P1 " .. tostring(c1) .. " -> " .. tostring(bal(P1)) .. ", P2 " .. tostring(c2) .. " -> " .. tostring(bal(P2)))
+							autoFinish()
+						end }
+					end)
+				end }
+			end)
+		end
+	end
+end
+
+H.company = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	local ok, err = pcall(runCompany, p)
+	if not ok then
+		log("AUTOTEST company failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "company error " .. tostring(err)
+		autoFinish()
+	end
+end
+
+-- Exploration: which word of memory is read by getPlayer()? Candidates (words equal to player 1's id, found by the DLL) are
+-- patched one at a time to player 2's id; the candidate that changes getPlayer() is the local-player field.
+H.pprobe = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local P1 = api.engine.util.getPlayer()
+	local function say(t) log("AUTOTEST pprobe " .. t); AUTO.results[#AUTO.results + 1] = t end
+	O.sendCommand(api.cmd.makeGameAddPlayerCmd("MPF probe", api.type.Vec3f.new(0.2, 0.6, 0.9)), function(res, success)
+		local P2 = res.resultEntity
+		say("player 2 = " .. tostring(P2) .. " (player 1 = " .. tostring(P1) .. ")")
+		nativeCtl("setplayer " .. P2)
+		local i = 0
+		local function nextCandidate()
+			i = i + 1
+			if i > (tonumber(p.max) or 160) then
+				nativeCtl("probe 0")
+				say("no candidate changed getPlayer()")
+				return autoFinish()
+			end
+			nativeCtl("probe " .. i)
+			O.sendCommand(O.event("mpfever", "mpfever", "nop", {}))
+			G.waits[#G.waits + 1] = { at = G.frames + 24, fn = function()
+				local now = api.engine.util.getPlayer()
+				if now ~= P1 then
+					say("candidate " .. i .. " is the local-player field: getPlayer() became " .. tostring(now))
+					G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function()
+						nativeCtl("probe 0")
+						O.sendCommand(O.event("mpfever", "mpfever", "nop", {}))
+						G.waits[#G.waits + 1] = { at = G.frames + 30, fn = autoFinish }
+					end }
+				else
+					nextCandidate()
+				end
+			end }
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 30, fn = nextCandidate }
+	end)
+end
+
+-- Exploration: how the DLL's iteration counter relates to the game time (paused, stepped, and running)
+H.iterclock = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local seq = 0
+	local function mark(tag)
+		seq = seq + 1
+		nativeCtl("iterlog " .. seq)
+		O.sendCommand(O.event("mpfever", "mpfever", "nop", {}))
+		local t = gameTime()
+		local line = "mark " .. seq .. " (" .. tag .. ") game time " .. t .. " speed " .. tostring(gameSpeed())
+		log("AUTOTEST iterclock " .. line)
+		AUTO.results[#AUTO.results + 1] = line
+	end
+	local plan = { 1, 3, 5, 2, 8 }
+	local k = 0
+	local function nextStep()
+		k = k + 1
+		if k > #plan then
+			O.sendCommand(O.setSpeed(1))
+			G.waits[#G.waits + 1] = { at = G.frames + 420, fn = function()
+				O.sendCommand(O.setSpeed(0))
+				G.waits[#G.waits + 1] = { at = G.frames + 90, fn = function() mark("after ~7 s at x1"); autoFinish() end }
+			end }
+			return
+		end
+		O.sendCommand(O.steps(plan[k]))
+		G.waits[#G.waits + 1] = { at = G.frames + 150, fn = function() mark(plan[k] .. " steps"); nextStep() end }
+	end
+	O.sendCommand(O.setSpeed(0))
+	G.waits[#G.waits + 1] = { at = G.frames + 120, fn = function() mark("paused"); nextStep() end }
+end
+
+-- Terrain edit (a patch of ground raised, 4 m cells): the DLL copies the cells, the other game must make the same ground
+-- (with MPFEVER_TERRAIN_PATTERN=1 the DLL gives the cells an uneven pattern, so that the copy is checked cell by cell)
+H.terrain = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local ok, err = pcall(function()
+		local n = tonumber(os.getenv("MPFEVER_TERRAIN_SIZE") or "12") or 12
+		local burst = tonumber(os.getenv("MPFEVER_TERRAIN_BURST") or "1") or 1       -- edits sent in the same frame
+		local bx, by = -640, -756
+		if C.ROLE ~= "host" then bx, by = 300, -200 end
+		local patches = {}
+		for i = 1, burst do
+			patches[i] = { x0 = bx + (i - 1) * (n + 6), y0 = by, w = n + (i - 1), h = n + (i - 1) }
+			local pt = patches[i]
+			pt.cx, pt.cy = (pt.x0 + pt.w / 2) * 4, (pt.y0 + pt.h / 2) * 4
+			pt.h0 = nil
+			pcall(function() pt.h0 = api.engine.terrain.getBaseHeightAt(api.type.Vec2f.new(pt.cx, pt.cy)) end)
+			pt.sum0 = G.terrainSum(pt.x0, pt.y0, pt.w, pt.h)
+		end
+		local pending = burst
+		for i, pt in ipairs(patches) do
+			local prop = api.type.Proposal.new()
+			local zero = os.getenv("MPFEVER_TERRAIN_ZERO")      -- test: an edit whose cells are all {0, 0} (what an empty carrier would be)
+			prop.terrain.baseHeightMod = api.type.GridVec2f.new(pt.x0, pt.y0, pt.w, pt.h, zero and api.type.Vec2f.new(0, 0) or api.type.Vec2f.new((pt.h0 or 0) + 3, pt.h0 or 0))
+			local ctx = api.type.Context.new()
+			ctx.player = api.engine.util.getPlayer()
+			log("AUTOTEST terrain edit " .. i .. "/" .. burst .. ": " .. pt.w .. "x" .. pt.h .. " at " .. pt.x0 .. "," .. pt.y0 .. ": height " .. tostring(pt.h0) .. ", sum " .. pt.sum0)
+			O.sendCommand(api.cmd.makeWorldBuildProposalCmd(prop, ctx, false, true), function(res, success)
+				local line = "terrain edit " .. i .. ": " .. (success and "built" or "refused")
+				log("AUTOTEST " .. line)
+				AUTO.results[#AUTO.results + 1] = line
+				pending = pending - 1
+				if pending == 0 then
+					G.waits[#G.waits + 1] = { at = G.frames + 600, fn = function()
+						for j, q in ipairs(patches) do
+							local h1 = nil
+							pcall(function() h1 = api.engine.terrain.getBaseHeightAt(api.type.Vec2f.new(q.cx, q.cy)) end)
+							local line2 = "ground after " .. j .. ": centre " .. tostring(q.h0) .. " -> " .. tostring(h1) .. ", sum " .. G.terrainSum(q.x0, q.y0, q.w, q.h)
+							log("AUTOTEST " .. line2)
+							AUTO.results[#AUTO.results + 1] = line2
+						end
+						autoFinish()
+					end }
+				end
+			end)
+		end
+	end)
+	if not ok then
+		AUTO.results[#AUTO.results + 1] = "terrain error " .. tostring(err)
+		autoFinish()
+	end
+end
+
+-- A series of terrain edits one after the other (MPFEVER_TERRAIN_COUNT, MPFEVER_TERRAIN_SIZE, MPFEVER_TERRAIN_GAP frames between them)
+H.terrainsoak = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local count = tonumber(os.getenv("MPFEVER_TERRAIN_COUNT") or "10") or 10
+	local n = tonumber(os.getenv("MPFEVER_TERRAIN_SIZE") or "20") or 20
+	local gap = tonumber(os.getenv("MPFEVER_TERRAIN_GAP") or "90") or 90
+	local bx, by = -640, -756
+	if C.ROLE ~= "host" then bx, by = 300, -200 end
+	local patches, k = {}, 0
+	local function finish()
+		G.waits[#G.waits + 1] = { at = G.frames + 600, fn = function()
+			local bad = 0
+			for j, q in ipairs(patches) do
+				local line = "ground after " .. j .. ": sum " .. G.terrainSum(q.x0, q.y0, q.w, q.h)
+				log("AUTOTEST " .. line)
+				AUTO.results[#AUTO.results + 1] = line
+			end
+			autoFinish()
+		end }
+	end
+	local function nextEdit()
+		k = k + 1
+		if k > count then return finish() end
+		local pt = { x0 = bx + ((k - 1) % 6) * (n + 4), y0 = by + math.floor((k - 1) / 6) * (n + 4), w = n, h = n }
+		patches[#patches + 1] = pt
+		local ok, err = pcall(function()
+			local cx, cy = (pt.x0 + pt.w / 2) * 4, (pt.y0 + pt.h / 2) * 4
+			local h0 = nil
+			pcall(function() h0 = api.engine.terrain.getBaseHeightAt(api.type.Vec2f.new(cx, cy)) end)
+			local prop = api.type.Proposal.new()
+			prop.terrain.baseHeightMod = api.type.GridVec2f.new(pt.x0, pt.y0, pt.w, pt.h, api.type.Vec2f.new((h0 or 0) + 1 + (k % 4), h0 or 0))
+			local ctx = api.type.Context.new()
+			ctx.player = api.engine.util.getPlayer()
+			O.sendCommand(api.cmd.makeWorldBuildProposalCmd(prop, ctx, false, true), function(res, success)
+				if not success then AUTO.results[#AUTO.results + 1] = "terrain edit " .. k .. ": refused" end
+				G.waits[#G.waits + 1] = { at = G.frames + gap, fn = nextEdit }
+			end)
+		end)
+		if not ok then
+			AUTO.results[#AUTO.results + 1] = "terrain edit " .. k .. " error " .. tostring(err)
+			G.waits[#G.waits + 1] = { at = G.frames + gap, fn = nextEdit }
+		end
+	end
+	nextEdit()
+end
+
+-- Diagnostic (with MPFEVER_PAYLOAD_DUMP=1 in the DLL): empty world-build commands that differ by one flag of the Context, so
+-- that the bytes of the flags can be found in the command (then read from the real tools' commands)
+H.ctxprobe = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local variants = {
+		{ "none", {}, false, true },
+		{ "align", { checkTerrainAlignment = true }, false, true },
+		{ "cleanup", { cleanupStreetGraph = true }, false, true },
+		{ "buildings", { gatherBuildings = true }, false, true },
+		{ "fields", { gatherFields = true }, false, true },
+		{ "all", { checkTerrainAlignment = true, cleanupStreetGraph = true, gatherBuildings = true, gatherFields = true }, false, true },
+		{ "ignore", {}, true, true },
+		{ "notplayer", {}, false, false },
+	}
+	local i = 0
+	local function nextOne()
+		i = i + 1
+		local v = variants[i]
+		if not v then return autoFinish() end
+		local ok, err = pcall(function()
+			local ctx = api.type.Context.new()
+			for k, x in pairs(v[2]) do ctx[k] = x end
+			ctx.player = api.engine.util.getPlayer()
+			log("AUTOTEST ctxprobe " .. i .. " " .. v[1])
+			AUTO.results[#AUTO.results + 1] = "ctxprobe " .. i .. " " .. v[1]
+			O.sendCommand(api.cmd.makeWorldBuildProposalCmd(api.type.Proposal.new(), ctx, v[3], v[4]), function() end)
+		end)
+		if not ok then AUTO.results[#AUTO.results + 1] = "ctxprobe error " .. tostring(err) end
+		G.waits[#G.waits + 1] = { at = G.frames + 60, fn = nextOne }
+	end
+	nextOne()
 end
 
 H.deferroad = function(from, p)
@@ -3671,6 +4280,86 @@ H.line = function(from, p)
 	end
 end
 
+-- Commands scenario: the player commands that no other scenario exercises (names, stopping and reversing a vehicle,
+-- sending it to a depot, changing a line's waiting times, selling), sent as the interface would; the checkpoint hash
+-- (names, vehicle state, lines) then says whether every game ended up the same.
+local function runCmds(p)
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local lines = R.entitiesWith("LINE")
+	local vehs = R.entitiesWith("TRANSPORT_VEHICLE")
+	if #lines == 0 or #vehs < 2 then AUTO.results[#AUTO.results + 1] = "needs a line and two vehicles"; return autoFinish() end
+	local line = lines[1]
+	local v1 = vehs[((p.offset or 0) % #vehs) + 1]
+	local v2 = vehs[((p.offset or 0) + 1) % #vehs + 1]
+	local role = C.ROLE
+	local steps = {
+		{ "rename the line", function() uiRequest("makeEntitySetNameCmd", { n = 2, [1] = line, [2] = "MPF line " .. role }) end },
+		{ "rename a vehicle", function() uiRequest("makeEntitySetNameCmd", { n = 2, [1] = v1, [2] = "MPF vehicle " .. role }) end },
+		{ "line colour", function() uiRequest("makeEntitySetColorCmd", { n = 2, [1] = line, [2] = C.marshal(api.type.Vec3f.new(0.2, 0.8, role == "host" and 0.1 or 0.9)) }) end },
+		{ "stop a vehicle", function() uiRequest("makeVehicleSetStoppedByUserCmd", { n = 2, [1] = v1, [2] = true }) end },
+		{ "restart it", function() uiRequest("makeVehicleSetStoppedByUserCmd", { n = 2, [1] = v1, [2] = false }) end },
+		{ "reverse a vehicle", function() uiRequest("makeVehicleReverseCmd", { n = 1, [1] = v2 }) end },
+		{ "line waiting times", function()
+			local lc = C.marshal(api.engine.getComponent(line, api.type.ComponentType.LINE))
+			lc.stops[1].minWaitingTime = (role == "host") and 21 or 33
+			lc.stops[1].maxWaitingTime = 60
+			uiRequest("makeLineUpdateCmd", { n = 2, [1] = line, [2] = lc })
+		end },
+		{ "send a vehicle to the depot", function() uiRequest("makeVehicleSendToDepotCmd", { n = 2, [1] = v2, [2] = false }) end },
+	}
+	local i = 0
+	local function nextStep()
+		i = i + 1
+		local st = steps[i]
+		if not st then
+			AUTO.results[#AUTO.results + 1] = "all commands sent"
+			return autoFinish()
+		end
+		local ok, err = pcall(st[2])
+		local line1 = st[1] .. ": " .. (ok and "sent" or ("error " .. tostring(err)))
+		log("AUTOTEST cmds " .. line1)
+		AUTO.results[#AUTO.results + 1] = line1
+		G.waits[#G.waits + 1] = { at = G.frames + 240, fn = nextStep }
+	end
+	nextStep()
+end
+
+-- Command latency scenario: how many interface frames the engine takes to answer a command, the game running or paused
+H.cmdlat = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local line = R.entitiesWith("LINE")[1]
+	local k = 0
+	local function one()
+		k = k + 1
+		if k > 6 then return autoFinish() end
+		local f0 = G.frames
+		local t0 = gameTime()
+		local cmd = api.cmd.makeEntitySetNameCmd(line, "MPF lat " .. C.ROLE .. k)
+		O.sendCommand(cmd, function(res, success)
+			local msg = "cmd latency " .. (G.frames - f0) .. " frames, game speed " .. tostring(gameSpeed()) .. ", game time moved " .. (gameTime() - t0)
+			log("AUTOTEST " .. msg)
+			AUTO.results[#AUTO.results + 1] = msg
+			G.waits[#G.waits + 1] = { at = G.frames + 60, fn = one }
+		end)
+	end
+	one()
+end
+
+H.cmds = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	local ok, err = pcall(runCmds, p)
+	if not ok then
+		log("AUTOTEST cmds failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "cmds error " .. tostring(err)
+		autoFinish()
+	end
+end
+
 -- Stop on a town street: the engine converts our simple proposal (refused for the parcels), we fix the converted
 -- proposal (old/new segment maps, as the native stop tool sets them) and send it again
 local function runStops3(p)
@@ -4010,7 +4699,7 @@ local function runRoadTypes(p)
 				local why = ""
 				if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 				local line = t:match("[^/]+$") .. " on " .. tostring(pick.c.roadTemplate):match("[^/]+$") .. ": " .. (success and "built" or ("refused " .. why))
-				log("AUTOTEST roadtypes " .. line)
+				log("AUTOTEST roadtypes " .. line .. " [frame " .. G.frames .. "]")
 				AUTO.results[#AUTO.results + 1] = line
 				if success then done = done + 1; AUTO.points[#AUTO.points + 1] = a end
 				G.waits[#G.waits + 1] = { at = G.frames + 90, fn = nextOne }
@@ -4119,6 +4808,16 @@ H.area_dump = function(from, p)
 			lines[#lines + 1] = "edge " .. s1 .. " - " .. s2 .. " " .. tostring(c.roadTemplate) .. (#objs > 0 and (" objects " .. table.concat(objs, ";")) or "")
 		end
 	until true end
+	-- every node configuration (lane connections, crosswalks, traffic lights), as the checkpoint hash sees it
+	pcall(function()
+		for _, n in ipairs(R.allNodes()) do
+			local okc, nc = pcall(function() return api.engine.getComponent(n, api.type.ComponentType.BASE_NODE_CONFIG) end)
+			local q = okc and nc and nodePosition(n)
+			if q then
+				lines[#lines + 1] = string.format("nodecfg %.0f,%.0f lc=%d cw=%d pref=%s", q.x, q.y, #nc.laneConnections, #nc.crosswalks, tostring(nc.trafficLightPreference))
+			end
+		end
+	end)
 	-- every construction (file and rounded position, as the checkpoint hash sees it): what a moved building changes
 	pcall(function()
 		for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
@@ -4232,6 +4931,12 @@ local function guiUpdate(userParams, state, guiState)
 
 	local okh, st = pcall(function() return state:get() end)
 	if not (okh and type(st) == "table") then st = {} end
+	G.simTerrainSig = st.terrainSig
+	if st.late and st.late > (G.lateSeen or 0) then
+		G.lateSeen = st.late
+		G.aheadLocked = true
+		log("an action arrived late: the full stamp distance is kept for the rest of the session")
+	end
 
 	-- outgoing actions BEFORE the clock: a peer must receive an action before it may pass its time
 	if G.connected then
@@ -4272,7 +4977,8 @@ local function guiUpdate(userParams, state, guiState)
 		-- or a hiccup of a few hundred milliseconds). The reserve covers about half a second of simulation.
 		local spd = math.max(1, math.min(4, G.session.speed or 1))
 		G.window = spd + 2
-		G.ahead = G.window + (2 * spd + 1) + 1
+		if G.lastSpd ~= spd then G.lastSpd = spd; G.consumed = {} end
+		G.ahead = adaptAhead(G.window + (2 * spd + 1) + 1)
 		local okt, t = pcall(gameTime)
 		if okt and (t ~= G.lastClock or G.frames % 30 == 0) then
 			G.lastClock = t

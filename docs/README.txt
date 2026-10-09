@@ -1,5 +1,5 @@
 MPFever - Multiplayer for Transport Fever 3
-Version 0.2.5-experimental
+Version 0.2.10-experimental
 ===========================================
 
 MPFever lets several players run the same Transport Fever 3 company together, each one
@@ -15,7 +15,9 @@ WHAT WORKS
 - Cooperative play: all players manage the SAME company (shared money, vehicles, lines).
 - Start from the game itself: MPFever.exe starts Transport Fever 3, and a
   "MULTIJOUEUR / MPFever" button in the main menu opens the multiplayer window.
-  - Host: pick one of your savegames (any of them, even one made without MPFever).
+  - Host: pick one of your savegames (any of them, even one made without MPFever: the mod
+    adds no content to the game, it only synchronises). If the game uses other mods that
+    add content (vehicles, buildings...), every player must have the same ones installed.
   - Join: type the host's IP address. The host's game is received and loaded
     automatically (no file to send). Joining a session already running works.
   - Steam invitations: friends can join from your Steam friends list.
@@ -46,9 +48,14 @@ KNOWN LIMITATIONS
 - When a road upgrade moves several town buildings, the town may place one extra
   building differently on each game; the automatic resynchronisation then corrects it
   after a few seconds.
+- Terrain editing (raising / lowering the ground) is copied to the other games: the game
+  where you edit sends the new ground, the others apply it at the same game time (or a
+  step later when they were already past it). Ground PAINT (textures) and the trees brush
+  are not copied. If the copy fails the host's game is reloaded for everybody (automatic
+  resynchronisation).
 - Tested with 2 players. More players should work but are untested.
 - No player list or chat in the game yet.
-- Windows only. Made for the current Steam version of Transport Fever 3 (build 40408).
+- Windows only. Made for the current Steam version of Transport Fever 3 (builds 40408 and 40420).
   After a game update, the mod still runs but synchronisation may be worse until
   MPFever is updated.
 - Without port forwarding on the host's box, players need a virtual LAN (Radmin VPN,
@@ -67,7 +74,11 @@ WHAT MPFEVER CHANGES ON YOUR PC
 - It adds the mod to the game's default mod list in settings.lua (a backup is kept as
   settings.lua.bak_mpfever).
 - It installs the mod files in your Transport Fever 3 user mods folder.
-MPFever does not connect anywhere except to the address you type.
+MPFever connects to the address you type (or the one of the Steam invitation you accept).
+The only other connection: when you host, it asks api.ipify.org (a public service that
+answers with your public IP address, nothing else is sent) so that the address given to
+Steam invitations works from the internet. Write  lookupip=0  in mpfever_settings.txt (next to
+MPFever.exe) to disable this; invitations then carry your local address.
 
 UNINSTALL: delete winhttp.dll and steam_appid.txt from the game folder, delete the
 folder mods\mpfever_1 in your Transport Fever 3 user folder, and delete the MPFever

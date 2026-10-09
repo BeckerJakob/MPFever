@@ -1,6 +1,75 @@
 MPFever - Changelog
 ===================
 
+0.2.10-experimental - terrain edits are copied, no more reload
+  - Raising / lowering / levelling the ground is now copied to the other players like any other
+    construction, by both the host and the clients. Before, a terrain edit made the host reload
+    its game for everybody (a resynchronisation that takes time) and a client's edit stayed local.
+    How: a script cannot read or write the cells of a terrain edit, so the native module copies
+    them when the engine applies the edit (the cells are packed; at worst about 11 bytes of text per cell),
+    the mod ships them with the game time, and on the other games the module copies them into an
+    empty ground edit of the same size as it enters the engine's command list. The edit is made at
+    once on the game of the player who edits (the terrain tool cannot be held like the others)
+    and at the same game time on the others when they have not passed it yet, otherwise a step
+    later (logged as LATE). The cells are first handed to the native module, which confirms, and only
+    then is the empty ground edit sent, so a failure can never flatten the ground. Tested on two games: a 12x12 and a 300x300 cells patch with uneven
+    heights, both directions, speed 1 and 4, paused game: same ground afterwards (sum of the
+    heights of the patch identical), no desync.
+  - New check in the state comparison: "terrain" (the sum of the checksums of the edits applied).
+    A lost or doubled edit shows in the next check and reloads the host's game.
+  - If the native module cannot copy an edit (unknown game build, unreadable cells) the old
+    behaviour remains: the host's game is reloaded for everybody. A terrain edit that comes with
+    other construction work, ground paint and the trees brush are still not copied (logged); neither is an
+    edit of more than about 3 million cells (the host's game is reloaded then).
+  - The command audit now also separates the commands of the simulation loop from the others on
+    build 40420 (the address was only known for 40408).
+  - Diagnostics for the next tests: native.log now says, once per tool, with which options the game's
+    construction tools build ("build context from ...": terrain alignment, street graph cleanup,
+    gathering of buildings...). It is meant to find out why a road built from an existing junction can leave
+    a slightly different lane-connection setup on the other games ("nodeConfigs" in the state check).
+
+0.2.9-experimental - game update 40420
+  - Transport Fever 3 was updated (build 40408 -> 40420): the native module did not recognise the
+    new game and stayed off, which made the multiplayer button disappear from the main menu and
+    switched off the other native features. The module now knows both builds. The multiplayer page
+    and the script-thread patch are also looked up by their code, so they survive small game
+    updates; the construction hooks still need the build to be listed (any other build: hooks off,
+    the mod then runs without them and reports it in native.log).
+
+0.2.8-experimental - terrain tool crash fixed, waiting marker, command audit, small fixes
+  - While a construction waits for its game time (about two seconds), a translucent
+    yellow circle shows on the ground where you clicked, then disappears when the
+    construction is built (it was not obvious that the order had been taken).
+  - Command audit: the native module counts, for each kind of command, how many the
+    simulation applied, and the launcher copies the counts to logs\audit-NAME.txt every
+    30 seconds. Comparing two players' files shows an action that one game applied and
+    the other never did, i.e. something the mod does not synchronise (tool: re\audit_compare.py).
+  - README: the sentence saying MPFever connects nowhere else was inexact: when hosting it
+    asks api.ipify.org for your public IP address (for Steam invitations). It can now be
+    switched off with lookupip=0 in mpfever_settings.txt (invitations then carry the local
+    address). Added: a savegame made without the mod works (same mods needed by everyone).
+  - Fixed a crash of the host's game when using the terrain tool (the tool's command was
+    held like the others; that tool does not survive it). Terrain edits are not held any more.
+    They cannot be copied to the other games: a host's terrain edit makes the other games
+    reload the host's game (automatic resynchronisation); a client's edit stays local.
+  - Research for the next versions (no change in play): extra player companies are possible in the
+    engine (see re\FINDINGS.txt).
+
+0.2.6-experimental - wider synchronisation check
+  - The state check every 10 seconds now also compares what the players set on lines
+    (name, stops, loading mode, waiting times), the names of stations, lines and
+    vehicles, which line each vehicle is on and whether the player stopped it or is
+    selling it, the lane connections / crosswalks / traffic lights of the road nodes,
+    and the parameters of every construction (the modules of a modular station).
+    A difference in any of them used to go unnoticed.
+  - Tested on two games, identical afterwards: renaming a line and a vehicle, a line
+    colour, stopping and restarting a vehicle, reversing one, sending one to a depot,
+    changing a line's waiting times (and, tested before: buying vehicles, creating a
+    line).
+  - A difference in the road nodes' configuration (lane connections, crosswalks,
+    traffic lights) is written to the log and only reloads the game when it lasts
+    (5 minutes); the other new checks reload the game like the existing ones.
+
 0.2.5-experimental - noise barriers on tracks
   - A noise barrier on a track built by another player no longer appears in the middle
     of the track. The tracks rebuilt on the other games had lost their distance from the

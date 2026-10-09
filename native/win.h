@@ -29,6 +29,7 @@ typedef void* HMODULE;
 #define FILE_SHARE_READ 1
 #define FILE_SHARE_WRITE 2
 #define OPEN_ALWAYS 4
+#define CREATE_ALWAYS 2
 #define FILE_ATTRIBUTE_NORMAL 0x80
 #define FILE_END 2
 #define INVALID_HANDLE_VALUE ((HANDLE)(i64)-1)
@@ -42,6 +43,9 @@ __declspec(dllimport) void* WINAPI VirtualAlloc(void*, u64, DWORD, DWORD);
 __declspec(dllimport) BOOL WINAPI VirtualProtect(void*, u64, DWORD, DWORD*);
 __declspec(dllimport) BOOL WINAPI FlushInstructionCache(HANDLE, const void*, u64);
 __declspec(dllimport) HANDLE WINAPI GetCurrentProcess();
+__declspec(dllimport) BOOL WINAPI QueryPerformanceCounter(i64*);
+__declspec(dllimport) BOOL WINAPI QueryPerformanceFrequency(i64*);
+__declspec(dllimport) DWORD WINAPI GetCurrentThreadId();
 __declspec(dllimport) HANDLE WINAPI CreateThread(void*, u64, LPTHREAD_START_ROUTINE, void*, DWORD, DWORD*);
 __declspec(dllimport) BOOL WINAPI CloseHandle(HANDLE);
 __declspec(dllimport) DWORD WINAPI GetEnvironmentVariableA(const char*, char*, DWORD);
@@ -51,12 +55,16 @@ __declspec(dllimport) DWORD WINAPI SetFilePointer(HANDLE, long, long*, DWORD);
 __declspec(dllimport) void WINAPI GetLocalTime(SYSTEMTIME*);
 __declspec(dllimport) BOOL WINAPI DisableThreadLibraryCalls(HMODULE);
 __declspec(dllimport) void WINAPI Sleep(DWORD);
+struct MEMORY_BASIC_INFORMATION { void* BaseAddress; void* AllocationBase; DWORD AllocationProtect; DWORD pad1; u64 RegionSize; DWORD State; DWORD Protect; DWORD Type; DWORD pad2; };
+__declspec(dllimport) u64 WINAPI VirtualQuery(const void*, MEMORY_BASIC_INFORMATION*, u64);
 __declspec(dllimport) void* WINAPI AddVectoredExceptionHandler(u32, long (WINAPI*)(void*));
 __declspec(dllimport) BOOL WINAPI ReadFile(HANDLE, void*, DWORD, DWORD*, void*);
 __declspec(dllimport) DWORD WINAPI GetFileSize(HANDLE, DWORD*);
 __declspec(dllimport) DWORD WINAPI GetTickCount();
 __declspec(dllimport) void* WINAPI HeapAlloc(HANDLE, DWORD, u64);
+__declspec(dllimport) BOOL WINAPI HeapFree(HANDLE, DWORD, void*);
 __declspec(dllimport) HANDLE WINAPI GetProcessHeap();
+__declspec(dllimport) BOOL WINAPI DeleteFileA(const char*);
 #define GENERIC_READ 0x80000000
 #define OPEN_EXISTING 3
 }

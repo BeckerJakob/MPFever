@@ -14,11 +14,13 @@ SetFilePointer
 GetLocalTime
 DisableThreadLibraryCalls
 Sleep
+VirtualQuery
 AddVectoredExceptionHandler
 ReadFile
 GetFileSize
 GetTickCount
 HeapAlloc
+HeapFree
 GetProcessHeap
 LoadLibraryW
 GetSystemDirectoryW
@@ -27,3 +29,7 @@ GetCommandLineW
 CreateProcessW
 TerminateProcess
 GetModuleFileNameW
+QueryPerformanceCounter
+QueryPerformanceFrequency
+GetCurrentThreadId
+DeleteFileA

@@ -7,7 +7,7 @@
 [size=4][b]Features[/b][/size]
 [list]
 [*][b]Co-op in one shared company.[/b] Shared money, vehicles, lines and infrastructure.
-[*][b]Real-time sync of what you build.[/b] Roads and tracks (including joins in the middle of a road and upgrades), bus and tram stops, stations, depots, buildings and the bulldozer. Vehicle purchases, lines, vehicle assignments, game speed and pause too.
+[*][b]Real-time sync of what you build.[/b] Roads and tracks (including joins in the middle of a road and upgrades), bus and tram stops, stations, depots, buildings, the bulldozer and terrain editing (raising / lowering the ground). Vehicle purchases, lines, vehicle assignments, game speed and pause too.
 [*][b]Host authority.[/b] Every 10 seconds the games compare their state: money, loans, company progress, contracts, towns and industries; cargo in buildings and vehicles; vehicles and roads. Money is corrected automatically. Any other lasting difference triggers an [b]automatic resync[/b]: a short pause, the host's game is sent to everyone, all games reload it, and play resumes (about 20 s).
 [*][b]Built into the game.[/b] No extra buttons in the game interface. A small launcher window handles hosting, joining and speed.
 [*][b]Direct IP connection.[/b] Use port forwarding or a virtual LAN (Radmin VPN, ZeroTier, Tailscale…).
@@ -21,7 +21,7 @@
 [*]No joining a session that is already running, and no Steam invites yet.
 [*]Vehicles may drift slightly after road building; the automatic resync fixes it.
 [*]Tested with 2 players. Windows only.
-[*]Made for the current Steam version of the game (build 40408).
+[*]Made for the current Steam version of the game (builds 40408 and 40420).
 [/list]
 
 [size=4][b]Open source and transparent[/b][/size]

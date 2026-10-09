@@ -293,25 +293,53 @@ static void ArmSites()
 // then queued exactly as the tool would have queued it. Control: <dir>\native_ctl.txt ("enable 1", "release <n>"),
 // events: <dir>\native_events.log ("deferred <id>").
 
-static const u32 RVA_ADD = 0x9d29c0;             // CommandList::Add(list, out, cmd, done, progress)
-static const u32 RVA_CMD_MOVE = 0x9cedb0;        // Command move constructor (dst, src)
-static const u32 RVA_CMD_DTOR = 0x9ceff0;        // Command destructor
-static const u32 RVA_HANDLE_DTOR = 0x30393d0;    // destructor of Add's out handle
+static u32 RVA_ADD = 0x9d29c0;             // CommandList::Add(list, out, cmd, done, progress)
+static u32 RVA_CMD_MOVE = 0x9cedb0;        // Command move constructor (dst, src)
+static u32 RVA_CMD_DTOR = 0x9ceff0;        // Command destructor
+static u32 RVA_HANDLE_DTOR = 0x30393d0;    // destructor of Add's out handle
 static const u8 P_ADD[] = { 0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0x6C, 0x24, 0x98 };
 
 // return addresses of the Add calls made by UI tools right after make_cmd BuildProposal (build 40408)
-static const u32 UI_ADD_SITES[] = {
+static const u32 UI_SITES_40408[] = {
     0x4d45af,   // UI::Bulldozer::Apply
     0x51c11c,   // UI::ConstructionBuilder::MousePressed
     0x5290b4,   // tool (unnamed)
     0x538a85, 0x5391e9, 0x53936d,   // UI::LaneModifier::Apply
     0x543b2a,   // UI::ModuleBuilder::MousePressed
-    0x549bea,   // tool (unnamed)
+    // 0x549bea (a tool near the terrain tools) is NOT held: holding the terrain edit made the game crash in UI::TerrainModifier
     0x589ed4,   // UI::StreetBuilder::UpdateEngine
     0x5954ed,   // UI::StreetTerminalBuilder (stops, signals, waypoints)
     0x5bfcad,   // UI::TrackModifier::Build
     0x289f944, 0x28a0191,   // entity window builtins
 };
+// build 40420 (same functions, same offsets inside them, found again with the call graph)
+static const u32 UI_SITES_40420[] = {
+    0x4d396f,   // UI::Bulldozer::Apply
+    0x51b56c,   // UI::ConstructionBuilder::MousePressed
+    0x528504,   // tool (unnamed)
+    0x537ee5, 0x538649, 0x5387cd,   // UI::LaneModifier::Apply
+    0x542eba,   // UI::ModuleBuilder::MousePressed
+    0x5891b4,   // UI::StreetBuilder::UpdateEngine
+    0x5948dd,   // UI::StreetTerminalBuilder (stops, signals, waypoints)
+    0x5bf08d,   // UI::TrackModifier::Build
+    0x28a3024, 0x28a3871,   // entity window builtins
+};
+static const u32* UI_ADD_SITES = UI_SITES_40408;
+static int UI_ADD_N = (int)(sizeof(UI_SITES_40408) / sizeof(UI_SITES_40408[0]));
+
+// The engine functions the native module hooks, per game build (TransportFever3.exe's link timestamp). Any other build:
+// the hooks stay off (the main menu page and the script pool patch are found by their code instead, see below).
+struct BuildAddrs {
+    u32 stamp;
+    u32 add, move, dtor, handleDtor, apply, swap, sync, preIter, lua, pool, loopRet;
+    const u32* sites; int nSites;
+};
+static const BuildAddrs BUILDS[] = {
+    { 0x6ab69fe5, 0x9d29c0, 0x9cedb0, 0x9ceff0, 0x30393d0, 0x9e1c10, 0x9d2d20, 0x11f650, 0x157860, 0x2fbdf70, 0xaaec2c, 0x11eb9b, UI_SITES_40408, (int)(sizeof(UI_SITES_40408) / sizeof(UI_SITES_40408[0])) },   // 40408
+    { 0x6ac50427, 0x9d4040, 0x9d0430, 0x9d0670, 0x3040c90, 0x9e33b0, 0x9d43a0, 0x11f690, 0x1578a0, 0x2fc58c0, 0xab00fc, 0x11ebdb, UI_SITES_40420, (int)(sizeof(UI_SITES_40420) / sizeof(UI_SITES_40420[0])) },   // 40420
+};
+static bool SelectBuild(u32 stamp);
+static u32 g_knownLua = 0, g_knownPool = 0;
 
 typedef void* (*AddFn)(void* list, void* out, void* cmd, void* done, void* progress);
 static AddFn g_addOrig = 0;
@@ -358,6 +386,16 @@ static void AppendEvent(Buf& b)
 }
 
 // reads native_ctl.txt: "enable 0|1" and "release <n>" lines (the last value of each wins)
+static volatile long g_tinWant = 0, g_tinLoaded = 0;      // terrain edit sent by the mod, to be injected: id asked / id loaded
+static void TerrainLoadIn(long id);
+static void* g_slot = 0;
+static long g_iter = 0;
+static long g_iterlogDone = 0;
+static volatile long g_setPlayer = 0;
+static u32* g_hits[600];
+static int g_nhits = 0;
+static volatile long g_probeIdx = 0, g_probeApplied = 0;
+static u32 g_probeSaved = 0;
 static void ReadControl()
 {
     char path[400];
@@ -381,11 +419,39 @@ static void ReadControl()
             for (int k = 10; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
             if (v > g_deferNextTarget) g_deferNextTarget = v;
         }
+        else if (len >= 11 && memcmp(l, "setplayer ", 10) == 0) {
+            for (int k = 10; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
+            g_setPlayer = v;
+        }
+        else if (len >= 9 && memcmp(l, "iterlog ", 8) == 0) {
+            for (int k = 8; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
+            if (v != g_iterlogDone) { g_iterlogDone = v; Buf b; b.str("iterlog ").dec(v).str(" iter ").dec(g_iter); LogLine(b); Buf e; e.str("iter ").dec(v).str(" ").dec(g_iter); AppendEvent(e); }
+        }
+        else if (len >= 7 && memcmp(l, "probe ", 6) == 0) {
+            for (int k = 6; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
+            g_probeIdx = v;
+        }
+        else if (len >= 5 && memcmp(l, "tin ", 4) == 0) {
+            for (int k = 4; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
+            g_tinWant = v;
+        }
         else if (len >= 9 && memcmp(l, "release ", 8) == 0) {
             for (int k = 8; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
             if (v > g_releaseTarget) g_releaseTarget = v;
         }
         i = j + 1;
+    }
+    { long want = g_tinWant; if (want && _InterlockedExchange(&g_tinLoaded, want) != want) TerrainLoadIn(want); }
+    if (g_probeIdx != g_probeApplied) {
+        // restore the previous candidate, then patch the new one (1-based; 0 = nothing patched)
+        if (g_probeApplied > 0 && g_probeApplied <= g_nhits) *g_hits[g_probeApplied - 1] = g_probeSaved;
+        g_probeApplied = g_probeIdx;
+        if (g_probeIdx > 0 && g_probeIdx <= g_nhits) {
+            u64 ad = (u64)g_hits[g_probeIdx - 1];
+            u64 eng = g_slot ? *(u64*)((u8*)g_slot + 0x18) : 0;
+            Buf b; b.str("probe ").dec(g_probeIdx).str(" addr ").hex(ad).str(" slot ").hex((u64)g_slot).str(" slot-delta ").hex(ad - (u64)g_slot).str(" engine ").hex(eng).str(" engine-delta ").hex(ad - eng); LogLine(b);
+        }
+        if (g_probeIdx > 0 && g_probeIdx <= g_nhits && g_setPlayer) { g_probeSaved = *g_hits[g_probeIdx - 1]; *g_hits[g_probeIdx - 1] = (u32)g_setPlayer; }
     }
 }
 
@@ -411,8 +477,486 @@ static void MoveFunction(u8* dst, u8* src)
 
 static bool IsUiSite(u32 rva)
 {
-    for (u32 s : UI_ADD_SITES) if (s == rva) return true;
+    for (int i = 0; i < UI_ADD_N; i++) if (UI_ADD_SITES[i] == rva) return true;
     return false;
+}
+
+// ---------------------------------------------------------------- timing probe (MPFEVER_TIMING=1)
+// How long a command takes from the interface thread to the simulation thread: CommandList::Add and the simulation
+// thread's "Apply Command" task are stamped with the performance counter (microseconds since the first stamp).
+static volatile long g_timing = 0;
+static i64 g_qpf = 0, g_qp0 = 0;
+static i64 NowUs()
+{
+    i64 c = 0;
+    QueryPerformanceCounter(&c);
+    if (!g_qp0) g_qp0 = c;
+    return (c - g_qp0) * 1000000 / g_qpf;
+}
+static void TimingLine(const char* tag, u64 a, u64 b)
+{
+    Buf l;
+    l.str("tm ").dec(NowUs()).str(" ").str(tag).str(" thr=").dec(GetCurrentThreadId()).str(" ").hex(a).str(" ").hex(b);
+    LogLine(l);
+}
+
+typedef u64 (*ApplyF)(void*, void*);
+static ApplyF g_applyOrig = 0;
+static const u8 P_APPLY[] = { 0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x54 };
+static u32 RVA_LOOP_RET = 0x11eb9b;   // return address of RunGameSimLoop's call of Apply
+static u32 RVA_APPLY = 0x9e1c10;     // "Simulation Thread: Apply Command" (the commands a simulation iteration applies)
+typedef u64 (*SyncF)(void*, void*);
+static SyncF g_syncOrig = 0;
+static const u8 P_SYNC[] = { 0x48, 0x89, 0x5C, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56 };
+static u32 RVA_SYNC = 0x11f650;      // CGame::Sync: the main thread waits for / receives the simulation thread's frame
+extern "C" u64 SyncDetour(void* a, void* b)
+{
+    TimingLine("sync-begin", (u64)a, (u64)b);
+    u64 r = g_syncOrig(a, b);
+    TimingLine("sync-end", r, 0);
+    return r;
+}
+typedef u64 (*SwapF)(void*, void*);
+static SwapF g_swapOrig = 0;
+static const u8 P_SWAP[] = { 0x48, 0x89, 0x7C, 0x24, 0x18, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x20, 0x4C, 0x8B, 0xF1 };
+static u32 RVA_SWAP = 0x9d2d20;      // CommandList::Swap
+extern "C" u64 SwapDetour(void* a, void* b)
+{
+    TimingLine("swap", (u64)a, (u64)b);
+    return g_swapOrig(a, b);
+}
+
+typedef void (*Dtor0)(void*);
+typedef void* (*MoveCtor0)(void*, void*);
+static volatile long g_gateMs = 0;
+// Injection spike (MPFEVER_DEFER_ITERS=K): every command the simulation thread is about to apply is moved aside and
+// applied again, in order, at the start of the iteration K iterations later (RunGameSimLoop calls 0x157860 once per
+// iteration, right before it walks the command vector).
+typedef u64 (*PreIterF)(void*);
+static PreIterF g_preIterOrig = 0;
+static const u8 P_PREITER[] = { 0x48, 0x8B, 0x49, 0x08, 0x8B, 0x91, 0x0C, 0x02, 0x00, 0x00, 0x48, 0x8B, 0x49, 0x18 };
+static u32 RVA_PREITER = 0x157860;
+static volatile long g_deferIters = 0;
+static i64 g_deferAfterUs = 50000000;
+struct Deferred { void* cmd; long due; long queued; bool exact; };
+static Deferred g_def[256];
+static unsigned g_defHead = 0, g_defTail = 0;
+extern "C" u64 PreIterDetour(void* a)
+{
+    g_iter++;
+    // commands moved aside (exact-iteration builds, or the MPFEVER_DEFER_ITERS test) whose iteration has come, in queue order
+    for (unsigned i = g_defHead; i != g_defTail; i++) {
+        Deferred& d = g_def[i % 256];
+        if (!d.cmd || d.due > g_iter) continue;
+        void* c = d.cmd;
+        d.cmd = 0;
+        if (g_timing) TimingLine("deferred-apply", (u64)g_iter, (u64)(g_iter - d.queued));
+        g_applyOrig(g_slot, c);
+        ((Dtor0)(g_base + RVA_CMD_DTOR))(c);
+        HeapFree(GetProcessHeap(), 0, c);
+    }
+    while (g_defHead != g_defTail && !g_def[g_defHead % 256].cmd) g_defHead++;
+    return g_preIterOrig(a);
+}
+
+// Command audit: how many commands of each kind this game's simulation applied (kind = byte at +0x9b8 of the command's payload,
+// the dispatcher's index), written to the log every 10 seconds. Comparing two games' counts shows kinds of commands that were
+// applied in one and never in the other, that is actions the mod does not replicate.
+static u32 g_kcLoop[128], g_kcDir[128], g_kcSeen[128];
+static DWORD g_auditTick = 0;
+static void AuditFlush(bool force)
+{
+    DWORD now = GetTickCount();
+    if (!force && now - g_auditTick < 10000) return;
+    g_auditTick = now;
+    for (int k = 0; k < 128; k++) {
+        u32 tot = g_kcLoop[k] + g_kcDir[k];
+        if (tot == g_kcSeen[k]) continue;
+        g_kcSeen[k] = tot;
+        Buf l; l.str("audit kind ").dec(k).str(" loop ").dec(g_kcLoop[k]).str(" direct ").dec(g_kcDir[k]);
+        LogLine(l);
+    }
+}
+
+// ---------------------------------------------------------------- terrain edits
+// A terrain tool commits a WorldBuildProposal whose edit is a grid of {height, base} float cells on 4 m squares (the layout
+// is Grid = { int x0, y0, w, h; vector<cell> }). A script can create a grid of any size but
+// cannot write its cells. So: the game that edits the ground copies the cells when its simulation applies the command
+// (TerrainCapture: a file of text, announced in native_events.log), the mod ships them to the other games, and there the mod
+// sends an empty grid of the same size; as that script command enters the command list (TerrainInject) the cells are copied
+// into it. Both games then apply the same cells.
+static volatile long g_tLock = 0;
+static void TLock() { while (_InterlockedExchange(&g_tLock, 1)) Sleep(0); }
+static void TUnlock() { _InterlockedExchange(&g_tLock, 0); }
+
+static bool Readable(const void* p, u64 n)
+{
+    u64 a = (u64)p, end = a + n;
+    while (a < end) {
+        MEMORY_BASIC_INFORMATION mi;
+        if (!VirtualQuery((void*)a, &mi, sizeof(mi))) return false;
+        if (mi.State != 0x1000 || (mi.Protect & 0x101) || mi.Protect == 0) return false;
+        a = (u64)mi.BaseAddress + mi.RegionSize;
+    }
+    return true;
+}
+
+static u64 Fnv64(const u8* p, u64 n)
+{
+    u64 h = 1469598103934665603ull;
+    for (u64 i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ull; }
+    return h;
+}
+
+static u64 PutV(u8* d, u64 o, u64 v) { while (v >= 128) { d[o++] = (u8)(v | 128); v >>= 7; } d[o++] = (u8)v; return o; }
+static bool GetV(const u8* s, u64 n, u64* i, u64* v)
+{
+    u64 r = 0; int sh = 0;
+    while (*i < n && sh < 64) { u8 c = s[(*i)++]; r |= (u64)(c & 127) << sh; if (!(c & 128)) { *v = r; return true; } sh += 7; }
+    return false;
+}
+
+// LZ packing: varint size, then { varint literal count, literals, varint match length (0 = end), varint distance }.
+// d must hold n + n/8 + 32 bytes.
+static u64 LzPack(const u8* s, u64 n, u8* d)
+{
+    u32* ht = (u32*)HeapAlloc(GetProcessHeap(), 8, (1u << 16) * 4);
+    u64 o = PutV(d, 0, n), litStart = 0, i = 0;
+    while (ht && i + 4 <= n) {
+        u32 x = *(const u32*)(s + i);
+        u32 h = (x * 2654435761u) >> 16;
+        u32 cand = ht[h];
+        ht[h] = (u32)i + 1;
+        if (cand) {
+            u64 c = cand - 1, len = 0;
+            while (i + len < n && s[c + len] == s[i + len]) len++;
+            if (len >= 6) {
+                o = PutV(d, o, i - litStart);
+                for (u64 k = litStart; k < i; k++) d[o++] = s[k];
+                o = PutV(d, o, len);
+                o = PutV(d, o, i - c);
+                i += len;
+                litStart = i;
+                continue;
+            }
+        }
+        i++;
+    }
+    o = PutV(d, o, n - litStart);
+    for (u64 k = litStart; k < n; k++) d[o++] = s[k];
+    o = PutV(d, o, 0);
+    if (ht) HeapFree(GetProcessHeap(), 0, ht);
+    return o;
+}
+
+static bool LzUnpack(const u8* s, u64 n, u8** out, u64* outN)
+{
+    u64 i = 0, total = 0, o = 0;
+    if (!GetV(s, n, &i, &total) || total > (1ull << 31)) return false;
+    u8* d = (u8*)HeapAlloc(GetProcessHeap(), 0, total + 8);
+    if (!d) return false;
+    for (;;) {
+        u64 lit = 0, ml = 0, dist = 0;
+        if (!GetV(s, n, &i, &lit) || lit > n - i || lit > total - o) break;
+        for (u64 k = 0; k < lit; k++) d[o++] = s[i++];
+        if (!GetV(s, n, &i, &ml)) break;
+        if (ml == 0) {
+            if (o != total) break;
+            *out = d; *outN = o;
+            return true;
+        }
+        if (!GetV(s, n, &i, &dist) || dist == 0 || dist > o || ml > total - o) break;
+        for (u64 k = 0; k < ml; k++, o++) d[o] = d[o - dist];
+    }
+    HeapFree(GetProcessHeap(), 0, d);
+    return false;
+}
+
+static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static u64 B64Enc(const u8* p, u64 n, char* out)
+{
+    u64 o = 0;
+    for (u64 i = 0; i < n; i += 3) {
+        u32 v = (u32)p[i] << 16;
+        if (i + 1 < n) v |= (u32)p[i + 1] << 8;
+        if (i + 2 < n) v |= p[i + 2];
+        out[o++] = B64[(v >> 18) & 63];
+        out[o++] = B64[(v >> 12) & 63];
+        out[o++] = i + 1 < n ? B64[(v >> 6) & 63] : '=';
+        out[o++] = i + 2 < n ? B64[v & 63] : '=';
+    }
+    return o;
+}
+static bool B64Dec(const char* s, u64 n, u8* out, u64* outN)    // out must hold n / 4 * 3 + 3 bytes
+{
+    u64 o = 0; u32 acc = 0; int bits = 0;
+    for (u64 i = 0; i < n; i++) {
+        char c = s[i]; int v;
+        if (c >= 'A' && c <= 'Z') v = c - 'A';
+        else if (c >= 'a' && c <= 'z') v = c - 'a' + 26;
+        else if (c >= '0' && c <= '9') v = c - '0' + 52;
+        else if (c == '+') v = 62;
+        else if (c == '/') v = 63;
+        else if (c == '=') break;
+        else if (c == '\r' || c == '\n' || c == ' ') continue;
+        else return false;
+        acc = (acc << 6) | (u32)v;
+        bits += 6;
+        if (bits >= 8) { bits -= 8; out[o++] = (u8)(acc >> bits); }
+    }
+    *outN = o;
+    return true;
+}
+
+// a Grid<T> inside the command's payload: { i32 x0, y0, w, h; T* begin, *end, *capacity }
+struct GridHit { u32 off; i32 x0, y0, w, h; u32 elem; u8* cells; u64 bytes; };
+static int FindGrids(const u8* pay, GridHit* out, int max)
+{
+    int n = 0;
+    for (u32 off = 0; off + 0x28 <= 0x9b8 && n < max; off += 8) {
+        const i32* hd = (const i32*)(pay + off);
+        i32 w = hd[2], h = hd[3];
+        if (w <= 0 || h <= 0 || w > 16384 || h > 16384) continue;
+        u64 b = *(const u64*)(pay + off + 0x10), e = *(const u64*)(pay + off + 0x18), c = *(const u64*)(pay + off + 0x20);
+        if (!b || e <= b || c < e || ((b | e) & 3)) continue;
+        u64 bytes = e - b, cells = (u64)w * (u64)h;
+        u32 elem = bytes == cells * 8 ? 8 : (bytes == cells ? 1 : 0);
+        if (!elem || !Readable((void*)b, bytes)) continue;
+        out[n].off = off; out[n].x0 = hd[0]; out[n].y0 = hd[1]; out[n].w = w; out[n].h = h;
+        out[n].elem = elem; out[n].cells = (u8*)b; out[n].bytes = bytes;
+        n++;
+    }
+    return n;
+}
+
+static void NameFile(char* out, const char* a, long id)
+{
+    Buf nb; nb.str(a).dec(id).str(".txt");
+    nb.s[nb.n] = 0;
+    PathOf(out, nb.s);
+}
+
+static bool WriteWhole(const char* path, const void* data, u64 n)
+{
+    HANDLE f = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    bool ok = true;
+    const u8* p = (const u8*)data;
+    while (n && ok) {
+        DWORD chunk = n > (1u << 24) ? (1u << 24) : (DWORD)n, w = 0;
+        ok = WriteFile(f, p, chunk, &w, 0) && w == chunk;
+        p += chunk; n -= chunk;
+    }
+    CloseHandle(f);
+    return ok;
+}
+
+static long g_tSeq = 0;
+static u64 g_tRing[8];                     // checksums of the cells injected here, until the command carrying them is applied
+static int g_tRingN = 0;
+static long g_tPattern = -1;               // MPFEVER_TERRAIN_PATTERN=1 (test): scripted edits get uneven cells
+struct TIn { long ready; long id; i32 x0, y0, w, h; u8* raw; u64 fnv; };
+static TIn g_tin;
+
+// the originator, when its simulation applies a command that carries height cells
+static void TerrainCapture(u8* pay)
+{
+    GridHit hits[8];
+    int n = FindGrids(pay, hits, 8);
+    GridHit* hg = 0;
+    int extra = 0;
+    for (int i = 0; i < n; i++) { if (hits[i].elem == 8 && !hg) hg = &hits[i]; else extra++; }
+    if (!hg) return;
+    if (hg->bytes > (24ull << 20)) {      // 3 million cells: copying it would stall the game; the mod falls back to a reload
+        Buf b; b.str("terrain: edit of ").dec(hg->w).str("x").dec(hg->h).str(" cells is too large to copy"); LogLine(b);
+        return;
+    }
+    u64 fnv = Fnv64(hg->cells, hg->bytes);
+    TLock();
+    for (int i = 0; i < g_tRingN; i++) if (g_tRing[i] == fnv) {      // the replay of an edit shipped by another game
+        g_tRing[i] = g_tRing[--g_tRingN];
+        TUnlock();
+        Buf b; b.str("terrain: replayed edit applied (").dec(hg->w).str("x").dec(hg->h).str(" cells)"); LogLine(b);
+        return;
+    }
+    TUnlock();
+    long id = _InterlockedIncrement(&g_tSeq);
+    u64 rawN = 32 + hg->bytes;
+    u8* raw = (u8*)HeapAlloc(GetProcessHeap(), 0, rawN);
+    u8* pk = (u8*)HeapAlloc(GetProcessHeap(), 0, rawN + rawN / 8 + 64);
+    char* txt = (char*)HeapAlloc(GetProcessHeap(), 0, (rawN + rawN / 8 + 64) / 3 * 4 + 16);
+    bool ok = false;
+    u64 txtN = 0;
+    if (raw && pk && txt) {
+        memcpy(raw, "MPT1", 4);
+        *(u32*)(raw + 4) = 0;
+        *(i32*)(raw + 8) = hg->x0; *(i32*)(raw + 12) = hg->y0; *(i32*)(raw + 16) = hg->w; *(i32*)(raw + 20) = hg->h;
+        *(u64*)(raw + 24) = fnv;
+        memcpy(raw + 32, hg->cells, hg->bytes);
+        u64 pn = LzPack(raw, rawN, pk);
+        u8* back = 0; u64 backN = 0;
+        // check the packing before anything is shipped
+        if (LzUnpack(pk, pn, &back, &backN) && backN == rawN && memcmp(back, raw, rawN) == 0) {
+            txtN = B64Enc(pk, pn, txt);
+            char path[400];
+            NameFile(path, "terrain_out_", id);
+            ok = WriteWhole(path, txt, txtN);
+            if (id > 12) { NameFile(path, "terrain_out_", id - 12); DeleteFileA(path); }
+        }
+        if (back) HeapFree(GetProcessHeap(), 0, back);
+    }
+    if (raw) HeapFree(GetProcessHeap(), 0, raw);
+    if (pk) HeapFree(GetProcessHeap(), 0, pk);
+    if (txt) HeapFree(GetProcessHeap(), 0, txt);
+    Buf b;
+    b.str("terrain: edit ").dec(id).str(" ").dec(hg->w).str("x").dec(hg->h).str(" cells at ").dec(hg->x0).str(",").dec(hg->y0)
+     .str(" (payload +").hex(hg->off).str(", ").dec(hg->bytes).str(" bytes, ").dec(txtN).str(" as text, ").dec(extra).str(" other grid(s)) ")
+     .str(ok ? "captured" : "NOT captured");
+    LogLine(b);
+    if (ok) {
+        Buf e;
+        e.str("terrain ").dec(id).str(" ").dec(hg->x0).str(" ").dec(hg->y0).str(" ").dec(hg->w).str(" ").dec(hg->h).str(" ").dec(txtN)
+         .str(" ").hex(fnv).str(" ").dec(extra);
+        AppendEvent(e);
+    }
+}
+
+// another game's edit, ready to be injected: the mod wrote terrain_in_<id>.txt and asked with "tin <id>"
+static void TerrainLoadIn(long id)
+{
+    char path[400];
+    NameFile(path, "terrain_in_", id);
+    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    bool ok = false;
+    u8* raw = 0;
+    u64 rawN = 0;
+    if (f != INVALID_HANDLE_VALUE) {
+        DWORD size = GetFileSize(f, 0), got = 0;
+        char* txt = (char*)HeapAlloc(GetProcessHeap(), 0, (u64)size + 8);
+        u8* pk = (u8*)HeapAlloc(GetProcessHeap(), 0, (u64)size / 4 * 3 + 16);
+        if (txt && pk && ReadFile(f, txt, size, &got, 0) && got == size) {
+            u64 pn = 0;
+            if (B64Dec(txt, size, pk, &pn) && LzUnpack(pk, pn, &raw, &rawN) && rawN >= 32 && memcmp(raw, "MPT1", 4) == 0) {
+                i32 w = *(i32*)(raw + 16), h = *(i32*)(raw + 20);
+                u64 bytes = (u64)w * (u64)h * 8;
+                ok = w > 0 && h > 0 && rawN == 32 + bytes && Fnv64(raw + 32, bytes) == *(u64*)(raw + 24);
+            }
+        }
+        if (txt) HeapFree(GetProcessHeap(), 0, txt);
+        if (pk) HeapFree(GetProcessHeap(), 0, pk);
+        CloseHandle(f);
+        DeleteFileA(path);
+    }
+    Buf b;
+    if (ok) {
+        TLock();
+        u8* old = g_tin.raw;
+        g_tin.id = id; g_tin.x0 = *(i32*)(raw + 8); g_tin.y0 = *(i32*)(raw + 12); g_tin.w = *(i32*)(raw + 16); g_tin.h = *(i32*)(raw + 20);
+        g_tin.fnv = *(u64*)(raw + 24); g_tin.raw = raw; g_tin.ready = 1;
+        TUnlock();
+        if (old) HeapFree(GetProcessHeap(), 0, old);
+        b.str("terrain: edit ").dec(id).str(" received, ").dec(g_tin.w).str("x").dec(g_tin.h).str(" cells at ").dec(g_tin.x0).str(",").dec(g_tin.y0).str(": ready to inject");
+        Buf e; e.str("terrain_in ").dec(id).str(" ready"); AppendEvent(e);
+    } else {
+        if (raw) HeapFree(GetProcessHeap(), 0, raw);
+        b.str("terrain: edit ").dec(id).str(" could not be read");
+        Buf e; e.str("terrain_in ").dec(id).str(" failed"); AppendEvent(e);
+    }
+    LogLine(b);
+}
+
+// a script command entering the command list: when it carries an empty grid of the size of the received edit, the cells go in
+static void TerrainInject(void* cmd)
+{
+    u8* pay = cmd ? *(u8**)cmd : 0;
+    if (!pay || !Readable(pay, 0x9c0) || *(u8*)(pay + 0x9b8) != 52) return;
+    GridHit hits[8];
+    int n = FindGrids(pay, hits, 8);
+    for (int i = 0; i < n; i++) {
+        GridHit& g = hits[i];
+        if (g.elem != 8) continue;
+        TLock();
+        if (g_tin.ready && g.x0 == g_tin.x0 && g.y0 == g_tin.y0 && g.w == g_tin.w && g.h == g_tin.h && g.bytes == (u64)g.w * (u64)g.h * 8) {
+            memcpy(g.cells, g_tin.raw + 32, g.bytes);
+            g_tin.ready = 0;
+            if (g_tRingN >= 8) { for (int k = 1; k < 8; k++) g_tRing[k - 1] = g_tRing[k]; g_tRingN = 7; }
+            g_tRing[g_tRingN++] = g_tin.fnv;
+            long id = g_tin.id;
+            TUnlock();
+            Buf b; b.str("terrain: edit ").dec(id).str(" injected into the command (").dec(g.w).str("x").dec(g.h).str(" cells)"); LogLine(b);
+            Buf e; e.str("terrain_in ").dec(id).str(" injected"); AppendEvent(e);
+            return;
+        }
+        TUnlock();
+    }
+}
+
+// test mode: a scripted edit has a flat grid; give its cells a pattern so that the copy can be checked cell by cell
+static void TerrainPattern(void* cmd)
+{
+    u8* pay = cmd ? *(u8**)cmd : 0;
+    if (!pay || !Readable(pay, 0x9c0) || *(u8*)(pay + 0x9b8) != 52) return;
+    GridHit hits[8];
+    int n = FindGrids(pay, hits, 8);
+    for (int i = 0; i < n; i++) {
+        if (hits[i].elem != 8) continue;
+        float* c = (float*)hits[i].cells;
+        u64 cells = hits[i].bytes / 8;
+        for (u64 k = 0; k < cells; k++) c[2 * k] += (float)(((k * 2654435761ull) >> 12) & 1023) * 0.002f;     // noise: it does not pack
+        Buf b; b.str("terrain: test pattern written into ").dec(cells).str(" cells"); LogLine(b);
+        return;
+    }
+}
+
+// diagnostic (MPFEVER_PAYLOAD_DUMP=1): the payload of the first world-build commands as hex, to find where the Context flags are
+static volatile long g_dumpOn = 0, g_dumpN = 0;
+static void DumpPayload(const u8* pay, const char* tag)
+{
+    long n = _InterlockedIncrement(&g_dumpN);
+    if (n > 60) return;
+    static const char hx[] = "0123456789abcdef";
+    char* txt = (char*)HeapAlloc(GetProcessHeap(), 0, 0x9c0 * 2 + 64);
+    if (!txt) return;
+    u64 o = 0;
+    for (u32 i = 0; i < 0x9c0; i++) { txt[o++] = hx[pay[i] >> 4]; txt[o++] = hx[pay[i] & 15]; }
+    txt[o++] = '\n';
+    char path[400];
+    Buf nb; nb.str("payload_").dec(n).str("_").str(tag).str(".txt"); nb.s[nb.n] = 0;
+    PathOf(path, nb.s);
+    WriteWhole(path, txt, o);
+    HeapFree(GetProcessHeap(), 0, txt);
+}
+
+extern "C" u64 ApplyDetour(void* a, void* b)
+{
+    g_slot = a;
+    u8* pay = *(u8**)b;
+    bool inLoop = (u32)((uptr)_ReturnAddress() - g_base) == RVA_LOOP_RET;    // the loop of RunGameSimLoop (the other callers apply one command at once)
+    u32 kind = pay ? *(u8*)(pay + 0x9b8) : 255;
+    if (kind < 128) { if (inLoop) g_kcLoop[kind]++; else g_kcDir[kind]++; }
+    AuditFlush(false);
+    if (kind == 52) TerrainCapture(pay);
+    if (!g_timing) return g_applyOrig(a, b);
+    if (g_gateMs) Sleep((DWORD)g_gateMs);       // test: does blocking here slow the simulation step by step?
+    {
+        static long lastShown = -2;
+        long cur = *(long*)((u8*)a + 0x208);
+        if (cur != lastShown) { lastShown = cur; TimingLine("world-entity", (u64)cur, (u64)a); }
+        Buf l; l.str("tm ").dec(NowUs()).str(" cmd-kind ").dec(kind).str(inLoop ? " loop" : " direct").str(" iter ").dec(g_iter); LogLine(l);
+    }
+    if (inLoop && g_deferIters > 0 && NowUs() > g_deferAfterUs && g_defTail - g_defHead < 250) {
+        void* buf = HeapAlloc(GetProcessHeap(), 8, 0x40);
+        if (buf) {
+            ((MoveCtor0)(g_base + RVA_CMD_MOVE))(buf, b);
+            Deferred& d = g_def[g_defTail % 256];
+            d.cmd = buf; d.queued = g_iter; d.due = g_iter + g_deferIters; d.exact = false;
+            g_defTail++;
+            return 0;
+        }
+    }
+    u64 r = g_applyOrig(a, b);
+    TimingLine("apply-end", r, 0);
+    return r;
 }
 
 typedef void (*Dtor)(void*);
@@ -428,13 +972,37 @@ static void ReleaseOne()
     g_addOrig(h->list, out, h->cmd, h->done, h->progress);
     ((Dtor)(g_base + RVA_HANDLE_DTOR))(out);
     ((Dtor)(g_base + RVA_CMD_DTOR))(h->cmd);
+    if (g_timing) TimingLine("release", h->id, 0);
     Buf b; b.str("released build ").dec(h->id).str(" (tool site ").hex(h->site).str(")"); LogLine(b);
 }
 
 extern "C" void* AddDetour(void* list, void* out, void* cmd, void* done, void* progress)
 {
     u32 caller = (u32)((uptr)_ReturnAddress() - g_base);
+    if (g_timing) TimingLine("add", caller, g_released);
     if (!g_inRelease) ReadControl();
+    if (g_tin.ready) TerrainInject(cmd);
+    else if (g_tPattern > 0) TerrainPattern(cmd);
+    {   // which Context flags the tools build with (found by comparing commands that differ by one flag): logged once per caller and set of flags
+        u8* pay = cmd ? *(u8**)cmd : 0;
+        if (pay && Readable(pay, 0x9c0) && *(u8*)(pay + 0x9b8) == 52) {
+            u32 bits = (pay[0x358] ? 1u : 0) | (pay[0x360] ? 2u : 0) | (pay[0x362] ? 4u : 0) | (pay[0x3d1] ? 8u : 0) | (pay[0x3d2] ? 16u : 0);
+            u64 key = ((u64)caller << 8) | bits;
+            static u64 seen[64];
+            static volatile long nseen = 0;
+            bool fresh = true;
+            long n = nseen;
+            for (long k = 0; k < n && k < 64; k++) if (seen[k] == key) { fresh = false; break; }
+            if (fresh && n < 64) {
+                seen[n] = key;
+                nseen = n + 1;
+                Buf b; b.str("build context from ").hex(caller).str(": gatherBuildings ").dec(bits & 1).str(" terrainAlignment ").dec((bits >> 1) & 1)
+                    .str(" cleanupStreetGraph ").dec((bits >> 2) & 1).str(" ignoreErrors ").dec((bits >> 3) & 1).str(" playerInitiated ").dec((bits >> 4) & 1);
+                LogLine(b);
+            }
+        }
+    }
+    if (g_dumpOn) { u8* pay = cmd ? *(u8**)cmd : 0; if (pay && Readable(pay, 0x9c0) && *(u8*)(pay + 0x9b8) == 52) { char t[16]; Buf tb; tb.str("c").hex(caller); for (int i = 0; i < tb.n && i < 15; i++) t[i] = tb.s[i]; t[tb.n < 15 ? tb.n : 15] = 0; DumpPayload(pay, t); } }
     bool testDefer = false;
     // (test mode removed: the Lua sendCommand path reads the command back through Add's out handle, which a deferral
     // leaves empty; only the UI tool sites, which merely destroy that handle, can be held)
@@ -643,6 +1211,43 @@ int JoinCallback::GetCallbackSizeBytes() { return 8 + 256; }
 
 static JoinCallback g_joinCb;
 
+
+// Exploration (MPFEVER_SCANPLAYER=n): which memory holds the local player's entity id? Lists the 4-byte aligned words equal to n
+// in the writable memory, flagging those inside the game's own image.
+static DWORD WINAPI ScanThread(void* arg)
+{
+    u32 want = (u32)(uptr)arg;
+    char dl[16]; DWORD dn = GetEnvironmentVariableA("MPFEVER_SCAN_DELAY_S", dl, 15); long delay = 50;
+    if (dn) { delay = 0; for (DWORD i = 0; i < dn && dl[i] >= '0' && dl[i] <= '9'; i++) delay = delay * 10 + (dl[i] - '0'); }
+    Sleep((DWORD)delay * 1000);
+    u8* p = 0; int found = 0, inImage = 0;
+    u64 imgLo = g_base, imgHi = g_base + 0x4000000;
+    for (;;) {
+        MEMORY_BASIC_INFORMATION mi;
+        if (!VirtualQuery(p, &mi, sizeof(mi))) break;
+        bool rw = mi.State == 0x1000 && (mi.Protect == 0x04 || mi.Protect == 0x40) ;
+        if (rw && mi.RegionSize < 0x40000000) {
+            u32* q = (u32*)mi.BaseAddress;
+            u64 n = mi.RegionSize / 4;
+            for (u64 k = 0; k < n; k++) {
+                if (q[k] == want) {
+                    found++;
+                    if (g_nhits < 600) g_hits[g_nhits++] = &q[k];
+                    u64 a = (u64)&q[k];
+                    bool img = a >= imgLo && a < imgHi;
+                    if (img) inImage++;
+                    if (found <= 60 || img) {
+                        Buf b; b.str("scan hit ").hex(a).str(img ? " IMAGE rva " : " heap region ").hex(img ? a - g_base : (u64)mi.BaseAddress).str(" size ").hex(mi.RegionSize); LogLine(b);
+                    }
+                }
+            }
+        }
+        p = (u8*)mi.BaseAddress + mi.RegionSize;
+    }
+    Buf b; b.str("scan done: ").dec(found).str(" hits, ").dec(inImage).str(" in the image"); LogLine(b);
+    return 0;
+}
+
 static DWORD WINAPI SteamThread(void*)
 {
     HMODULE sa = 0;
@@ -750,6 +1355,43 @@ static bool ColdJoin()
     return true;
 }
 
+
+static bool SelectBuild(u32 stamp)
+{
+    for (const BuildAddrs& b : BUILDS) {
+        if (b.stamp != stamp) continue;
+        RVA_ADD = b.add; RVA_CMD_MOVE = b.move; RVA_CMD_DTOR = b.dtor; RVA_HANDLE_DTOR = b.handleDtor; RVA_APPLY = b.apply;
+        RVA_SWAP = b.swap; RVA_SYNC = b.sync; RVA_PREITER = b.preIter; RVA_LOOP_RET = b.loopRet;
+        UI_ADD_SITES = b.sites; UI_ADD_N = b.nSites;
+        g_knownLua = b.lua; g_knownPool = b.pool;
+        return true;
+    }
+    return false;
+}
+
+// Finds a code pattern in the game's .text (the whole section); returns its address if it occurs exactly once.
+static u8* FindUnique(uptr base, const u8* pat, int len, u32 hintRva = 0)
+{
+    if (hintRva && memcmp((u8*)(base + hintRva), pat, len) == 0) return (u8*)(base + hintRva);
+    auto dos = (IMAGE_DOS_HEADER_*)base;
+    u8* ntp = (u8*)(base + dos->e_lfanew);
+    auto fh = (IMAGE_FILE_HEADER_*)(ntp + 4);
+    auto sec = (IMAGE_SECTION_HEADER_*)(ntp + 4 + sizeof(IMAGE_FILE_HEADER_) + fh->SizeOfOptionalHeader);
+    for (int i = 0; i < fh->NumberOfSections; i++) {
+        if (!(sec[i].Name[0] == '.' && sec[i].Name[1] == 't' && sec[i].Name[2] == 'e' && sec[i].Name[3] == 'x')) continue;
+        u8* start = (u8*)(base + sec[i].VirtualAddress);
+        u64 size = sec[i].VirtualSize;
+        u8* found = 0;
+        int count = 0;
+        for (u64 k = 0; k + len <= size; k++) {
+            if (start[k] != pat[0]) continue;
+            if (memcmp(start + k, pat, len) == 0) { if (!found) found = start + k; count++; if (count > 1) return 0; }
+        }
+        return count == 1 ? found : 0;
+    }
+    return 0;
+}
+
 static DWORD WINAPI Init(void*)
 {
     g_base = (uptr)GetModuleHandleW(0);
@@ -784,11 +1426,29 @@ static DWORD WINAPI Init(void*)
     { Buf t; t.str(g_scriptPoolPatched ? "game scripts: own pool, one worker" : "game scripts: pool NOT patched"); LogLine(t); }
     if (g_simPoolA || g_simPoolB) { Buf t; t.str("pool sizes forced: ").hex(g_simPoolA).str(",").hex(g_simPoolB); LogLine(t); }
     if (g_threads) { Buf t; t.str("engine told it has ").hex(g_threads).str(" processor(s)").str(g_realGetSystemInfo ? "" : " (GetSystemInfo not patched)"); LogLine(t); }
-    if (fh->TimeDateStamp != EXPECTED_TIMESTAMP) {
-        Buf w; w.str("unknown game build: inert"); LogLine(w);
+    if (!SelectBuild(fh->TimeDateStamp)) {
+        Buf w; w.str("unknown game build: hooks off"); LogLine(w);
         return 0;
     }
     InstallDetour(RVA_ADD, P_ADD, sizeof(P_ADD), (void*)&AddDetour, (void**)&g_addOrig);
+    InstallDetour(RVA_APPLY, P_APPLY, sizeof(P_APPLY), (void*)&ApplyDetour, (void**)&g_applyOrig);
+    { char v[4]; if (GetEnvironmentVariableA("MPFEVER_TIMING", v, 3) > 0) {
+        QueryPerformanceFrequency(&g_qpf);
+        if (g_qpf > 0) {
+            NowUs();
+            _InterlockedExchange(&g_timing, 1);
+            InstallDetour(RVA_PREITER, P_PREITER, sizeof(P_PREITER), (void*)&PreIterDetour, (void**)&g_preIterOrig);
+            InstallDetour(RVA_SYNC, P_SYNC, sizeof(P_SYNC), (void*)&SyncDetour, (void**)&g_syncOrig);
+            InstallDetour(RVA_SWAP, P_SWAP, sizeof(P_SWAP), (void*)&SwapDetour, (void**)&g_swapOrig);
+            { char gv[16]; DWORD gn = GetEnvironmentVariableA("MPFEVER_GATE_MS", gv, 15); long g = 0; for (DWORD i = 0; i < gn && gv[i] >= '0' && gv[i] <= '9'; i++) g = g * 10 + (gv[i] - '0'); g_gateMs = g; }
+            { char gv[16]; DWORD gn = GetEnvironmentVariableA("MPFEVER_DEFER_ITERS", gv, 15); long g = 0; for (DWORD i = 0; i < gn && gv[i] >= '0' && gv[i] <= '9'; i++) g = g * 10 + (gv[i] - '0'); g_deferIters = g; }
+            { char gv[16]; DWORD gn = GetEnvironmentVariableA("MPFEVER_DEFER_AFTER_S", gv, 15); if (gn) { long g = 0; for (DWORD i = 0; i < gn && gv[i] >= '0' && gv[i] <= '9'; i++) g = g * 10 + (gv[i] - '0'); g_deferAfterUs = (i64)g * 1000000; } }
+            Buf t; t.str("timing probe on, gate ").dec(g_gateMs).str(" ms, defer ").dec(g_deferIters).str(" iterations"); LogLine(t);
+        }
+    } }
+    { char v[4]; if (GetEnvironmentVariableA("MPFEVER_PAYLOAD_DUMP", v, 3) > 0) { g_dumpOn = 1; Buf t; t.str("payload dump on"); LogLine(t); } }
+    { char v[4]; if (GetEnvironmentVariableA("MPFEVER_TERRAIN_PATTERN", v, 3) > 0) { g_tPattern = 1; Buf t; t.str("terrain test pattern on"); LogLine(t); } }
+    { char sv[16]; DWORD sn = GetEnvironmentVariableA("MPFEVER_SCANPLAYER", sv, 15); if (sn) { u32 v = 0; for (DWORD i = 0; i < sn && sv[i] >= '0' && sv[i] <= '9'; i++) v = v * 10 + (sv[i] - '0'); HANDLE sc = CreateThread(0, 0, ScanThread, (void*)(uptr)v, 0, 0); if (sc) CloseHandle(sc); } }
     { HANDLE st = CreateThread(0, 0, SteamThread, 0, 0, 0); if (st) CloseHandle(st); }
     SetupSerial();
     // ArmMapSites();   (diagnostic: map lookup failures, see sites_gen.h)
@@ -902,8 +1562,8 @@ static void PatchScriptPool(uptr base)
     static const u8 expect[] = { 0x83, 0xF8, 0x08, 0x0F, 0x8D, 0x25, 0x01, 0x00, 0x00,     // cmp eax,8 / jge (shared pool)
                                  0xC7, 0x44, 0x24, 0x20, 0x01, 0x00, 0x00, 0x00,           // mov [rsp+20h],1
                                  0xE8 };                                                   // call hardware_concurrency
-    u8* p = (u8*)(base + 0xaaec2c);
-    if (memcmp(p, expect, sizeof(expect)) != 0) return;
+    u8* p = FindUnique(base, expect, (int)sizeof(expect), g_knownPool);
+    if (!p) return;
     DWORD prot;
     VirtualProtect(p, 32, PAGE_EXECUTE_READWRITE, &prot);
     for (int k = 3; k < 9; k++) p[k] = 0x90;                    // never the shared pool
@@ -920,7 +1580,7 @@ static void PatchScriptPool(uptr base)
 // mpfever_1::/mpfever_menu.lua, which adds the multiplayer page through the UI's own recipe replacement table.
 typedef const char* (*LuaReader)(void* L, void* ud, size_t* size);
 typedef int (*LuaLoadF)(void* L, LuaReader reader, void* data, const char* chunkname, const char* mode);
-static const u32 RVA_LUA_LOAD = 0x2fbdf70;
+static u32 RVA_LUA_LOAD = 0x2fbdf70;
 static const u8 P_LUA_LOAD[] = { 0x48, 0x89, 0x5C, 0x24, 0x10, 0x56, 0x48, 0x83, 0xEC, 0x50, 0x49, 0x8B, 0xD9, 0x48, 0x8B, 0xF1 };
 static LuaLoadF g_luaLoadOrig = 0;
 static const char MENU_PREFIX[] = "do local ok, e = pcall(require, \"mpfever_1::/mpfever_menu.lua\") if not ok then print(\"[MPFEVER-MENU] \" .. tostring(e)) end end ";
@@ -968,12 +1628,13 @@ extern "C" BOOL WINAPI DllMain(HMODULE inst, DWORD reason, void*)
         DisableThreadLibraryCalls(inst);
         char d[8];
         if (GetEnvironmentVariableA("MPFEVER_DIR", d, 1) > 0) {
-            LimitThreads(); SetupSimPools(); PatchScriptPool((uptr)GetModuleHandleW(0));
             g_base = (uptr)GetModuleHandleW(0);
             auto dos = (IMAGE_DOS_HEADER_*)g_base;
             auto fh = (IMAGE_FILE_HEADER_*)((u8*)(g_base + dos->e_lfanew) + 4);
-            if (fh->TimeDateStamp == EXPECTED_TIMESTAMP)
-                InstallDetour(RVA_LUA_LOAD, P_LUA_LOAD, sizeof(P_LUA_LOAD), (void*)&LuaLoadDetour, (void**)&g_luaLoadOrig);
+            SelectBuild(fh->TimeDateStamp);
+            LimitThreads(); SetupSimPools(); PatchScriptPool((uptr)GetModuleHandleW(0));
+            u8* ll = FindUnique(g_base, P_LUA_LOAD, (int)sizeof(P_LUA_LOAD), g_knownLua);
+            if (ll) { RVA_LUA_LOAD = (u32)((uptr)ll - g_base); InstallDetour(RVA_LUA_LOAD, P_LUA_LOAD, sizeof(P_LUA_LOAD), (void*)&LuaLoadDetour, (void**)&g_luaLoadOrig); }
         }
         HANDLE t = CreateThread(0, 0, Init, 0, 0, 0);
         if (t) CloseHandle(t);
