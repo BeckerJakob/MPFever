@@ -42,7 +42,9 @@ end
 -- While the build waits for its game time (about two seconds), a translucent circle on the ground where the player
 -- clicked shows that it is on its way (no interface element: the world's own zone drawing). Removed once shipped.
 G.pendingMarks = {}
+-- returns the position of the mark (nil: none)
 function markPending(id, at)
+	local shown = nil
 	local ok, err = pcall(function()
 		local pos = at
 		if not pos then
@@ -50,11 +52,14 @@ function markPending(id, at)
 			if not (m and m.hasTerrainPosition and m.hasTerrainPosition()) then return end
 			pos = m.getTerrainPosition()
 		end
+		-- in this player's colour (presence, Phase 6/7: the others draw the same circle in the same colour)
 		api.gui.mission.setZoneCircle("mpfever_pending_" .. id, api.type.Vec2f.new(pos.x, pos.y), 14, true,
-			api.type.Vec4f.new(1.0, 0.75, 0.1, 0.45), false, false)
+			presenceColour(G.me, 0.45), false, false)
 		G.pendingMarks[id] = G.frames
+		shown = { x = math.floor(pos.x * 10 + 0.5) / 10, y = math.floor(pos.y * 10 + 0.5) / 10 }
 	end)
 	if not ok then log("pending mark failed: " .. tostring(err)) end
+	return shown
 end
 
 function refreshPendingMarks()
@@ -100,12 +105,12 @@ function pollNativeEvents()
 		if rid then G.terrainIn[tonumber(rid)] = rst end
 		local id = tonumber(line:match("^deferred (%d+)"))
 		if id then
-			markPending(id)
+			local pos = markPending(id)
 			local now = gameTime()
 			local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt
 			local at = paused and pausedStamp(now) or (stampFor(now) + STEP)
 			G.natRelease[#G.natRelease + 1] = { id = id, at = at }
-			send("nat_pending", { origin = G.me, at = at, id = id })
+			send("nat_pending", { origin = G.me, at = at, id = id, pos = pos })
 			log("native build " .. id .. " held by the DLL, released at t=" .. at .. " (now " .. now .. ") [frame " .. G.frames .. "]")
 		end
 	end

@@ -10,6 +10,7 @@
         "mpfever_br_replay.lua",
         "mpfever_br_native.lua",
         "mpfever_br_resync.lua",
+        "mpfever_br_presence.lua",
         "mpfever_br_frame.lua",
         "mpfever_dev_autotest1.lua",
         "mpfever_dev_autotest2.lua",

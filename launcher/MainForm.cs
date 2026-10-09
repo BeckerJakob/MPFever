@@ -937,7 +937,8 @@ namespace MPFever
                         if (from != null) hostGame?.ToGame(m);
                         relay.Broadcast(m, from);
                     }
-                    if (m.Kind != "chat") Log.W($"{m.From} : {m.Kind} {m.Payload}");
+                    // presence (mouse and camera of a player, ~10 per second) and chat are relayed without a log line
+                    if (m.Kind != "chat" && m.Kind != "presence") Log.W($"{m.From} : {m.Kind} {m.Payload}");
                     break;
             }
         }

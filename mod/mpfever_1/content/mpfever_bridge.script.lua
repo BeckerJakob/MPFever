@@ -26,7 +26,7 @@ local function part(name)
 	f(ENV)
 end
 
-local PARTS = { "base", "exec", "sim", "gui", "replay", "native", "resync" }
+local PARTS = { "base", "exec", "sim", "gui", "replay", "native", "resync", "presence" }
 for _, p in ipairs(PARTS) do part("mpfever_br_" .. p .. ".lua") end
 local DEV = os.getenv("MPFEVER_AUTOTEST") == "1" or (os.getenv("MPFEVER_SAVE") or "") ~= ""
 if DEV then

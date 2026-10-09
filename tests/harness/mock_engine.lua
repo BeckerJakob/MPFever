@@ -210,6 +210,26 @@ for _, n in ipairs({ "makeGameSetSpeedCmd", "makeScriptingSendEventCmd", "makeWo
                      "makeLineCreateCmd", "makeVehicleSetLineCmd" }) do
   api.cmd[n] = mk(n)
 end
+-- the interface: where the mouse points on the ground (MOUSE, nil: not over the ground), the camera (CAMERA), and the
+-- zones drawn on the map (ZONES: id -> { x, y, r, colour })
+MOUSE, CAMERA, ZONES, ZONE_CALLS = nil, { x = 0, y = 0 }, {}, 0
+api.gui = {
+  mouse = {
+    hasTerrainPosition = function() return MOUSE ~= nil end,
+    getTerrainPosition = function() return { x = MOUSE.x, y = MOUSE.y, z = 0 } end,
+  },
+  camera = {
+    getCameraData = function() return { CAMERA.x, CAMERA.y, 800, 0, 0.6 } end,
+    setCameraData = function(d) CAMERA = { x = d[1], y = d[2] } end,
+  },
+  mission = {
+    setZoneCircle = function(id, pos, r, filled, colour)
+      ZONE_CALLS = ZONE_CALLS + 1
+      ZONES[id] = { x = pos.x, y = pos.y, r = r, colour = colour }
+    end,
+    removeZone = function(id) ZONES[id] = nil end,
+  },
+}
 debugPrint = function(s) end
 -- the game's toString dumps a value deterministically (tostring of a table would give its address, different in
 -- every run: the state hashes of the mock depended on it)

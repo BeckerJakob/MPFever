@@ -54,6 +54,19 @@
       die C++-Hooks bleiben), ebenso T2.5–T2.9 (Dummy-Exe)
 - [ ] T2.4 Signaturen gegen Build 40408 – Exe nicht verfügbar
 
+### Phase 6 – Präsenz (Teil-Umsetzung, 09.10.2026) und Phase 7 (Sofort-Rückmeldung, Teil)
+- [x] `mpfever_br_presence.lua`: Maus (Gelände) und Kamera ~10×/s, nur bei Bewegung (+ Herzschlag); beim Mitspieler
+      als Punkt (geglättet) und blasser Kamera-Kreis in einer festen Spielerfarbe; Markierungen verschwinden bei
+      `peerleft` oder ohne Update
+- [x] Live-Bauanzeige: `nat_pending` trägt die Klickposition – die anderen zeigen dort einen Kreis in der Farbe des
+      Bauenden, bis der Bau ankommt (oder abgebrochen ist); der eigene Warte-Kreis in der eigenen Farbe (Phase 7)
+- [x] Launcher: Präsenz wird weitergeleitet, aber nicht geloggt
+- [x] T6.1 (Größe < 200 Byte, nur bei Bewegung), T6.2 (Glättung), T6.3 (Simulation identisch mit/ohne Präsenz),
+      T6.5 (Aufräumen), Bauanzeige – `tests/sim/test_presence.py`
+- [ ] Namensschilder, Spielerleiste, Folgen/Springen, Pings, Chat-Fenster, Aktivitätsfeed – brauchen eigene UI-Fenster
+      bzw. Eingaben (Spike S6, im Spiel zu klären); Präsenz über eigenen unzuverlässigen Kanal → Phase 4
+- [ ] Phase 7: echtes Geisterbild der Bau-Geometrie (die DLL hält den Befehl, Lua kennt nur die Klickposition)
+
 ---
 
 ## Inhalt

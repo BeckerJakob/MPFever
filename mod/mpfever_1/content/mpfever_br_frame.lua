@@ -152,6 +152,12 @@ function guiUpdate(userParams, state, guiState)
 		end
 	end
 
+	-- presence (Phase 6): mouse and camera to the others, their marks drawn here
+	if G.connected then
+		local okp, errp = pcall(function() presenceTick(); presenceExpireBuilds() end)
+		if not okp and not G.presenceFailed then G.presenceFailed = true; log("presence failed: " .. tostring(errp)) end
+	end
+
 	-- bindings, results and hashes produced by the simulation half
 	for key, e in pairs(st.bind or {}) do
 		if G.bind[key] ~= e then
