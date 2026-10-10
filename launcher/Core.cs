@@ -441,6 +441,20 @@ namespace MPFever
             catch (Exception e) { Log.W("lang.txt: " + e.Message); }
         }
 
+        /// <summary>The session as the in-game MPFever window shows it (mp_status.txt: key=value lines and one
+        /// "p=id TAB name TAB state TAB lag TAB role" line per player), replaced in one go.</summary>
+        public void WriteStatus(string text)
+        {
+            var tmp = Path.Combine(Dir, "mp_status.tmp");
+            var dst = Path.Combine(Dir, "mp_status.txt");
+            lock (writeGate)
+            {
+                File.WriteAllText(tmp, text, Utf8);
+                try { if (File.Exists(dst)) File.Replace(tmp, dst, null); else File.Move(tmp, dst); }
+                catch { File.Copy(tmp, dst, true); }
+            }
+        }
+
         public void WriteMenuState(IDictionary<string, string> st)
         {
             var sb = new StringBuilder();
@@ -587,6 +601,9 @@ namespace MPFever
         public event Action<Peer> Joined, Left;
 
         public int Count { get { lock (peers) return peers.Count; } }
+
+        /// <summary>The players connected right now (name#id), including those whose game is not ready yet.</summary>
+        public string[] PeerNames() { lock (peers) return peers.Where(p => p.Name != null).Select(p => p.Name).ToArray(); }
 
         public void Start(int port)
         {
