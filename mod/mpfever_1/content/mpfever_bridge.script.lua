@@ -450,7 +450,7 @@ local function executeAction(a, sendCommand, useCallback, bind, done)
 				local sg = type(stop) == "table" and stop.stationGroup
 				if type(sg) == "number" and sg >= 0 then
 					local owner = CO.idOfEntity(R.CO, R.ownerOf(sg))
-					if owner and owner ~= a.co and not (R.CO.shares and R.CO.shares[R.sgKey(sg)]) then blocked = sg break end
+					if owner and owner ~= a.co and C.shareFee(R.CO.shares, R.sgKey(sg)) <= 0 then blocked = sg break end
 				end
 			end
 		end)
@@ -735,6 +735,13 @@ local function coApply(st, a)
 	installSimPlayer(st)
 end
 
+-- an action's identity across the queue: its number and its stamp (the numbers start again after a resynchronisation,
+-- at a later game time); none for checkpoints and company joins
+local function doneKey(a)
+	if a.uid and a.at and a.fn ~= "mpfCoJoin" then return tostring(a.uid) .. "@" .. tostring(a.at) end
+	return nil
+end
+
 local function simApplyDue(state)
 	local st = state:get() or {}
 	R.CO = st.co
@@ -743,12 +750,29 @@ local function simApplyDue(state)
 	local q = st.q or {}
 	if #q > 0 then
 		table.sort(q, before)
-		local keep, bought = {}, false
-		st.results = st.results or {}
-		st.bind = st.bind or {}
+		-- the due actions leave the queue before any of them runs: a state saved while one runs (or an event handled
+		-- meanwhile) never holds them again (a player's purchase was once applied three times on the host)
+		local due, keep, bought = {}, {}, false
 		for _, a in ipairs(q) do
 			if a.at <= now and not (a.fn == "makeVehicleBuyCmd" and bought) then
-				changed = true
+				if a.fn == "makeVehicleBuyCmd" then bought = true end
+				due[#due + 1] = a
+			else
+				keep[#keep + 1] = a
+			end
+		end
+		st.q = keep
+		st.results = st.results or {}
+		st.bind = st.bind or {}
+		st.doneUid = st.doneUid or {}
+		for uid, t in pairs(st.doneUid) do if t < now - 600 * STEP then st.doneUid[uid] = nil end end
+		for _, a in ipairs(due) do
+			changed = true
+			local dk = doneKey(a)
+			if dk and st.doneUid[dk] then
+				log("action " .. tostring(a.uid) .. " " .. tostring(a.fn) .. " already applied at t=" .. st.doneUid[dk] .. ": skipped")
+			else
+				if dk then st.doneUid[dk] = now end
 				if a.kind == "hash" then
 					local c0 = os.clock()
 					local okA, auth = pcall(authValues, st.co)
@@ -770,7 +794,6 @@ local function simApplyDue(state)
 						log("LATE action " .. tostring(a.uid) .. " for t=" .. a.at .. " applied at " .. now .. " (" .. ((now - a.at) / STEP) .. " step(s) late)")
 						st.late = (st.late or 0) + 1
 					end
-					if a.fn == "makeVehicleBuyCmd" then bought = true end
 					-- mark the replay so that onPreBuildProposal does not ship it again
 					st.replay = { at = now, n = ((st.replay and st.replay.at == now) and st.replay.n or 0) + 1 }
 					state:set(st)
@@ -790,11 +813,8 @@ local function simApplyDue(state)
 						while #st.results > 40 do table.remove(st.results, 1) end
 					end
 				end
-			else
-				keep[#keep + 1] = a
 			end
 		end
-		st.q = keep
 	end
 	-- entities created one or more steps after their command (vehicle purchases)
 	if st.watches and #st.watches > 0 then
@@ -931,7 +951,7 @@ end
 -- (a vehicle whose next stop moved on has left the stops in between).
 local function chargeShares(st, dt)
 	local reg = st.co
-	if not (reg and reg.mode == "separate" and reg.shares and next(reg.shares) ~= nil and dt and dt > 0) then return false end
+	if not (reg and reg.mode == "separate" and #(reg.list or {}) > 1 and dt and dt > 0) then return false end
 	-- (on the game time, not on a counter: the simulation may run this script in several Lua states, each with its own counters,
 	-- and every game must book the fees at the same steps)
 	local stepNo = math.floor(gameTime() / STEP + 0.5)
@@ -948,9 +968,9 @@ local function chargeShares(st, dt)
 					local sg = lc.stops[i].stationGroup
 					local key = SIM.sgKeys[sg]
 					if not key then key = R.sgKey(sg); SIM.sgKeys[sg] = key end
-					local fee = reg.shares[key]
-					local ownerCo = fee and CO.idOfEntity(reg, R.ownerOf(sg)) or nil
-					if fee and ownerCo and ownerCo ~= lineCo then stops[i - 1] = { co = ownerCo, fee = fee } end
+					local fee = C.shareFee(reg.shares, key)
+					local ownerCo = fee > 0 and CO.idOfEntity(reg, R.ownerOf(sg)) or nil
+					if ownerCo and ownerCo ~= lineCo then stops[i - 1] = { co = ownerCo, fee = fee } end
 				end
 				if next(stops) ~= nil then list[#list + 1] = { line = line, co = lineCo, n = n, stops = stops } end
 			end
@@ -1516,7 +1536,10 @@ local function handleEvent(userParams, state, src, id, name, param)
 		local st = state:get() or {}
 		if name == "queue" then
 			st.q = st.q or {}
-			st.q[#st.q + 1] = param
+			local dk = doneKey(param)
+			local dup = dk and st.doneUid and st.doneUid[dk]
+			for _, a in ipairs(st.q) do if dk and doneKey(a) == dk then dup = true end end
+			if dup then log("action " .. tostring(param.uid) .. " queued twice: ignored") else st.q[#st.q + 1] = param end
 		elseif name == "pause_at" then
 			st.pauseAt = param.at
 			st.pausedAt = nil
@@ -1528,6 +1551,15 @@ local function handleEvent(userParams, state, src, id, name, param)
 			st.bind[param.key] = param.e
 		elseif name == "co_apply" then
 			pcall(coApply, st, param)
+		elseif name == "broke" then
+			-- test (scenario broke): the savegame's company spends nearly all its money
+			local M = loanMods()
+			if M and st.co and st.co.canon then
+				local acc = api.engine.getComponent(st.co.canon, api.type.ComponentType.ACCOUNT)
+				local have = acc and acc.balance or 0
+				coBook(st.co.canon, M.lu.makeLoan(-(have + 100000), -1))
+				log("test: the savegame's company spent " .. tostring(have + 100000))
+			end
 		elseif name == "share" then
 			-- a company shares one of its stations with the others (fee per stop of another company's vehicle), or stops sharing it
 			local reg = st.co
@@ -1541,7 +1573,7 @@ local function handleEvent(userParams, state, src, id, name, param)
 					if owner and owner == param.mpfCo then
 						reg.shares = reg.shares or {}
 						local fee = math.floor(tonumber(param.fee) or 0)
-						reg.shares[param.key] = (fee > 0) and fee or nil
+						reg.shares[param.key] = math.max(fee, 0)      -- 0: not shared (a station absent from the list is shared by default)
 						SIM.shareLinesAt = nil
 						log("companies: company " .. owner .. (fee > 0 and (" shares its station " .. param.key .. " for " .. fee .. " per stop") or (" stops sharing its station " .. param.key)))
 					else
@@ -5375,6 +5407,149 @@ local function runLine(p)
 	end }
 end
 
+-- Broke scenario (companies mode): the host's company is left 100000 in debt; the other scenarios then show whether another
+-- company can still build with its own money
+H.broke = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	if C.ROLE ~= "host" then AUTO.results = { "host only" }; return autoFinish() end
+	uiRequest("makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "broke", [4] = { x = 1 } })
+	G.waits[#G.waits + 1] = { at = G.frames + 200, fn = function()
+		pcall(function()
+			local acc = api.engine.getComponent(api.engine.util.getPlayer(), api.type.ComponentType.ACCOUNT)
+			AUTO.results[#AUTO.results + 1] = "host money " .. tostring(acc and acc.balance)
+		end)
+		autoFinish()
+	end }
+end
+
+-- Buy2 scenario: two purchases a second apart, then each bought vehicle put on the line of the copied vehicle (as a
+-- player does in the depot window); every game must end with the same vehicles (a purchase applied twice made a copy)
+H.buy2 = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local me = api.engine.util.getPlayer()
+	local pick = nil
+	for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+		local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+		if tv and type(tv.depot) == "number" and tv.depot >= 0 and api.engine.entityExists(tv.depot) and tv.line and tv.line >= 0
+			and (pick == nil or (R.ownerOf(v) == me and R.ownerOf(pick.v) ~= me)) then
+			-- (a component read is only valid until the next one: its fields are copied now)
+			pick = { v = v, depot = tv.depot, line = tv.line, cfg = C.marshal(tv.transportVehicleConfig) }
+		end
+	end
+	if not pick then AUTO.results[#AUTO.results + 1] = "no vehicle with a depot and a line"; return autoFinish() end
+	local before = {}
+	for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do before[v] = true end
+	for k = 1, 2 do
+		G.waits[#G.waits + 1] = { at = G.frames + k * 45, fn = function()
+			uiRequest("makeVehicleBuyCmd", { n = 3, [1] = me, [2] = pick.depot, [3] = C.deser(C.ser(pick.cfg)) })
+		end }
+	end
+	G.waits[#G.waits + 1] = { at = G.frames + 400, fn = function()
+		local new = {}
+		for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do if not before[v] then new[#new + 1] = v end end
+		AUTO.results[#AUTO.results + 1] = "bought " .. #new .. " vehicle(s) (2 asked)"
+		for i, v in ipairs(new) do
+			G.waits[#G.waits + 1] = { at = G.frames + i * 20, fn = function() uiRequest("makeVehicleSetLineCmd", { n = 3, [1] = v, [2] = pick.line, [3] = 0 }) end }
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 400, fn = function()
+			for _, v in ipairs(new) do
+				local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+				AUTO.results[#AUTO.results + 1] = "vehicle " .. v .. " line " .. tostring(tv and tv.line)
+			end
+			autoFinish()
+		end }
+	end }
+end
+
+-- Sharemine scenario (companies mode): the client shares every station of its own (fee 500); pickcheck: each game asks its
+-- interface whether the line tool may pick each station of another company (ui_mod.log "selftest window ... pickable")
+H.sharemine = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	if C.ROLE == "host" then AUTO.results = { "client only" }; return autoFinish() end
+	local me = api.engine.util.getPlayer()
+	local n = 0
+	pcall(function()
+		for _, sg in ipairs(R.entitiesWith("STATION_GROUP")) do
+			if R.ownerOf(sg) == me then
+				uiRequest("makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "share", [4] = { key = R.sgKey(sg), fee = 500 } })
+				n = n + 1
+				AUTO.results[#AUTO.results + 1] = "share " .. R.sgKey(sg)
+			end
+		end
+	end)
+	AUTO.results[#AUTO.results + 1] = "asked to share " .. n .. " station(s) of mine"
+	G.waits[#G.waits + 1] = { at = G.frames + 240, fn = autoFinish }
+end
+
+H.pickcheck = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local me = api.engine.util.getPlayer()
+	local list = {}
+	pcall(function()
+		for _, sg in ipairs(R.entitiesWith("STATION_GROUP")) do
+			local o = R.ownerOf(sg)
+			if o and o ~= me and o >= 0 then
+				local key = R.sgKey(sg)
+				local fee = C.shareFee(G.co and G.co.shares, key)
+				if fee > 0 and #list < 4 then list[#list + 1] = sg; AUTO.results[#AUTO.results + 1] = "foreign shared station " .. sg .. " " .. key .. " fee " .. fee end
+			end
+		end
+	end)
+	local i = 0
+	local function nextOne()
+		i = i + 1
+		if not list[i] then return autoFinish() end
+		local f = C.IO.open(C.DIR .. BS .. "ui_selftest.txt", "wb")
+		if f then f:write(tostring(list[i])); f:close() end
+		G.waits[#G.waits + 1] = { at = G.frames + 90, fn = nextOne }
+	end
+	nextOne()
+end
+
+-- Observe scenario: this game's own vehicles (line, next stop, state, speed) and the issues the game finds on its own lines
+H.observe = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local me = api.engine.util.getPlayer()
+	pcall(function()
+		for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+			if R.ownerOf(v) == me then
+				local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+				local mp = api.engine.getComponent(v, api.type.ComponentType.MOVE_PATH)
+				local sp = "?"
+				pcall(function() sp = string.format("%.1f", mp.dyn.speed) end)
+				AUTO.results[#AUTO.results + 1] = "vehicle " .. v .. ": line " .. tostring(tv and tv.line) .. " stop " .. tostring(tv and tv.stopIndex)
+					.. " state " .. tostring(tv and tv.state) .. " speed " .. sp .. (mp and "" or " (no path)")
+			end
+		end
+	end)
+	pcall(function()
+		local issues = api.engine.util.line.getLinesIssues(me, false)
+		local n = 0
+		for line, iss in pairs(issues or {}) do
+			n = n + 1
+			AUTO.results[#AUTO.results + 1] = "line issue " .. tostring(line) .. ": " .. C.ser(C.marshal(iss)):sub(1, 300)
+		end
+		AUTO.results[#AUTO.results + 1] = "lines with issues: " .. n
+	end)
+	AUTO.results[#AUTO.results + 1] = "station fees earned: " .. C.ser((G.co and G.co.shareIncome) or {})
+	G.waits[#G.waits + 1] = { at = G.frames + 30, fn = autoFinish }
+end
+
 -- Share scenario (companies mode): the host shares the stations of the save's first line (fee 1000 per stop); the client then
 -- creates a line through them (scenario line) and pays for every stop
 H.share = function(from, p)
@@ -6205,6 +6380,17 @@ local function resumeAfterLoad(state)
 	-- (keyed by uid and game time: uids start again at 1 in every session, an old record must not hide a new one)
 	for _, r in ipairs(st.results or {}) do G.resultsSeen[tostring(r.uid) .. "@" .. tostring(r.at)] = true end
 	if type(st.hash) == "table" then G.hashSent = st.hash.n end
+	-- the native module keeps counting released builds as long as the game runs (also across a session left for the main menu)
+	pcall(function()
+		local f = C.IO.open(C.DIR .. BS .. "native_ctl.txt", "rb")
+		if not f then return end
+		local s = f:read("*a") or ""
+		f:close()
+		for n in s:gmatch("release (%d+)") do
+			n = tonumber(n)
+			if n and n > G.natReleased then G.natReleased = n end
+		end
+	end)
 	-- first start of this game in the session: everything the launcher wrote so far is for it
 	if fileSize("started.txt") == 0 then
 		C.appendFile(C.DIR .. BS .. "started.txt", "1")

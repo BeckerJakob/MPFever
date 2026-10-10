@@ -16,7 +16,8 @@ WHAT WORKS
 - Two ways to play, chosen by the host in the multiplayer window when hosting:
   - "One company for everybody": all players manage the SAME company (shared money,
     vehicles, lines).
-  - "One company per player": every player has their own company on the same map: own
+  - "One company per player" (STILL IN DEVELOPMENT: many bugs remain to be fixed; use it
+    mainly to test it and help the development of the mod): every player has their own company on the same map: own
     money, own roads, stations, depots, vehicles and lines, each company with its own
     colour (the lines a company creates take its colour, a little darker for each new
     one). The host plays the company of the savegame, every other player gets a new company
@@ -33,10 +34,11 @@ WHAT WORKS
     company that accepts it (only its own vehicles count for it, the reward goes to it) and
     each player only sees their own contracts and the offers they did not decline.
   - Loans: every company has its own loans (offers, loans taken, monthly payments).
-  - Shared stations: a company can share one of its stations or stops with the others for a
-    fee per stop. In the station's window, its owner sets the fee with the - and + buttons
-    (0 = not shared). The other companies' lines may only stop at stations that are shared;
-    each time one of their vehicles stops there, they pay the fee to the owner.
+  - Shared stations: every station or stop is shared with the other companies from the start,
+    for $100 per stop. In the station's window, its owner changes the fee with the - and +
+    buttons (0 = not shared). The other companies' lines may only stop at stations that are
+    shared; each time one of their vehicles stops there, they pay the fee to the owner. The
+    line windows show the fee next to the name of every other company's station.
 - Start from the game itself: MPFever.exe starts Transport Fever 3, and a
   "MULTIJOUEUR / MPFever" button in the main menu opens the multiplayer window.
   - Host: pick one of your savegames (any of them, even one made without MPFever: the mod

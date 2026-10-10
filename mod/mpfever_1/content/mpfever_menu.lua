@@ -162,6 +162,16 @@ local function setup()
 
 	local MPWindow = react.RegisterWrapperRecipe("MPFeverWindow", builtin.Window, function(wp)
 		local st0 = readState()
+		-- The window opens from the main menu only: a session still "in game" (or hosting) is the one the player left by going back
+		-- to the main menu. MPFever.exe ends it, and the window offers to host or join again.
+		local left = react.useState(false)
+		if not left:old() and (st0.phase == "ingame" or st0.phase == "hosting") then
+			left:set(true)
+			request("leave", "", st0.name or "")
+			st0.phase = "idle"
+			st0.text = ""
+			autoClosed = false
+		end
 		local tab = react.useState("host")
 		local saves = react.useStateLazy(listSaves)
 		local selected = react.useState(nil)
@@ -173,6 +183,8 @@ local function setup()
 		react.onStepTimer(function()
 			local s = readState()
 			if s.lang and s.lang ~= "" and s.lang ~= LANGCODE then loadLang() end
+			-- (the end of the left session is on its way: not a reason to close the window)
+			if left:old() and (s.phase == "ingame" or s.phase == "hosting") then s.phase = "idle"; s.text = "" end
 			state:set(s)
 			-- the game is about to load (the host's own, or the host's game received by a player who joins) or is loaded: the
 			-- window has done its job and goes away. Left open it stayed over the game as a leftover whose close button no
@@ -227,6 +239,12 @@ local function setup()
 				button((companies:old() == "shared" and "> " or "") .. T("Une entreprise pour tous", "One company for everybody"), function() companies:set("shared") end, not busy, "font-scale-title-4", WIDTH / 2 - 10),
 				button((companies:old() == "separate" and "> " or "") .. T("Une entreprise par joueur", "One company per player"), function() companies:set("separate") end, not busy, "font-scale-title-4", WIDTH / 2 - 10),
 			})
+			if companies:old() == "separate" then
+				-- the companies mode is still being developed: the host is told before hosting
+				rows[#rows + 1] = text(T("ATTENTION : « Une entreprise par joueur » est en cours de développement.", "WARNING: \"One company per player\" is still in development."), "font-scale-body, error-font", WIDTH)
+				rows[#rows + 1] = text(T("Il reste énormément de bugs à corriger. Utilisez ce mode surtout pour tester", "Many bugs remain to be fixed. Use this mode mainly to test it and"), "font-scale-body, error-font", WIDTH)
+				rows[#rows + 1] = text(T("et aider au développement du mod (signalez les problèmes sur GitHub).", "help the development of the mod (report the problems on GitHub)."), "font-scale-body, error-font", WIDTH)
+			end
 			rows[#rows + 1] = gap()
 			rows[#rows + 1] = button(T("Héberger cette partie", "Host this game"), function()
 				local sel = selected:old()
