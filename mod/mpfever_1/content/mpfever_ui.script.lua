@@ -277,7 +277,8 @@ local function shareInfo(e, owner)
 	if not (okg and sg) then return nil end
 	local okk, key = pcall(R.sgKey, sg)
 	if not okk then return nil end
-	local fee = U.shares and U.shares[key] or nil
+	local fee = C.shareFee(U.shares, key)
+	if fee <= 0 then fee = nil end
 	local mine = U.myCo ~= nil and U.coMap and U.coMap[owner] == U.myCo
 	return { key = key, fee = fee or 0, text = shareText(mine, fee), canEdit = mine }
 end
@@ -311,8 +312,49 @@ local function sharedGroupOf(e)
 	return found
 end
 
+-- the fee another company's station costs this machine's company per stop: nil when the station is not another company's,
+-- 0 when it is not shared
+local function foreignFee(sg)
+	if not (U.coMap and type(sg) == "number") then return nil end
+	local owner = ownerOf(sg)
+	if not (owner and U.coMap[owner]) or U.coMap[owner] == U.myCo then return nil end
+	local okk, key = pcall(R.sgKey, sg)
+	if not okk then return nil end
+	return C.shareFee(U.shares, key)
+end
+
+-- The line windows and tooltips name the stations: another company's station shows what a stop there costs
+local function installStopFees()
+	if U.stopFeesInstalled then return end
+	U.stopFeesInstalled = true
+	local function decorate(orig)
+		return function(e, ...)
+			local name = orig(e, ...)
+			if type(name) ~= "string" or type(e) ~= "number" then return name end
+			local okc, isSg = pcall(function() return api.engine.getComponent(e, api.type.ComponentType.STATION_GROUP) ~= nil end)
+			if not (okc and isSg) then return name end
+			local okf, fee = pcall(foreignFee, e)
+			if not okf or fee == nil then return name end
+			if fee > 0 then return name .. T("  [partagée : ", "  [shared: ") .. money(fee) .. T(" par arrêt]", " per stop]") end
+			return name .. T("  [non partagée]", "  [not shared]")
+		end
+	end
+	local okE, eu = pcall(ug_require, "/scripts/entity_util.tl")
+	if okE and type(eu) == "table" and type(eu.getEntityName) == "function" and not eu.__mpfFees then
+		eu.__mpfFees = true
+		eu.getEntityName = decorate(eu.getEntityName)
+	end
+	local util = api.engine.util
+	if type(util.getEntityName) == "function" and not U.engineNameWrapped then
+		U.engineNameWrapped = true
+		util.getEntityName = decorate(util.getEntityName)
+	end
+	log("companies: the line windows show the fee of the other companies' stations")
+end
+
 -- The line tool lets a company pick only its own stations (entity_util.isOwnedByPlayerOrNotOwned): a station another company
--- shares (shares.txt) can be picked too. The fee is booked by the game-script bridge at every stop.
+-- shares (every player's station is shared at the smallest fee unless its company stops sharing it) can be picked too. The fee
+-- is booked by the game-script bridge at every stop.
 local function installShareSelect()
 	if U.shareSelectInstalled then return end
 	local okE, eu = pcall(ug_require, "/scripts/entity_util.tl")
@@ -328,7 +370,7 @@ local function installShareSelect()
 	local cache, cacheAt = {}, -1
 	eu.isOwnedByPlayerOrNotOwned = function(entity, ...)
 		if orig(entity, ...) then return true end
-		if not U.shares or next(U.shares) == nil or type(entity) ~= "number" then return false end
+		if not U.coMap or type(entity) ~= "number" then return false end
 		local now = os.clock()
 		if now - cacheAt > 1 then cache = {}; cacheAt = now end
 		local v = cache[entity]
@@ -336,9 +378,25 @@ local function installShareSelect()
 			v = false
 			local sg = sharedGroupOf(entity)
 			if sg then
-				local okk, key = pcall(R.sgKey, sg)
-				local fee = okk and key and U.shares[key] or nil
+				local fee = foreignFee(sg)
 				v = fee ~= nil and fee > 0
+			end
+			-- a street the tool points at: a shared stop by that street (its key starts with the street's ends)
+			if not v then
+				pcall(function()
+					local edge = api.engine.getComponent(entity, api.type.ComponentType.BASE_EDGE)
+					if not edge then return end
+					local function r(x) return string.format("%.0f", x or 0) end
+					local function np(n) local c = api.engine.getComponent(n, api.type.ComponentType.BASE_NODE); return c and c.position end
+					local p0, p1 = np(edge.node0), np(edge.node1)
+					if not (p0 and p1) then return end
+					local a, b = r(p0.x) .. "," .. r(p0.y), r(p1.x) .. "," .. r(p1.y)
+					if a > b then a, b = b, a end
+					local prefix = "e:" .. a .. "-" .. b .. ":"
+					for k, fee in pairs(U.shares or {}) do
+						if fee > 0 and k:sub(1, #prefix) == prefix then v = true end
+					end
+				end)
 			end
 			cache[entity] = v
 		end
@@ -943,6 +1001,10 @@ local function tick(pendingState)
 		local oks, errs = pcall(installShareSelect)
 		if not oks then U.shareSelectInstalled = true; log("companies: share pick not installed: " .. tostring(errs)) end
 	end
+	if U.coMap and not U.stopFeesInstalled then
+		local okf, errf = pcall(installStopFees)
+		if not okf then U.stopFeesInstalled = true; log("companies: stop fees not shown: " .. tostring(errf)) end
+	end
 	if U.coMap and not U.ownerInstalled and U.react and U.builtin then
 		local oko, erro = pcall(installOwnerLine, U.react, U.builtin)
 		if not oko then log("companies: owner line not installed: " .. tostring(erro)) end
@@ -965,7 +1027,19 @@ local function tick(pendingState)
 				local p = r.param or {}
 				local oke, eu = pcall(ug_require, "/scripts/entity_util.tl")
 				local pick = oke and type(eu) == "table" and eu.isOwnedByPlayerOrNotOwned(e)
-				log("selftest window of " .. tostring(e) .. ": recipe " .. tostring(r.recipe) .. ", owner '" .. tostring(p.ownerText) .. "', share '" .. tostring(p.shareText) .. "' edit " .. tostring(p.shareEdit) .. " key " .. tostring(p.shareKey) .. " pickable " .. tostring(pick))
+				-- (the line tool points at the station, its construction or its street too)
+				pcall(function()
+					local g = api.engine.getComponent(e, api.type.ComponentType.STATION_GROUP)
+					for _, st in ipairs(g and g.stations or {}) do
+						pick = tostring(pick) .. " station " .. st .. ":" .. tostring(eu.isOwnedByPlayerOrNotOwned(st))
+						local okc, con = pcall(function() return api.engine.system.streetConnectorSystem and nil end)
+						local ce = nil
+						pcall(function() ce = api.engine.system.streetConstructionSystem.getConstructionEntityForStation(st) end)
+						if type(ce) == "number" and ce >= 0 then pick = pick .. " con " .. ce .. ":" .. tostring(eu.isOwnedByPlayerOrNotOwned(ce)) end
+					end
+				end)
+				log("selftest window of " .. tostring(e) .. ": recipe " .. tostring(r.recipe) .. ", owner '" .. tostring(p.ownerText) .. "', share '" .. tostring(p.shareText) .. "' edit " .. tostring(p.shareEdit) .. " key " .. tostring(p.shareKey) .. " pickable " .. tostring(pick)
+					.. " name '" .. tostring(oke and type(eu) == "table" and eu.getEntityName(e)) .. "'")
 			else
 				log("selftest window of " .. tostring(e) .. ": " .. tostring(r):sub(1, 200))
 			end

@@ -98,6 +98,8 @@ namespace MPFever
         string hostName;
         GameLink hostGame;
         bool running;
+        Action<GameLink, Msg> hostFromGame, clientFromGame;   // the session's handlers on the game's messages (removed at its end)
+        int sessionGen;                                      // a new session: the threads of the previous one stop
 
         // ---- host session state
         readonly object sendGate = new object();   // every host broadcast goes through this lock: same order for everybody
@@ -723,6 +725,9 @@ namespace MPFever
                 // the host's choice: everybody plays one company ("shared") or each player has its own ("separate")
                 if (Environment.GetEnvironmentVariable("MPFEVER_COMPANIES") == null) companyMode = option == "separate" ? "separate" : "shared";
                 Log.W(F("Mode des entreprises : {0}", "Company mode: {0}", companyMode));
+                if (companyMode == "separate")
+                    Log.Warn(T("« Une entreprise par joueur » est en cours de développement : il reste énormément de bugs. À utiliser surtout pour tester et aider au développement du mod.",
+                               "\"One company per player\" is still in development: many bugs remain. Use it mainly to test it and help the development of the mod."));
                 menuGame.SetIdentity(name, "host");
                 int port = (int)portBox.Value;
                 try { StartHost(name, false, menuGame); }
@@ -769,6 +774,12 @@ namespace MPFever
                 // test only: cuts the connection to the host as a network failure would
                 foreach (var cl in clients.ToList()) cl.Dispose();
             }
+            else if (cmd == "leave")
+            {
+                // the player went back to the game's main menu: the session ends here (not during a resynchronisation)
+                if (resyncing) { Log.Warn(T("Retour au menu pendant une resynchronisation : session conservée.", "Back to the menu during a resynchronisation: session kept.")); return; }
+                EndSession();
+            }
             else if (cmd == "cancel")
             {
                 clientCancelled = true;
@@ -776,6 +787,42 @@ namespace MPFever
                 clients.Clear();
                 menuPhase = "idle"; menuText = ""; MenuStatus();
             }
+        }
+
+        /// <summary>The player left the game for the main menu: connections closed, the session's state cleared, the files the
+        /// game and MPFever.exe exchange emptied (the next game must not read the previous session's messages). The game
+        /// keeps running: the MPFever window of its main menu can host or join again.</summary>
+        void EndSession()
+        {
+            Log.W(T("=== Retour au menu principal : fin de la session ===", "=== Back to the main menu: the session ends ==="));
+            sessionGen++;
+            clientCancelled = true;
+            foreach (var cl in clients.ToList()) try { cl.Dispose(); } catch { }
+            lock (clients) clients.Clear();
+            var r = relay; relay = null;
+            if (r != null) try { r.Dispose(); } catch { }
+            if (hostGame != null && hostFromGame != null) hostGame.FromGame -= hostFromGame;
+            if (menuGame != null && clientFromGame != null) menuGame.FromGame -= clientFromGame;
+            hostFromGame = clientFromGame = null;
+            hostGame = null;
+            hostName = null;
+            lock (sessionGate) { started = false; speed = 0; pauseAt = null; }
+            lock (players) players.Clear();
+            lock (clocks) clocks.Clear();
+            lock (hashes) hashes.Clear();
+            hashN = 0; syncText = "—"; actsRelayed = actRefused = actFails = desyncs = 0;
+            resyncing = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = "";
+            joinPending = false;
+            if (steamConnect != null) { steamConnect = null; SteamCtl("clear", null); }
+            if (menuGame != null)
+            {
+                menuGame.InGame = false;
+                foreach (var f in new[] { "in.log", "out.log", "ui.log", "started.txt", "results.log", "native_events.log", "resync_claims.txt",
+                                          "resync_pending.txt", "bindings.log", "captured.txt", "companies.txt", "shares.txt" })
+                    try { var p = Path.Combine(menuGame.Dir, f); if (File.Exists(p)) File.WriteAllText(p, ""); } catch { }
+            }
+            menuPhase = "idle"; menuText = ""; menuLoad = ""; menuLoadSeq = "";
+            MenuStatus();
         }
 
         /// <summary>Host started from the menu: the session starts as soon as its game runs the savegame.</summary>
@@ -961,7 +1008,7 @@ namespace MPFever
 
             hostGame = existing ?? new GameLink(name, "host");
             if (!games.Contains(hostGame)) games.Add(hostGame);
-            hostGame.FromGame += (g, m) =>
+            hostGame.FromGame += hostFromGame = (g, m) =>
             {
                 m.From = hostName;
                 if (m.Kind == "hello")
@@ -974,7 +1021,8 @@ namespace MPFever
                 OnHostMessage(m, null);
             };
             if (launch) hostGame.Launch(gameDir);
-            new Thread(HostLoop) { IsBackground = true, Name = "Host loop" }.Start();
+            int gen = sessionGen;
+            new Thread(() => HostLoop(gen)) { IsBackground = true, Name = "Host loop" }.Start();
         }
 
         void StartClient(string name, string host, int port, bool launch, GameLink existing = null)
@@ -990,7 +1038,7 @@ namespace MPFever
                 try { game.WriteStatus(hostStatus + "me=" + myId + "\nconn=" + conn + "\nattempt=" + attempt + "\nt=" + UnixNow() + "\n"); }
                 catch { }
             }
-            game.FromGame += (g, m) =>
+            game.FromGame += clientFromGame = (g, m) =>
             {
                 if (m.Kind == "hello") { g.InGame = true; if (menuMode) { menuPhase = "ingame"; menuText = T("En partie.", "In game."); MenuStatus(); } }
                 current?.Send(m);
@@ -1252,10 +1300,10 @@ namespace MPFever
                 HostSend(Msg.Make("hash", hostName, "{[\"n\"]=" + n + ",[\"at\"]=" + FutureStamp() + "}"));
         }
 
-        void HostLoop()
+        void HostLoop(int gen)
         {
             double lastHash = Now, lastSession = Now, lastStatus = 0;
-            while (true)
+            while (gen == sessionGen)
             {
                 Thread.Sleep(250);
                 if (hostGame == null) continue;

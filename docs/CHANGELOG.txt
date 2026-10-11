@@ -9,16 +9,31 @@ MPFever - Changelog
   - FIX (crash): a building held when a resynchronisation started (its tool clicked just before) was released into the
     newly loaded game and crashed it; such builds are now dropped.
   - FIX (desync, separate companies): the games of the players drifted apart within a minute (vehicles, money of the
-    savegame's company, then towns) and were resynchronised again and again: the engine simulated slightly differently
-    on a game whose player plays another company. Every game now simulates with the same company and only the
-    interface of each player acts as its own company. Checked on the savegame of the report: identical for 5 minutes
-    with a resynchronisation in between (before: a drift after 30 seconds).
+    savegame's company, then towns) and were resynchronised again and again: four readings of the engine's "local player"
+    on the simulation thread made a game playing another company simulate differently. They now give every game the
+    same company, while the interface, its tools and windows act as the player's own company (money checks before
+    building, Finances window, line tool, vehicle assignment). Checked on the savegame of the report: identical for 5
+    minutes with a resynchronisation in between (before: a drift after 30 seconds).
   - FIX (desync): a depot or station built at the dead end of a street (its entrance joining the street's last node)
     could not be rebuilt on the other games ("removal differs", then a resynchronisation): fixed and checked on the
     savegame of the report (roads identical to the player's).
   - FIX (shared stations): the line tool did not let another company pick a shared station; it does now (only the
-    stations shared with a fee above 0).
+    stations shared with a fee above 0), stops by the street included. Checked: a client's line through the host's shared
+    stations runs, its vehicles stop there and pay the fee.
+  - FIX (session): going back to the game's main menu left the session running (a new game needed the game to be
+    restarted). Opening the MPFever window of the main menu now ends the left session; host or join again from there.
   - FIX (separate companies): the money popups over the buildings only show the player's own company.
+  - FIX (separate companies): a player could not build when the HOST's company was out of money (and could when their
+    own was): the construction tools checked the money of the savegame's company. They now check the player's own
+    company, and the tools are made for the player's company (map icons, line tool, stations of the player's own).
+  - FIX (desync): a vehicle bought by a player could be bought twice or three times on the host's game (a copy stayed
+    in the depot) and the next actions of that player were lost: an action is now applied once, whatever happens to
+    the queue meanwhile.
+  - NEW (separate companies): every station or stop a player builds is shared with the other companies from the start,
+    at the smallest fee ($100 per stop); its company can change the fee or stop sharing it in the station's window.
+    The line windows show the fee next to the name of every other company's station ("[shared: $100 per stop]").
+  - The "One company per player" option shows a warning: this mode is still in development, many bugs remain, use it
+    mainly to test it and help the development of the mod.
 
 0.3.3-experimental - companies kept, contracts and shared stations, fewer desyncs
   - FIX (companies): after a resynchronisation (a player joining, a difference), the request of a player

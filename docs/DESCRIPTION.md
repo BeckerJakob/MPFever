@@ -6,7 +6,7 @@
 
 ## Features
 
-- **Co-op in one shared company, or one company per player.** The host chooses when hosting: either shared money, vehicles, lines and infrastructure, or every player has their own company (own money, roads, stations, vehicles, lines and colour) on the same map. A player finds their company again after a reconnection (it belongs to their Steam account); every company has its own loans and contracts, the windows show who owns what, and a company can share its stations with the others for a fee per stop.
+- **Co-op in one shared company, or one company per player.** The host chooses when hosting: either shared money, vehicles, lines and infrastructure, or every player has their own company (own money, roads, stations, vehicles, lines and colour) on the same map. A player finds their company again after a reconnection (it belongs to their Steam account); every company has its own loans and contracts, the windows show who owns what, and stations are shared with the other companies for a fee per stop. The "one company per player" mode is still in development: many bugs remain, use it mainly to test it and help the development of the mod.
 - **Real-time sync of what you build.** Roads and tracks (including joins in the middle of a road and upgrades), bus and tram stops, stations, depots, buildings, the bulldozer and terrain editing (raising / lowering the ground). Vehicle purchases, lines, vehicle assignments, game speed and pause too.
 - **Host authority.** Every 10 seconds the games compare their state:
   - money, loans, company progress, contracts, towns and industries;

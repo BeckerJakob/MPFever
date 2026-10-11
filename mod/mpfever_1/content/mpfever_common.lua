@@ -1169,4 +1169,13 @@ C.FACTORIES = {
 	"makeWorldReplaceTerrainCmd", "makeWorldSetBulldozableCmd",
 }
 
+-- Companies mode: a station built by a player is shared with the other companies from the start, at the smallest fee; its
+-- company may change the fee or stop sharing it (fee 0, kept in the registry: a station absent from it is shared by default)
+C.SHARE_DEFAULT = 100
+function C.shareFee(shares, key)
+	local f = shares and key and shares[key]
+	if f == nil then return C.SHARE_DEFAULT end
+	return f
+end
+
 return C

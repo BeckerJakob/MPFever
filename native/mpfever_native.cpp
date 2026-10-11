@@ -192,6 +192,12 @@ struct Site {
 };
 
 #include "sites_gen.h"
+#include "sites20c.h"
+enum { RULE_COUNT = 0, RULE_SIM = 1, RULE_UI = 2, RULE_NOTSIM = 3, RULE_SIMTHREAD = 4, RULE_UIOBJ = 0x10 };
+static const int NSITES = (int)(sizeof(SITES20C) / sizeof(SITES20C[0]));
+static volatile i64 g_siteCount[64][4];    // per site: interface, simulation, other thread; [3] interface-object readings moved
+static u8 g_siteRule[64];
+
 static Site g_sites[] = {
     { "notPossible@5f4c0b", 0x5f4c0b }, { "notPossible@609fe5", 0x609fe5 }, { "notPossible@60a05f", 0x60a05f },
     { "notPossible@60a0de", 0x60a0de }, { "notPossible@a1c427", 0xa1c427 }, { "notPossible@a1c4c8", 0xa1c4c8 },
@@ -409,7 +415,12 @@ static long g_othersTok = 0;
 static volatile long g_canon = 0;
 static volatile long g_mainTid = 0;        // the game's main thread (its interface), see PatchPlayerReads
 static volatile i64 g_pickCount[8][3];     // per redirected reading: [0] on the interface's thread, [1] the simulation's, [2] another
+static volatile u64 g_gsWord[2];           // addresses of the local-player word of the two game states (seen in Replicate)
 static volatile long g_simTid = 0;         // the simulation thread (seen in its pre-iteration)
+// What the simulation thread reads as the player: the savegame's company, or, while a build is applied, the company in the build's
+// context (the engine checks that company's money, not the savegame's: a player could not build when the host was out of money)
+static volatile long g_simPlayer = 0;
+static volatile long g_moneyFixed = 0;      // money checks of the tools moved to this machine's company (see MoneyCheckDetour)
 static long g_canonTok = 0;
 typedef void (*ClearPosF)(void* world, u32 player);
 static ClearPosF g_clearPos = 0;
@@ -835,11 +846,14 @@ static void AuditFlush(bool force)
         Buf l; l.str("audit kind ").dec(k).str(" loop ").dec(g_kcLoop[k]).str(" direct ").dec(g_kcDir[k]);
         LogLine(l);
     }
-    {
-        Buf l; l.str("player readings (interface/simulation/other):");
-        for (int i = 0; i < 5; i++) l.str(" ").dec((long)g_pickCount[i][0]).str("/").dec((long)g_pickCount[i][1]).str("/").dec((long)g_pickCount[i][2]);
+    for (int i = 0; i < NSITES && i < 64; i++) {
+        i64 m = g_siteCount[i][0], s = g_siteCount[i][1], o = g_siteCount[i][2], u = g_siteCount[i][3];
+        if (m + s + o == 0) continue;
+        Buf l; l.str("word read at ").hex(SITES20C[i].rva).str(" rule ").dec(g_siteRule[i]).str(": interface ").dec((long)m).str(" simulation ").dec((long)s).str(" other ").dec((long)o);
+        if (u) l.str(" interface object ").dec((long)u);
         LogLine(l);
     }
+    if (g_moneyFixed) { Buf l; l.str("money checks of the tools for this machine's company: ").dec(g_moneyFixed); LogLine(l); }
 }
 
 // ---------------------------------------------------------------- terrain edits
@@ -1211,7 +1225,7 @@ static void DumpPayload(const u8* pay, const char* tag)
 static long g_split = -1;
 static bool SplitWord()
 {
-    if (g_split < 0) { char v[4]; g_split = GetEnvironmentVariableA("MPFEVER_NOSPLIT", v, 3) > 0 ? 0 : 1; }
+    if (g_split < 0) { char v[4]; g_split = GetEnvironmentVariableA("MPFEVER_SPLIT", v, 3) > 0 ? 1 : 0; }    // (diagnostic since the readings are hooked)
     return g_split && g_canon && g_localPlayer && g_canon != g_localPlayer;
 }
 
@@ -1253,6 +1267,7 @@ extern "C" u64 ReplDetour(void* src, void* dst, u64 flag)
     if (replClear < 0) { char v[4]; replClear = GetEnvironmentVariableA("MPFEVER_NOREPLCLEAR", v, 3) > 0 ? 0 : 1; }
     if (replClear && (u32)((uptr)_ReturnAddress() - g_base) == RVA_REPL_LOOP) ClearOthersIn((u8*)src, false);
     WatchAdd((u8*)src); WatchAdd((u8*)dst);
+    if (src && dst && (u32)((uptr)_ReturnAddress() - g_base) == RVA_REPL_LOOP) { g_gsWord[0] = (u64)src + 0x20c; g_gsWord[1] = (u64)dst + 0x20c; }
     u64 r = g_replOrig(src, dst, flag);
     static long n = 0;
     if (n < 80) {
@@ -1275,6 +1290,24 @@ extern "C" u64 ApplyDetour(void* a, void* b)
     if (kind < 128) { if (inLoop) g_kcLoop[kind]++; else g_kcDir[kind]++; }
     AuditFlush(false);
     if (kind == 52) TerrainCapture(pay);
+    long ctxPlayer = 0;
+    static int noCtx = -1;      // diagnostic MPFEVER_NOCTXPLAYER: the simulation reads the savegame's company during builds too
+    if (noCtx < 0) noCtx = GetEnvironmentVariableA("MPFEVER_NOCTXPLAYER", 0, 0) > 0 ? 1 : 0;
+    if (kind == 52 && !noCtx && g_canon && (long)GetCurrentThreadId() == g_simTid) {
+        long cp = *(long*)(pay + 0x36c);
+        bool known = cp == g_canon || cp == g_localPlayer;
+        for (long i = 0; i < g_nOthers && i < 8; i++) if (cp == g_others[i]) known = true;
+        if (known && cp != g_canon) ctxPlayer = cp;
+        // a preview of this machine's tools (applied directly, never by the loop) still names the savegame's company: its money
+        // check is for this machine's company
+        if (!inLoop && cp == g_canon && g_localPlayer && g_localPlayer != g_canon) ctxPlayer = g_localPlayer;
+    }
+    if (ctxPlayer) {
+        g_simPlayer = ctxPlayer;
+        u64 r = g_applyOrig(a, b);
+        g_simPlayer = 0;
+        return r;
+    }
     if (!g_timing) return g_applyOrig(a, b);
     if (g_gateMs) Sleep((DWORD)g_gateMs);       // test: does blocking here slow the simulation step by step?
     {
@@ -1966,6 +1999,188 @@ static void PatchPlayerReads()
     Buf b; b.str("local player: ").dec(done).str(" engine reading(s) redirected (interface thread ").dec(g_mainTid).str(": this machine's company; other threads: the savegame's)"); LogLine(b);
 }
 
+// ---------------------------------------------------------------- every reading of the local-player word (build 40420)
+// Each 'mov reg,[base+20Ch]' of the game (sites20c.h) jumps to a stub: the original reading, then, when the address is the word of
+// one of the two game states, a count per thread kind (interface / simulation / other) and, by the site's rule, another value:
+// RULE_SIM: the simulation and the other threads get the savegame's company (canon); RULE_UI: the interface's thread gets this
+// machine's company. A site whose bytes differ (already patched, other build) is left alone.
+
+struct Asm {
+    u8* p;
+    void b(u8 x) { *p++ = x; }
+    void bn(const u8* x, int n) { for (int i = 0; i < n; i++) *p++ = x[i]; }
+    void imm64(u64 v) { *(u64*)p = v; p += 8; }
+    u8* jcc32(u8 cc) { *p++ = 0x0F; *p++ = cc; p += 4; return p; }     // returns the end (for patching)
+    u8* jmp32() { *p++ = 0xE9; p += 4; return p; }
+    static void at(u8* end, u8* target) { *(i32*)(end - 4) = (i32)(target - end); }
+};
+
+static u8* AllocNear(u64 size)
+{
+    // within +-2 GB of the game's code (the sites jump there with a rel32)
+    for (u64 d = 0x10000000; d < 0x70000000; d += 0x100000) {
+        u8* want = (u8*)((g_base > d ? g_base - d : 0) & ~0xFFFFull);
+        if (!want) break;
+        u8* m = (u8*)VirtualAlloc(want, size, 0x3000, 0x40);
+        if (m) return m;
+    }
+    return 0;
+}
+
+static int RuleOf(u32 rva)
+{
+    char v[600];
+    DWORD n = GetEnvironmentVariableA("MPFEVER_SITERULES", v, sizeof(v) - 1);    // diagnostic: "rva:rule,rva:rule" (hex rva)
+    if (n > 0 && n < sizeof(v)) {
+        v[n] = 0;
+        for (DWORD i = 0; i < n; ) {
+            u32 r = 0; int k = 0;
+            while (i < n && v[i] != ':' ) { char c = v[i++]; r = r * 16 + (u32)(c <= '9' ? c - '0' : (c | 32) - 'a' + 10); }
+            i++;
+            while (i < n && v[i] != ',') k = k * 10 + (v[i++] - '0');
+            i++;
+            if (r == rva) return k;
+        }
+    }
+    // The word holds this machine's company: the interface, its tools, money checks, windows and the jobs that prepare what it
+    // shows (worker threads: map icons, the player's lines) read it. Read on the simulation thread (0x14f835, 0xa14ff, the bindings
+    // 0x24da741 / 0x24dc73f: a game playing another company simulated differently) it gets the savegame's company - except the
+    // copy between the two game states.
+    if (rva == 0x255ed9) return RULE_COUNT;
+    // interface code that may read the word of an object of the interface's own (not one of the two game states): the tools'
+    // factory (every tool is made for the player read there), the windows, the tools themselves
+    static const u32 uiObj[] = { 0x648f18, 0x65b1f4, 0x529da2, 0x52a01d, 0x537734, 0x53aa67, 0x6568f6, 0x656a31, 0x7354e0, 0x86917c, 0x67b955 };
+    for (u32 u : uiObj) if (u == rva) return RULE_SIMTHREAD | RULE_UIOBJ;
+    return RULE_SIMTHREAD;
+}
+
+// The engine's money check of the interface's tools (can <player> pay <cost>?, build 40420). Every tool keeps the player it was
+// made for: the savegame's company, the tools being made when the game loads. A machine playing another company then could not
+// build as soon as the savegame's company was out of money (and could while its own was): off the simulation thread, the
+// savegame's company is replaced by this machine's.
+static const u32 RVA_MONEYCHECK = 0xccfbd0;
+static const u8 P_MONEYCHECK[] = { 0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xDA, 0x49, 0x8B, 0xF9 };
+typedef u64 (*MoneyCheckF)(void* world, void* ctx, u32 player, i64 cost);
+static MoneyCheckF g_moneyOrig = 0;
+extern "C" u64 MoneyCheckDetour(void* world, void* ctx, u32 player, i64 cost)
+{
+    if (g_canon && g_localPlayer && g_localPlayer != g_canon && player == (u32)g_canon && (long)GetCurrentThreadId() != g_simTid) {
+        player = (u32)g_localPlayer;
+        g_moneyFixed++;
+    }
+    return g_moneyOrig(world, ctx, player, cost);
+}
+
+static void HookWordReads()
+{
+    if (RVA_REPL != 0x255e60) return;
+    u8* mem = AllocNear(0x10000);
+    if (!mem) { Buf e; e.str("player word: no memory near the game's code, readings not hooked"); LogLine(e); return; }
+    u8* stubs = mem;
+    int done = 0;
+    for (int i = 0; i < NSITES && i < 64; i++) {
+        const Site20c& s = SITES20C[i];
+        u8* site = (u8*)(g_base + s.rva);
+        if (memcmp(site, s.bytes, s.len) != 0) continue;
+        g_siteRule[i] = (u8)RuleOf(s.rva);
+        Asm a{ stubs };
+        a.b(0x9C);                                   // pushfq
+        { const u8 t_[] = { 0x41, 0x52, 0x41, 0x53 }; a.bn(t_, (int)sizeof(t_)); }            // push r10 / push r11
+        // lea r11,[base+20Ch]
+        a.b((u8)(0x4C | (s.base >= 8 ? 1 : 0))); a.b(0x8D); a.b((u8)(0x98 | (s.base & 7)));
+        if ((s.base & 7) == 4) a.b(0x24);
+        { const u8 t_[] = { 0x0C, 0x02, 0x00, 0x00 }; a.bn(t_, (int)sizeof(t_)); }
+        for (int k = 0; k < s.len; k++) a.b(s.bytes[k]);    // the original reading
+        a.b(0x49); a.b(0xBA); a.imm64((u64)&g_gsWord);     // mov r10,&gsWord
+        { const u8 t_[] = { 0x4D, 0x3B, 0x1A }; a.bn(t_, (int)sizeof(t_)); }                        // cmp r11,[r10]
+        u8* jAct = a.jcc32(0x84);                          // je ACT
+        { const u8 t_[] = { 0x4D, 0x3B, 0x5A, 0x08 }; a.bn(t_, (int)sizeof(t_)); }                  // cmp r11,[r10+8]
+        u8* jUnm = a.jcc32(0x85);                          // jne UNMATCHED
+        u8* act = a.p; Asm::at(jAct, act);
+        { const u8 t_[] = { 0x65, 0x44, 0x8B, 0x1C, 0x25, 0x48, 0, 0, 0 }; a.bn(t_, (int)sizeof(t_)); }    // mov r11d,gs:[48h]
+        a.b(0x49); a.b(0xBA); a.imm64((u64)&g_mainTid);    // mov r10,&mainTid
+        { const u8 t_[] = { 0x45, 0x3B, 0x1A }; a.bn(t_, (int)sizeof(t_)); }                        // cmp r11d,[r10]
+        u8* jMain = a.jcc32(0x84);
+        a.b(0x49); a.b(0xBA); a.imm64((u64)&g_simTid);     // mov r10,&simTid
+        { const u8 t_[] = { 0x45, 0x3B, 0x1A }; a.bn(t_, (int)sizeof(t_)); }                        // cmp r11d,[r10]
+        u8* jSim = a.jcc32(0x84);
+        u8* ends[3] = {};
+        u8* labels[3] = {};
+        int rule = g_siteRule[i] & 0x0F;
+        bool uiObj = (g_siteRule[i] & RULE_UIOBJ) != 0;
+        for (int kind = 2; kind >= 0; kind--) {            // other, sim, main
+            labels[kind] = a.p;
+            a.b(0x49); a.b(0xBA); a.imm64((u64)&g_siteCount[i][kind]);   // mov r10,&count
+            { const u8 t_[] = { 0xF0, 0x49, 0xFF, 0x02 }; a.bn(t_, (int)sizeof(t_)); }                            // lock inc qword [r10]
+            volatile long* tgt = 0;
+            if (rule == RULE_SIM && kind != 0) tgt = &g_canon;
+            if (rule == RULE_NOTSIM && kind == 1) tgt = &g_canon;
+            if (rule == RULE_UI && kind == 0) tgt = &g_localPlayer;
+            if (rule == RULE_NOTSIM && kind != 1) tgt = &g_localPlayer;
+            if (rule == RULE_SIMTHREAD && kind == 1) {
+                // the build's company while one is applied, else the savegame's
+                a.b(0x49); a.b(0xBA); a.imm64((u64)&g_simPlayer);   // mov r10,&simPlayer
+                { const u8 t_[] = { 0x45, 0x8B, 0x1A }; a.bn(t_, (int)sizeof(t_)); }                  // mov r11d,[r10]
+                { const u8 t_[] = { 0x45, 0x85, 0xDB }; a.bn(t_, (int)sizeof(t_)); }                  // test r11d,r11d
+                { const u8 t_[] = { 0x75, 0x0D }; a.bn(t_, (int)sizeof(t_)); }                        // jne +13 (to the mov dst)
+                tgt = &g_canon;
+            }
+            if (tgt) {
+                a.b(0x49); a.b(0xBA); a.imm64((u64)tgt);    // mov r10,&target
+                { const u8 t_[] = { 0x45, 0x8B, 0x1A }; a.bn(t_, (int)sizeof(t_)); }                  // mov r11d,[r10]
+                { const u8 t_[] = { 0x45, 0x85, 0xDB }; a.bn(t_, (int)sizeof(t_)); }                  // test r11d,r11d
+                { const u8 t_[] = { 0x74, 0x03 }; a.bn(t_, (int)sizeof(t_)); }                        // je +3 (unknown: as read)
+                if (s.dst < 8) { const u8 t_[] = { 0x44, 0x89, (u8)(0xD8 | s.dst) }; a.bn(t_, (int)sizeof(t_)); } else { const u8 t_[] = { 0x45, 0x89, (u8)(0xD8 | (s.dst - 8)) }; a.bn(t_, (int)sizeof(t_)); }   // mov dst,r11d
+            }
+            ends[kind] = a.jmp32();                          // jmp DONE
+        }
+        Asm::at(jMain, labels[0]);
+        Asm::at(jSim, labels[1]);
+        // UNMATCHED: the word of an object of the interface's own (the tools' factory makes every tool for the player it reads
+        // there, the savegame's company): off the simulation thread, the savegame's company read there becomes this machine's
+        Asm::at(jUnm, a.p);
+        u8* jUnmDone[4] = {};
+        if (uiObj) {
+            { const u8 t_[] = { 0x65, 0x44, 0x8B, 0x1C, 0x25, 0x48, 0, 0, 0 }; a.bn(t_, (int)sizeof(t_)); }    // mov r11d,gs:[48h]
+            a.b(0x49); a.b(0xBA); a.imm64((u64)&g_simTid);     // mov r10,&simTid
+            { const u8 t_[] = { 0x45, 0x3B, 0x1A }; a.bn(t_, (int)sizeof(t_)); }                        // cmp r11d,[r10]
+            jUnmDone[0] = a.jcc32(0x84);                       // je DONE
+            a.b(0x49); a.b(0xBA); a.imm64((u64)&g_canon);      // mov r10,&canon
+            a.b((u8)(0x41 | (s.dst >= 8 ? 4 : 0))); a.b(0x3B); a.b((u8)(((s.dst & 7) << 3) | 2));         // cmp dst,[r10]
+            jUnmDone[1] = a.jcc32(0x85);                       // jne DONE
+            a.b(0x49); a.b(0xBA); a.imm64((u64)&g_localPlayer); // mov r10,&localPlayer
+            { const u8 t_[] = { 0x45, 0x8B, 0x1A }; a.bn(t_, (int)sizeof(t_)); }                        // mov r11d,[r10]
+            { const u8 t_[] = { 0x45, 0x85, 0xDB }; a.bn(t_, (int)sizeof(t_)); }                        // test r11d,r11d
+            jUnmDone[2] = a.jcc32(0x84);                       // je DONE
+            if (s.dst < 8) { const u8 t_[] = { 0x44, 0x89, (u8)(0xD8 | s.dst) }; a.bn(t_, (int)sizeof(t_)); } else { const u8 t_[] = { 0x45, 0x89, (u8)(0xD8 | (s.dst - 8)) }; a.bn(t_, (int)sizeof(t_)); }   // mov dst,r11d
+            a.b(0x49); a.b(0xBA); a.imm64((u64)&g_siteCount[i][3]);   // mov r10,&count
+            { const u8 t_[] = { 0xF0, 0x49, 0xFF, 0x02 }; a.bn(t_, (int)sizeof(t_)); }                  // lock inc qword [r10]
+        }
+        u8* doneL = a.p;
+        for (int k = 0; k < 3; k++) if (jUnmDone[k]) Asm::at(jUnmDone[k], doneL);
+        for (int kind = 0; kind < 3; kind++) Asm::at(ends[kind], doneL);
+        { const u8 t_[] = { 0x41, 0x5B, 0x41, 0x5A }; a.bn(t_, (int)sizeof(t_)); }            // pop r11 / pop r10
+        a.b(0x9D);                                   // popfq
+        { const u8 t_[] = { 0xFF, 0x25, 0, 0, 0, 0 }; a.bn(t_, (int)sizeof(t_)); } a.imm64((u64)(site + s.len));   // jmp [rip] back
+        // the site: jmp rel32 to the stub
+        i64 rel = (i64)(stubs - (site + 5));
+        if (rel > 0x7FFFFFFF || rel < -0x7FFFFFFFll) break;
+        DWORD old;
+        if (!VirtualProtect(site, s.len, PAGE_EXECUTE_READWRITE, &old)) continue;
+        u8 patch[8];
+        patch[0] = 0xE9; *(i32*)(patch + 1) = (i32)rel;
+        for (int k = 5; k < s.len; k++) patch[k] = 0x90;
+        memcpy(site, patch, s.len);
+        VirtualProtect(site, s.len, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), site, s.len);
+        stubs = a.p;
+        stubs = (u8*)(((uptr)stubs + 15) & ~(uptr)15);
+        done++;
+    }
+    FlushInstructionCache(GetCurrentProcess(), mem, 0x10000);
+    Buf b; b.str("player word: ").dec(done).str(" of ").dec(NSITES).str(" readings hooked"); LogLine(b);
+}
+
 static DWORD WINAPI Init(void*)
 {
     g_base = (uptr)GetModuleHandleW(0);
@@ -2016,7 +2231,8 @@ static DWORD WINAPI Init(void*)
         if (InstallDetour(RVA_PREITER, P_PREITER, sizeof(P_PREITER), (void*)&PreIterDetour, (void**)&g_preIterOrig)) g_preIterOn = true;
         if (RVA_REPL) InstallDetour(RVA_REPL, P_REPL, sizeof(P_REPL), (void*)&ReplDetour, (void**)&g_replOrig);
     }
-    PatchPlayerReads();
+    HookWordReads();
+    if (RVA_REPL == 0x255e60) InstallDetour(RVA_MONEYCHECK, P_MONEYCHECK, sizeof(P_MONEYCHECK), (void*)&MoneyCheckDetour, (void**)&g_moneyOrig);
     { char v[4]; if (GetEnvironmentVariableA("MPFEVER_TIMING", v, 3) > 0) {
         QueryPerformanceFrequency(&g_qpf);
         if (g_qpf > 0) {
