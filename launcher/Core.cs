@@ -441,6 +441,20 @@ namespace MPFever
             catch (Exception e) { Log.W("lang.txt: " + e.Message); }
         }
 
+        /// <summary>The session as the in-game MPFever window shows it (mp_status.txt: key=value lines and one
+        /// "p=id TAB name TAB state TAB lag TAB role" line per player), replaced in one go.</summary>
+        public void WriteStatus(string text)
+        {
+            var tmp = Path.Combine(Dir, "mp_status.tmp");
+            var dst = Path.Combine(Dir, "mp_status.txt");
+            lock (writeGate)
+            {
+                File.WriteAllText(tmp, text, Utf8);
+                try { if (File.Exists(dst)) File.Replace(tmp, dst, null); else File.Move(tmp, dst); }
+                catch { File.Copy(tmp, dst, true); }
+            }
+        }
+
         public void WriteMenuState(IDictionary<string, string> st)
         {
             var sb = new StringBuilder();
@@ -453,6 +467,54 @@ namespace MPFever
                 try { if (File.Exists(dst)) File.Replace(tmp, dst, null); else File.Move(tmp, dst); }
                 catch { File.Copy(tmp, dst, true); }
             }
+        }
+
+        long chatOutOff;
+
+        /// <summary>The messages written in the in-game chat since the last call (chat_out.txt, appended by the mod: one
+        /// "seq TAB text" line per message).</summary>
+        public List<string> ReadChatOut()
+        {
+            var res = new List<string>();
+            try
+            {
+                var f = Path.Combine(Dir, "chat_out.txt");
+                if (!File.Exists(f)) return res;
+                using (var fs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    if (fs.Length < chatOutOff) chatOutOff = 0;
+                    if (fs.Length == chatOutOff) return res;
+                    fs.Seek(chatOutOff, SeekOrigin.Begin);
+                    var buf = new byte[fs.Length - chatOutOff];
+                    int n = 0;
+                    while (n < buf.Length) { int r = fs.Read(buf, n, buf.Length - n); if (r <= 0) break; n += r; }
+                    int last = n > 0 ? Array.LastIndexOf(buf, (byte)'\n', n - 1) : -1;
+                    if (last < 0) return res;   // a line still being written
+                    chatOutOff += last + 1;
+                    foreach (var raw in Utf8.GetString(buf, 0, last + 1).Split('\n'))
+                    {
+                        var line = raw.TrimEnd('\r');
+                        int tab = line.IndexOf('\t');
+                        if (tab >= 0) line = line.Substring(tab + 1);
+                        if (line.Trim().Length > 0) res.Add(line);
+                    }
+                }
+            }
+            catch { }
+            return res;
+        }
+
+        /// <summary>A line of the in-game chat (chat.txt, read by the mod): id TAB unix time TAB kind (msg, join, left,
+        /// unsent) TAB player TAB text.</summary>
+        public void AppendChat(long id, long time, string kind, string name, string text)
+        {
+            string Clean(string s) => (s ?? "").Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
+            try
+            {
+                lock (writeGate)
+                    File.AppendAllText(Path.Combine(Dir, "chat.txt"), id + "\t" + time + "\t" + Clean(kind) + "\t" + Clean(name) + "\t" + Clean(text) + "\n", Utf8);
+            }
+            catch (Exception e) { Log.W("chat.txt: " + e.Message); }
         }
 
         /// <summary>The last request of the main menu's MPFever window: seq, command, argument, player name (or null).</summary>
@@ -526,7 +588,7 @@ namespace MPFever
                             if (m != null) FromGame?.Invoke(this, m);
                         }
                     }
-                    catch (Exception e) { Log.W($"[{Name}] lecture {Path.GetFileName(src.Path)} : {e.Message}"); Thread.Sleep(500); }
+                    catch (Exception e) { Log.Warn(L.F("[{0}] lecture {1} : {2}", "[{0}] reading {1}: {2}", Name, Path.GetFileName(src.Path), e.Message)); Thread.Sleep(500); }
                 }
                 Thread.Sleep(5);
             }
@@ -588,6 +650,9 @@ namespace MPFever
 
         public int Count { get { lock (peers) return peers.Count; } }
 
+        /// <summary>The players connected right now (name#id), including those whose game is not ready yet.</summary>
+        public string[] PeerNames() { lock (peers) return peers.Where(p => p.Name != null).Select(p => p.Name).ToArray(); }
+
         public void Start(int port)
         {
             // IPv4 and IPv6 on one socket (players behind DS-Lite, without a public IPv4 of their own, are reached over
@@ -617,7 +682,7 @@ namespace MPFever
                     var c = listener.AcceptTcpClient();
                     c.NoDelay = true;
                     var p = new Peer { Id = nextId++, Tcp = c, Writer = new StreamWriter(c.GetStream(), new UTF8Encoding(false)) { NewLine = "\n", AutoFlush = true } };
-                    p.Name = "joueur" + p.Id;
+                    p.Name = "Player" + p.Id;
                     lock (peers) peers.Add(p);
                     Log.Dim(L.F("Connexion entrante de {0} (id {1})", "Incoming connection from {0} (id {1})", c.Client.RemoteEndPoint, p.Id));
                     new Thread(() => ReadLoop(p)) { IsBackground = true, Name = "Relay peer " + p.Id }.Start();
@@ -654,7 +719,7 @@ namespace MPFever
         static string Sanitize(string s)
         {
             var t = new string((s ?? "").Where(ch => char.IsLetterOrDigit(ch) || ch == '_' || ch == '-').ToArray());
-            return t.Length == 0 ? "joueur" : (t.Length > 24 ? t.Substring(0, 24) : t);
+            return t.Length == 0 ? "Player" : (t.Length > 24 ? t.Substring(0, 24) : t);
         }
 
         /// <summary>A player who comes back (reconnection) under the same name: the old connection, which may still look
@@ -809,6 +874,30 @@ namespace MPFever
         {
             var l = Parse(spec, defaultPort);
             return l.Count == 0 ? (spec ?? "") : Show(l[0].Key, l[0].Value);
+        }
+
+        /// <summary>This PC's public IPv6 addresses for invitations, the best first, or an empty list. First the address
+        /// Windows uses for its own connections to the Internet (often a temporary one): routers that open a port per
+        /// device (Vodafone Station "IPv6 Host Exposure") open it for the address they see that device use. Then the
+        /// most stable one, when it is another.</summary>
+        public static List<string> PublicIPv6List()
+        {
+            var res = new List<string>();
+            try
+            {
+                // the source address of a route to a public IPv6 address (UDP "connect": nothing is sent)
+                using (var u = new Socket(AddressFamily.InterNetworkV6, SocketType.Dgram, ProtocolType.Udp))
+                {
+                    u.Connect(IPAddress.Parse("2001:4860:4860::8888"), 53);
+                    var a = ((IPEndPoint)u.LocalEndPoint).Address;
+                    var b = a.GetAddressBytes();
+                    if ((b[0] & 0xE0) == 0x20 && !(b[0] == 0x20 && b[1] == 0x02) && !a.IsIPv6Teredo) { a.ScopeId = 0; res.Add(a.ToString()); }
+                }
+            }
+            catch { }
+            var stable = PublicIPv6();
+            if (stable != null && !res.Contains(stable)) res.Add(stable);
+            return res;
         }
 
         /// <summary>This PC's public IPv6 address (global, the most stable one: given by the router's DHCPv6, else not a

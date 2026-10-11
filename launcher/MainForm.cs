@@ -85,6 +85,12 @@ namespace MPFever
         bool gameMissing;
         int syncState;   // 0 not checked, 1 identical, 2 slight drift, 3 out of sync
 
+        // ---- session status for the in-game MPFever window (players, links, sync)
+        readonly Dictionary<string, double> leftAt = new Dictionary<string, double>();   // player (without #id) -> when it left
+        string syncParts = "";
+        double lastSyncAt = -1;
+        bool statusFailed;
+
         string gameDir;
         Relay relay;
         readonly List<GameLink> games = new List<GameLink>();
@@ -516,7 +522,7 @@ namespace MPFever
             if (gameLabel.Text != g) { gameLabel.Text = g; gameLabel.Width = g == "" ? 0 : TextRenderer.MeasureText(g, gameLabel.Font).Width + Theme.S(8); }
         }
 
-        string PlayerName() => string.IsNullOrWhiteSpace(nameBox.Text) ? "joueur" : nameBox.Text.Trim();
+        string PlayerName() => string.IsNullOrWhiteSpace(nameBox.Text) ? "Player" : nameBox.Text.Trim();
         double Now => clockWatch.Elapsed.TotalSeconds;
 
         void Guard(Action a)
@@ -709,9 +715,10 @@ namespace MPFever
         {
             name = new string((name ?? "").Trim().Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').ToArray());
             if (name == "") name = new string(Environment.UserName.Where(char.IsLetterOrDigit).ToArray());
-            if (name == "") name = "joueur";
+            if (name == "") name = "Player";
             Log.Dim(F("Menu : {0} {1} ({2})", "Menu: {0} {1} ({2})", cmd, arg, name));
-            SaveSetting("name", name);
+            // the name typed in the MPFever window is kept for next time (the other requests do not send one)
+            if (cmd == "host" || cmd == "join") SaveSetting("name", name);
             if (cmd == "host")
             {
                 if (hostGame != null || clients.Count > 0) return;
@@ -730,14 +737,14 @@ namespace MPFever
                 new Thread(() =>
                 {
                     // the public IPv4 and, when this PC has one, its IPv6 (behind DS-Lite only the IPv6 reaches it)
-                    var v6 = LoadSettings().TryGetValue("ipv6", out var i6) && i6.Trim() == "0" ? null : NetAddr.PublicIPv6();
-                    steamConnect = "+mpfever_connect " + PublicAddress() + ":" + port + (v6 != null ? "," + NetAddr.Show(v6, port) : "");
+                    var v6 = LoadSettings().TryGetValue("ipv6", out var i6) && i6.Trim() == "0" ? new List<string>() : NetAddr.PublicIPv6List();
+                    steamConnect = "+mpfever_connect " + PublicAddress() + ":" + port + string.Concat(v6.Select(a => "," + NetAddr.Show(a, port)));
                     SteamCtl("presence", steamConnect);
                     Log.Ok(T("Steam : invitations possibles (", "Steam: invitations enabled (") + steamConnect + ")");
                     MenuStatus();
                 }) { IsBackground = true, Name = "Steam presence" }.Start();
                 menuPhase = "hosting";
-                menuText = F("Partie hébergée (« {0} »). Les autres joueurs rejoignent avec votre adresse IP, port {1} (TCP, à rediriger sur votre box pour Internet). Adresse locale : {2}", "Game hosted (« {0} »). Other players join with your IP address, port {1} (TCP, to forward on your router for the Internet). Local address: {2}", arg, port, LocalAddresses() + (NetAddr.PublicIPv6() is string a6 ? ", " + NetAddr.Show(a6, port) : ""));
+                menuText = F("Partie hébergée (« {0} »). Les autres joueurs rejoignent avec votre adresse IP, port {1} (TCP, à rediriger sur votre box pour Internet). Adresse locale : {2}", "Game hosted (« {0} »). Other players join with your IP address, port {1} (TCP, to forward on your router for the Internet). Local address: {2}", arg, port, LocalAddresses() + string.Concat(NetAddr.PublicIPv6List().Select(a6 => ", " + NetAddr.Show(a6, port))));
                 MenuStatus();
             }
             else if (cmd == "join")
@@ -803,6 +810,7 @@ namespace MPFever
             lock (players) players.Clear();
             lock (clocks) clocks.Clear();
             lock (hashes) hashes.Clear();
+            lock (chatLog) { chatLog.Clear(); chatId = 0; }
             hashN = 0; syncText = "—"; actsRelayed = actRefused = actFails = desyncs = 0;
             resyncing = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = "";
             joinPending = false;
@@ -811,7 +819,8 @@ namespace MPFever
             {
                 menuGame.InGame = false;
                 foreach (var f in new[] { "in.log", "out.log", "ui.log", "started.txt", "results.log", "native_events.log", "resync_claims.txt",
-                                          "resync_pending.txt", "bindings.log", "captured.txt", "companies.txt", "shares.txt" })
+                                          "resync_pending.txt", "bindings.log", "captured.txt", "companies.txt", "shares.txt",
+                                          "chat.txt", "chat_out.txt" })
                     try { var p = Path.Combine(menuGame.Dir, f); if (File.Exists(p)) File.WriteAllText(p, ""); } catch { }
             }
             menuPhase = "idle"; menuText = ""; menuLoad = ""; menuLoadSeq = "";
@@ -981,8 +990,12 @@ namespace MPFever
             relay.Joined += p =>
             {
                 Log.Ok(F("{0} a rejoint la session", "{0} joined the session", p.Name));
+                lock (leftAt) leftAt.Remove(BaseName(p.Name));
                 relay.DropOlder(p);
                 relay.Send(p, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(p.Name) + ",[\"role\"]=\"client\"}"));
+                Msg[] history; lock (chatLog) history = chatLog.ToArray();
+                foreach (var c in history) relay.Send(p, c);   // the chat so far (a reconnecting player skips what it has)
+                HostChat("join", BaseName(p.Name), "");
                 BroadcastSession();
                 // started from the main menu: the new player receives the host's game (every game reloads it)
                 if (menuMode) { joinPending = true; MenuStatus(); }
@@ -990,6 +1003,8 @@ namespace MPFever
             relay.Left += p =>
             {
                 Log.Warn(F("{0} a quitté la session", "{0} left the session", p.Name));
+                lock (leftAt) leftAt[BaseName(p.Name)] = Now;
+                HostChat("left", BaseName(p.Name), "");
                 lock (players) players.Remove(p.Name);
                 lock (clocks) clocks.Remove(p.Name);
                 HostSend(Msg.Make("peerleft", hostName, "{[\"name\"]=" + LuaLit.Quote(p.Name) + "}"));
@@ -1022,6 +1037,14 @@ namespace MPFever
             if (!games.Contains(game)) games.Add(game);
             Client current = null;
             clientCancelled = false;
+            // the in-game MPFever window: the host's view of the session, and this game's own link to the host
+            string myId = name, hostStatus = "";
+            long lastChatId = 0;   // the host sends its chat history again on a reconnection
+            void ClientStatus(string conn, int attempt)
+            {
+                try { game.WriteStatus(hostStatus + "me=" + myId + "\nconn=" + conn + "\nattempt=" + attempt + "\nt=" + UnixNow() + "\n"); }
+                catch { }
+            }
             game.FromGame += clientFromGame = (g, m) =>
             {
                 if (m.Kind == "hello") { g.InGame = true; if (menuMode) { menuPhase = "ingame"; menuText = T("En partie.", "In game."); MenuStatus(); } }
@@ -1033,6 +1056,28 @@ namespace MPFever
                 client.Received += m =>
                 {
                     if (m.Kind == "resync_file") { OnResyncFile(game, m); return; }
+                    if (m.Kind == "mpstatus")
+                    {
+                        if (LuaLit.Parse(m.Payload) is Dictionary<object, object> st && st.TryGetValue("text", out var tx) && tx is string text)
+                        {
+                            hostStatus = text;
+                            ClientStatus("ok", 0);
+                        }
+                        return;
+                    }
+                    if (m.Kind == "chatmsg")
+                    {
+                        if (LuaLit.Parse(m.Payload) is Dictionary<object, object> c && c.TryGetValue("id", out var iv) && iv is double id && (long)id > lastChatId)
+                        {
+                            lastChatId = (long)id;
+                            string S(string k) => c.TryGetValue(k, out var v) ? Convert.ToString(v, CultureInfo.InvariantCulture) : "";
+                            long.TryParse(S("t"), out long ct);
+                            game.AppendChat((long)id, ct, S("kind"), S("name"), S("text"));
+                        }
+                        return;
+                    }
+                    if (m.Kind == "welcome" && LuaLit.Parse(m.Payload) is Dictionary<object, object> w && w.TryGetValue("you", out var you) && you is string youName)
+                        myId = youName;
                     game.ToGame(m);
                     if (m.Kind == "act") Log.Dim(F("[{0}] reçu {1} de {2}", "[{0}] received {1} from {2}", name, m.Kind, m.From));
                 };
@@ -1041,6 +1086,7 @@ namespace MPFever
                     lock (clients) clients.Remove(client);
                     if (current == client) current = null;   // nothing is sent until reconnected
                     Log.Warn(F("[{0}] connexion à l'hôte perdue", "[{0}] connection to the host lost", name));
+                    ClientStatus("lost", 0);
                     game.ToGame(Msg.Make("session", "MPFever", "{[\"started\"]=false,[\"speed\"]=0}"));
                     if (!menuMode || clientCancelled) return;
                     // the connection dropped: try again for 5 minutes; back with the host, this game receives its
@@ -1053,6 +1099,7 @@ namespace MPFever
                             menuPhase = "connecting";
                             menuText = F("Connexion à l'hôte perdue : reconnexion (essai {0})...", "Connection to the host lost: reconnecting (attempt {0})...", attempt);
                             MenuStatus();
+                            ClientStatus("lost", attempt);
                             Thread.Sleep(5000);
                             if (clientCancelled) return;
                             var c = new Client();
@@ -1068,10 +1115,27 @@ namespace MPFever
                             }
                             catch (Exception e) { Log.Warn(T("Reconnexion : ", "Reconnecting: ") + e.Message); }
                         }
-                        if (!clientCancelled) { menuPhase = "error"; menuText = T("Connexion à l'hôte perdue (reconnexion impossible).", "Connection to the host lost (could not reconnect)."); MenuStatus(); }
+                        if (!clientCancelled) { menuPhase = "error"; menuText = T("Connexion à l'hôte perdue (reconnexion impossible).", "Connection to the host lost (could not reconnect)."); MenuStatus(); ClientStatus("gone", 0); }
                     }) { IsBackground = true, Name = "Reconnect" }.Start();
                 };
             };
+            // the in-game chat: this player's messages go to the host, which sends them to everybody
+            int chatGen = sessionGen;
+            new Thread(() =>
+            {
+                while (chatGen == sessionGen && !clientCancelled)
+                {
+                    Thread.Sleep(250);
+                    foreach (var line in game.ReadChatOut())
+                    {
+                        var text = ChatClean(line);
+                        if (text.Length == 0) continue;
+                        var to = current;
+                        if (to != null) to.Send(Msg.Make("chat", name, "{[\"text\"]=" + LuaLit.Quote(text) + "}"));
+                        else game.AppendChat(0, UnixNow(), "unsent", BaseName(myId), text);
+                    }
+                }
+            }) { IsBackground = true, Name = "Chat" }.Start();
             var first = new Client();
             wire(first);
             first.Connect(host, port, name);
@@ -1082,7 +1146,7 @@ namespace MPFever
 
         void StartLocalTest()
         {
-            StartHost("Hote", true);
+            StartHost("Host", true);
             Log.W(T("Lancement du second jeu dans 20 s...", "Starting the second game in 20 s..."));
             var t = new System.Windows.Forms.Timer { Interval = autotest ? 8000 : 20000 };
             t.Tick += (s, e) =>
@@ -1093,6 +1157,119 @@ namespace MPFever
             };
             t.Start();
             Log.W(T("Chargez LA MÊME sauvegarde dans les deux jeux, puis cliquez sur « Démarrer la partie ».", "Load THE SAME savegame in both games, then click « Start the game »."));
+        }
+
+        // ---------------------------------------------------------------- session status for the in-game MPFever window
+
+        /// <summary>A player's name without the connection number the relay adds (Lena#3 -> Lena).</summary>
+        static string BaseName(string n)
+        {
+            if (n == null) return "";
+            int i = n.LastIndexOf('#');
+            return i < 0 ? n : n.Substring(0, i);
+        }
+
+        static long UnixNow() => (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
+
+        /// <summary>The host's view of the session: sync state, and every player with its link and how far its game is
+        /// behind (steps). Lines "key=value", and "p=id TAB name TAB state TAB lag TAB role" per player, the state being
+        /// ok, slow, noresp (no clock for 8 s), loading (resynchronisation), joining (connected, game not ready) or left.</summary>
+        string BuildStatus()
+        {
+            var sb = new System.Text.StringBuilder();
+            void Kv(string k, object v) => sb.Append(k).Append('=').Append(Convert.ToString(v, CultureInfo.InvariantCulture).Replace("\r", " ").Replace("\n", " ")).Append('\n');
+            bool st, paused; int sp;
+            lock (sessionGate) { st = started; paused = pauseAt.HasValue; sp = speed; }
+            Kv("v", 1);
+            Kv("host", BaseName(hostName));
+            Kv("mode", companyMode);
+            Kv("started", st ? 1 : 0);
+            Kv("speed", paused ? 0 : sp);
+            Kv("sync", resyncing ? "resync" : syncState == 1 ? "ok" : syncState == 2 ? "drift" : syncState == 3 ? "desync" : "none");
+            Kv("parts", syncParts);
+            Kv("age", lastSyncAt < 0 ? -1 : (int)(Now - lastSyncAt));
+            Kv("desyncs", desyncs);
+            Kv("resyncs", resyncId);
+            Kv("invite", steamConnect != null ? 1 : 0);
+
+            string[] ready; lock (players) ready = players.ToArray();
+            var connected = relay?.PeerNames() ?? new string[0];
+            HashSet<string> waiting; lock (resyncWaiting) waiting = new HashSet<string>(resyncWaiting);
+            Dictionary<string, PlayerClock> cl; lock (clocks) cl = new Dictionary<string, PlayerClock>(clocks);
+            double lead = cl.Count == 0 ? 0 : cl.Values.Max(Estimate);
+            var present = new HashSet<string>();
+            void P(string id, string state, long lag)
+            {
+                present.Add(BaseName(id));
+                sb.Append("p=").Append(id).Append('\t').Append(BaseName(id)).Append('\t').Append(state).Append('\t')
+                  .Append(lag).Append('\t').Append(id == hostName ? "host" : "").Append('\n');
+            }
+            if (hostName != null && !ready.Contains(hostName)) P(hostName, "joining", 0);   // the host's own game is loading
+            foreach (var n in ready.OrderBy(n => n == hostName ? 0 : 1).ThenBy(n => n, StringComparer.OrdinalIgnoreCase))
+            {
+                long lag = 0;
+                string state = "ok";
+                if (cl.TryGetValue(n, out var c))
+                {
+                    lag = (long)Math.Max(0, Math.Round((lead - Estimate(c)) / Step));
+                    if (st && Now - c.At > 8) state = "noresp";
+                    else if (st && lag > 10) state = "slow";
+                }
+                if (resyncing && waiting.Contains(n)) state = "loading";
+                P(n, state, lag);
+            }
+            foreach (var n in connected.Where(n => !ready.Contains(n)).OrderBy(n => n, StringComparer.OrdinalIgnoreCase)) P(n, "joining", 0);
+            lock (leftAt)
+            {
+                foreach (var k in leftAt.Where(kv => Now - kv.Value > 120).Select(kv => kv.Key).ToList()) leftAt.Remove(k);
+                foreach (var kv in leftAt.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)) if (!present.Contains(kv.Key)) P(kv.Key, "left", 0);
+            }
+            return sb.ToString();
+        }
+
+        // ---------------------------------------------------------------- in-game chat
+
+        readonly List<Msg> chatLog = new List<Msg>();   // the last messages, for players who join later
+        long chatId;
+
+        /// <summary>A chat line as players may write it: no control characters, at most 300 characters.</summary>
+        static string ChatClean(string s)
+        {
+            if (s == null) return "";
+            var sb = new System.Text.StringBuilder();
+            foreach (var ch in s) sb.Append(char.IsControl(ch) ? ' ' : ch);
+            var t = sb.ToString().Trim();
+            if (t.Length > 300) t = t.Substring(0, char.IsHighSurrogate(t[299]) ? 299 : 300);
+            return t;
+        }
+
+        /// <summary>The host numbers every chat line (a player's message, or a player who joined or left) and sends it to
+        /// every game: its own (chat.txt) and the clients' ("chatmsg").</summary>
+        void HostChat(string kind, string name, string text)
+        {
+            text = ChatClean(text);
+            if (kind == "msg" && text.Length == 0) return;
+            long id, t = UnixNow();
+            Msg m;
+            lock (chatLog)
+            {
+                id = ++chatId;
+                m = Msg.Make("chatmsg", hostName ?? "", "{[\"id\"]=" + id + ",[\"t\"]=" + t + ",[\"kind\"]=" + LuaLit.Quote(kind)
+                    + ",[\"name\"]=" + LuaLit.Quote(name ?? "") + ",[\"text\"]=" + LuaLit.Quote(text) + "}");
+                chatLog.Add(m);
+                if (chatLog.Count > 50) chatLog.RemoveAt(0);
+            }
+            hostGame?.AppendChat(id, t, kind, name, text);
+            relay?.Broadcast(m);
+            if (kind == "msg") Log.Dim("[chat] " + name + ": " + text);
+        }
+
+        /// <summary>Every second: the status to the host's own game (mp_status.txt) and to every client.</summary>
+        void PublishStatus()
+        {
+            var text = BuildStatus();
+            hostGame?.WriteStatus(text + "me=" + hostName + "\nconn=ok\nattempt=0\nt=" + UnixNow() + "\n");
+            relay?.Broadcast(Msg.Make("mpstatus", hostName, "{[\"text\"]=" + LuaLit.Quote(text) + "}"));
         }
 
         /// <summary>Every host broadcast goes through here so that all games receive messages in the same order.</summary>
@@ -1144,7 +1321,7 @@ namespace MPFever
                        (companyMode == "separate" ? ",[\"cstart\"]=" + StartMoney() : "") + "}";
         }
 
-        void BroadcastSession() => HostSend(Msg.Make("session", hostName ?? "hote", SessionPayload()));
+        void BroadcastSession() => HostSend(Msg.Make("session", hostName ?? "Host", SessionPayload()));
 
         void StartSession()
         {
@@ -1197,11 +1374,18 @@ namespace MPFever
 
         void HostLoop(int gen)
         {
-            double lastHash = Now, lastSession = Now;
+            double lastHash = Now, lastSession = Now, lastStatus = 0;
             while (gen == sessionGen)
             {
                 Thread.Sleep(250);
                 if (hostGame == null) continue;
+                foreach (var line in hostGame.ReadChatOut()) HostChat("msg", BaseName(hostName), line);
+                if (Now - lastStatus >= 1)
+                {
+                    lastStatus = Now;
+                    try { PublishStatus(); statusFailed = false; }
+                    catch (Exception e) { if (!statusFailed) Log.W("mp_status: " + e.Message); statusFailed = true; }
+                }
                 PlayerClock hc;
                 lock (clocks) clocks.TryGetValue(hostName, out hc);
 
@@ -1308,6 +1492,12 @@ namespace MPFever
                     OnSyncHash(m);
                     break;
 
+                case "chat":
+                    // a player's chat message: the host numbers it and sends it to everybody (the sender included)
+                    if (from != null && LuaLit.Parse(m.Payload) is Dictionary<object, object> ct && ct.TryGetValue("text", out var ctx) && ctx is string ctext)
+                        HostChat("msg", BaseName(from.Name), ctext);
+                    break;
+
                 case "autotest_done":
                     {
                         lock (sendGate)
@@ -1373,6 +1563,7 @@ namespace MPFever
                 foreach (var old in hashes.Keys.Where(k => k < n - 20).ToList()) hashes.Remove(old);
             }
             if (got == null) return;
+            lastSyncAt = Now;
             var names = got.Keys.OrderBy(k => k).ToList();
             var keys = got.Values.Where(v => v != null).SelectMany(v => v.Keys.Select(k => k.ToString())).Distinct().OrderBy(k => k).ToList();
             var diffs = new List<string>();
@@ -1397,7 +1588,8 @@ namespace MPFever
             {
                 bool changed = syncState != 1;
                 syncState = 1;
-                syncText = "SYNC ✔";
+                syncParts = "";
+                syncText = T("SYNCHRONE ✔", "IN SYNC ✔");
                 if (changed || n % 6 == 1) Log.Ok(F("Synchronisation n°{0} (temps {1}) : IDENTIQUE sur {2} jeux ({3} mesures)", "Sync check #{0} (time {1}): IDENTICAL on {2} games ({3} measures)", n, time, names.Count, keys.Count));
             }
             else if (diffKeys.Where(d => !ignoredParts.Contains(d) && !CorrectedParts.Contains(d)).All(DriftParts.Contains))
@@ -1405,6 +1597,7 @@ namespace MPFever
                 // simulation drift (or money, corrected at once): no alarm, a line per minute
                 bool changed = syncState != 2;
                 syncState = 2;
+                syncParts = string.Join(",", diffs.Select(d => DiffKey(d)));
                 syncText = T("SYNC ~ (légère dérive : ", "SYNC ~ (slight drift: ") + string.Join(",", diffs.Select(d => DiffKey(d))) + ")";
                 if (changed || n % 6 == 1)
                 {
@@ -1416,6 +1609,7 @@ namespace MPFever
             {
                 desyncs++;
                 syncState = 3;
+                syncParts = string.Join(",", diffs.Select(d => DiffKey(d)));
                 syncText = T("DÉSYNCHRONISÉ ✖ (", "OUT OF SYNC ✖ (") + string.Join(",", diffs.Select(d => DiffKey(d))) + ")";
                 Log.W(F("!!! DÉSYNCHRONISATION n°{0} (temps {1}) : {2} différence(s)", "!!! OUT OF SYNC #{0} (time {1}): {2} difference(s)", n, time, diffs.Count));
                 foreach (var d in diffs) Log.W("    " + d);
@@ -1506,7 +1700,7 @@ namespace MPFever
                 Thread.Sleep(2000);
                 Log.W(F("=== Resynchronisation n°{0} terminée en {1:0} s ===", "=== Resynchronisation #{0} done in {1:0} s ===", id, (DateTime.UtcNow - t0).TotalSeconds));
             }
-            catch (Exception e) { Log.W("Resynchronisation : " + e.Message); }
+            catch (Exception e) { Log.Err(T("Resynchronisation : ", "Resynchronisation: ") + e.Message); }
             finally
             {
                 lastResync = Now;
@@ -1557,15 +1751,15 @@ namespace MPFever
 
         void RunDeterminism()
         {
-            if (started) { Log.W("Test déterminisme : à lancer avant « Démarrer la partie »."); return; }
+            if (started) { Log.Warn(T("Test déterminisme : à lancer avant « Démarrer la partie ».", "Determinism test: run it before « Start the game ».")); return; }
             int[] schedule = { 0, 100, 500, 1500, 3000 };
             int expected;
             lock (players) expected = players.Count;
-            if (expected < 2) { Log.W($"Test déterminisme : il faut au moins 2 jeux prêts (actuellement {expected})."); return; }
+            if (expected < 2) { Log.Warn(F("Test déterminisme : il faut au moins 2 jeux prêts (actuellement {0}).", "Determinism test: at least 2 games must be ready (now {0}).", expected)); return; }
             detRunning = true;
             try
             {
-                Log.W($"=== Test déterminisme sur {expected} jeux ===");
+                Log.W(F("=== Test déterminisme sur {0} jeux ===", "=== Determinism test on {0} games ===", expected));
                 int total = 0;
                 for (int round = 0; round < schedule.Length; round++)
                 {
@@ -1580,7 +1774,7 @@ namespace MPFever
                         while (detHashes.Count < expected && DateTime.UtcNow < deadline) Monitor.Wait(detGate, 1000);
                         got = new Dictionary<string, Dictionary<object, object>>(detHashes);
                     }
-                    if (got.Count < expected) { Log.W($"Tour {round} : réponses manquantes ({got.Count}/{expected}), test arrêté."); return; }
+                    if (got.Count < expected) { Log.Err(F("Tour {0} : réponses manquantes ({1}/{2}), test arrêté.", "Round {0}: answers missing ({1}/{2}), test stopped.", round, got.Count, expected)); return; }
                     var names = got.Keys.OrderBy(k => k).ToList();
                     var keys = got.Values.Where(v => v != null).SelectMany(v => v.Keys.Select(k => k.ToString())).Distinct().OrderBy(k => k).ToList();
                     var diffs = new List<string>();
@@ -1589,14 +1783,14 @@ namespace MPFever
                         var vals = names.Select(n => got[n] != null && got[n].TryGetValue(k, out var v) ? LuaLit.Show(v) : "absent").ToList();
                         if (vals.Distinct().Count() > 1) diffs.Add($"{k}: " + string.Join(" | ", names.Select((n, i) => n + "=" + vals[i])));
                     }
-                    if (diffs.Count == 0) Log.W($"Tour {round} (+{steps} pas, total {total}) : IDENTIQUE sur {keys.Count} mesures");
+                    if (diffs.Count == 0) Log.Ok(F("Tour {0} (+{1} pas, total {2}) : IDENTIQUE sur {3} mesures", "Round {0} (+{1} steps, total {2}): IDENTICAL on {3} measures", round, steps, total, keys.Count));
                     else
                     {
-                        Log.W($"Tour {round} (+{steps} pas, total {total}) : {diffs.Count} DIFFÉRENCE(S)");
+                        Log.Err(F("Tour {0} (+{1} pas, total {2}) : {3} DIFFÉRENCE(S)", "Round {0} (+{1} steps, total {2}): {3} DIFFERENCE(S)", round, steps, total, diffs.Count));
                         foreach (var d in diffs) Log.W("    " + d);
                     }
                 }
-                Log.W("=== Fin du test déterminisme ===");
+                Log.W(T("=== Fin du test déterminisme ===", "=== End of the determinism test ==="));
             }
             finally { detRunning = false; }
         }

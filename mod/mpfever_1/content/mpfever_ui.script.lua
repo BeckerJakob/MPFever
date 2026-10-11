@@ -250,6 +250,7 @@ local function pollShares()
 		if k then t[k] = tonumber(fee) end
 	end
 	U.shares = t
+	U.shareVersion = (U.shareVersion or 0) + 1
 end
 
 local SHARE_FEES = { 0, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000 }
@@ -257,6 +258,17 @@ local SHARE_FEES = { 0, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000 }
 local function money(n)
 	local ok, s = pcall(api.util.formatMoney, n)
 	return ok and tostring(s) or tostring(n)
+end
+
+-- what the share line of a station window says, for the fee in force (nil or 0: not shared)
+local function shareText(mine, fee)
+	if fee == 0 then fee = nil end
+	if mine then
+		return fee and (T("Partagée avec les autres entreprises : ", "Shared with the other companies: ") .. money(fee) .. T(" par arrêt", " per stop"))
+			or T("Non partagée (les autres entreprises ne peuvent pas s'y arrêter)", "Not shared (the other companies cannot stop here)")
+	end
+	return fee and (T("Partagée : ", "Shared: ") .. money(fee) .. T(" par arrêt de vos véhicules", " per stop of your vehicles"))
+		or T("Non partagée : vos lignes ne peuvent pas s'y arrêter", "Not shared: your lines cannot stop here")
 end
 
 -- the share line of a station window: what it costs the other companies to stop there (nil when not a station)
@@ -268,15 +280,18 @@ local function shareInfo(e, owner)
 	local fee = C.shareFee(U.shares, key)
 	if fee <= 0 then fee = nil end
 	local mine = U.myCo ~= nil and U.coMap and U.coMap[owner] == U.myCo
-	local text
-	if mine then
-		text = fee and (T("Partagée avec les autres entreprises : ", "Shared with the other companies: ") .. money(fee) .. T(" par arrêt", " per stop"))
-			or T("Non partagée (les autres entreprises ne peuvent pas s'y arrêter)", "Not shared (the other companies cannot stop here)")
-	else
-		text = fee and (T("Partagée : ", "Shared: ") .. money(fee) .. T(" par arrêt de vos véhicules", " per stop of your vehicles"))
-			or T("Non partagée : vos lignes ne peuvent pas s'y arrêter", "Not shared: your lines cannot stop here")
+	return { key = key, fee = fee or 0, text = shareText(mine, fee), canEdit = mine }
+end
+
+-- the choices of the share list: not shared, then the usual fees (and the fee in force, when it is another one)
+local function shareChoices(current)
+	local fees, listed = {}, false
+	for _, f in ipairs(SHARE_FEES) do
+		fees[#fees + 1] = f
+		if f == current then listed = true end
 	end
-	return { key = key, fee = fee or 0, text = text, canEdit = mine }
+	if not listed and type(current) == "number" and current > 0 then fees[#fees + 1] = current; table.sort(fees) end
+	return fees
 end
 
 -- the station group of what the line tool points at (a station, its construction, its group, or the street of a street stop)
@@ -417,25 +432,55 @@ local function installOwnerLine(react, builtin)
 		return
 	end
 	local Wrap = react.RegisterRecipe("MPFeverOwnerLine", function(p)
+		-- the fee changes while the window is open (this player's choice, or the owner's): read again from shares.txt
+		local ver = react.useState(U.shareVersion or 0)
+		local pending = react.useState(nil)   -- the fee just chosen, until every game has applied it: { fee, at }
+		react.onStepTimer(function()
+			local v = U.shareVersion or 0
+			if ver:old() ~= v then ver:set(v) end
+			local pd = pending:old()
+			if pd and ((U.shares and U.shares[p.shareKey] or 0) == pd.fee or os.clock() - pd.at > 10) then pending:set(nil) end
+		end, 0.5)
 		local inner = nil
 		if p.innerRecipe then inner = p.innerRecipe(p.innerParam)
 		elseif p.innerBuiltin then inner = p.innerBuiltin({ entity = p.innerParam and p.innerParam.keyEntity }) end
 		local children = { builtin.TextView { meta = { class = "font-scale-body" }, text = p.ownerText } }
-		if p.shareText then
-			local row = { builtin.TextView { meta = { class = "font-scale-body" }, text = p.shareText } }
+		if p.shareKey then
+			local fee = U.shares and U.shares[p.shareKey] or 0
 			if p.shareEdit then
-				-- the owner sets the fee per stop of the other companies' vehicles (0: not shared)
-				local idx = 1
-				for i, f in ipairs(SHARE_FEES) do if f <= (p.shareFee or 0) then idx = i end end
+				-- the owner chooses the fee per stop of the other companies' vehicles (0: not shared)
+				local pd = pending:old()
+				local shown = pd and pd.fee or fee
+				local items = {}
+				for _, f in ipairs(shareChoices(shown)) do
+					items[#items + 1] = builtin.ComboBoxItem {
+						value = f,
+						content = builtin.TextView { meta = { class = "font-scale-body" },
+							text = f == 0 and T("Non partagée", "Not shared") or (money(f) .. T(" par arrêt", " per stop")) },
+					}
+				end
 				local key = p.shareKey
-				row[#row + 1] = builtin.Button { content = builtin.TextView { text = " - " }, onClick = function()
-					sendShare(key, SHARE_FEES[math.max(1, idx - 1)])
-				end }
-				row[#row + 1] = builtin.Button { content = builtin.TextView { text = " + " }, onClick = function()
-					sendShare(key, SHARE_FEES[math.min(#SHARE_FEES, idx + 1)])
-				end }
+				children[#children + 1] = builtin.BoxLayout { orientation = builtin.type.Orientation.Horizontal, children = {
+					builtin.TextView { meta = { class = "font-scale-body" }, text = T("Partage avec les autres entreprises :  ", "Sharing with the other companies:  ") },
+					builtin.ComboBox {
+						value = shown,
+						items = items,
+						onValueChange = function(v)
+							v = tonumber(v)
+							if v == nil or v == shown then return end
+							sendShare(key, v)
+							pending:set({ fee = v, at = os.clock() })
+						end,
+					},
+				} }
+				local note
+				if pd then note = T("Modification en cours pour tous les joueurs…", "Applying for every player…")
+				elseif shown > 0 then note = T("Leurs véhicules paient ce montant à chaque arrêt ici ; vos lignes s'y arrêtent gratuitement.", "Their vehicles pay this at every stop here; your own lines stop for free.")
+				else note = T("Les autres entreprises ne peuvent pas s'arrêter ici.", "The other companies cannot stop here.") end
+				children[#children + 1] = builtin.TextView { meta = { class = "font-scale-body" .. (pd and ", info" or "") }, text = note }
+			else
+				children[#children + 1] = builtin.TextView { meta = { class = "font-scale-body" }, text = shareText(false, fee) }
 			end
-			children[#children + 1] = builtin.BoxLayout { orientation = builtin.type.Orientation.Horizontal, children = row }
 		end
 		children[#children + 1] = inner
 		return builtin.BoxLayout { orientation = builtin.type.Orientation.Vertical, children = children }
@@ -460,6 +505,648 @@ local function installOwnerLine(react, builtin)
 		return w
 	end
 	log("companies: the entity windows show their owner")
+end
+
+-- ---------------------------------------------------------------- the session: players, their link, the sync state
+-- MPFever.exe writes mp_status.txt every second (the host's view, relayed to every player): "key=value" lines and one
+-- "p=id TAB name TAB state TAB lag TAB role" line per player. It is shown in MPFever's own window, opened from a card that
+-- MPFever puts in the game's pause menu (no button in the game's HUD).
+
+local function pollStatus()
+	local now = os.clock()
+	if U.statusAt and now - U.statusAt < 0.5 then return end
+	U.statusAt = now
+	local f = C.IO.open(C.DIR .. C.BS .. "mp_status.txt", "rb")
+	if not f then return end
+	local txt = f:read("*a") or ""
+	f:close()
+	if txt == U.statusTxt then return end
+	U.statusTxt = txt
+	local st = { players = {} }
+	for line in txt:gmatch("[^" .. C.NL .. "]+") do
+		line = line:gsub(C.CR, "")
+		local k, v = line:match("^([%w_]+)=(.*)$")
+		if k == "p" then
+			local f1, f2, f3, f4, f5 = v:match("^([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "?(.*)$")
+			if f1 then st.players[#st.players + 1] = { id = f1, name = f2, state = f3, lag = tonumber(f4) or 0, role = f5 } end
+		elseif k then
+			st[k] = v
+		end
+	end
+	U.status = st
+	U.statusVersion = (U.statusVersion or 0) + 1
+end
+
+-- the status is older than a few seconds: MPFever.exe no longer writes it
+local function statusStale(st)
+	local t = st and tonumber(st.t)
+	return t ~= nil and os.time() - t > 6
+end
+
+-- the sync line: text and colour class
+local function syncLine(st)
+	local sync = st and st.sync or "none"
+	local parts = (st and st.parts and st.parts ~= "") and (" (" .. st.parts .. ")") or ""
+	if sync == "ok" then
+		local age = tonumber(st.age) or -1
+		return T("Synchrone", "In sync") .. (age >= 0 and ("  ·  " .. C.Tf("vérifiée il y a %s s", "checked %s s ago", age)) or ""), "success"
+	elseif sync == "drift" then
+		return T("Légère dérive", "Slight drift") .. parts .. "  ·  " .. T("corrigée si elle dure", "corrected if it lasts"), "warning"
+	elseif sync == "desync" then
+		return T("Désynchronisé", "Out of sync") .. parts .. "  ·  " .. T("la partie de l'hôte est rechargée si l'écart persiste", "the host's game is reloaded if it persists"), "error"
+	elseif sync == "resync" then
+		return T("Resynchro…", "Resyncing…") .. "  ·  " .. T("rechargement de la partie de l'hôte", "reloading the host's game"), "info"
+	end
+	return T("pas encore vérifiée", "not checked yet"), nil
+end
+
+local PLAYER_STATES = {
+	ok = function() return T("connecté", "connected"), nil end,
+	slow = function(pl) return C.Tf("%s pas de retard", "%s steps behind", pl.lag), "warning" end,
+	noresp = function() return T("ne répond plus", "not responding"), "error" end,
+	loading = function() return T("charge la partie de l'hôte…", "loading the host's game…"), "info" end,
+	joining = function() return T("se connecte…", "connecting…"), "info" end,
+	left = function() return T("a quitté la partie", "left the game"), "negative" end,
+}
+
+-- a player's line: name, (you), host, its state; and the colour class
+local function playerLine(pl, me)
+	local text = pl.name
+	if pl.id == me then text = text .. T(" (vous)", " (you)") end
+	if pl.role == "host" then text = text .. "  –  " .. T("hôte", "host") end
+	local state, cls = (PLAYER_STATES[pl.state] or PLAYER_STATES.ok)(pl)
+	return text .. "  ·  " .. state, cls
+end
+
+-- the players still in the session (those who left are listed too, for a while)
+local function playerCount(st)
+	local n = 0
+	for _, pl in ipairs(st and st.players or {}) do if pl.state ~= "left" then n = n + 1 end end
+	return n
+end
+
+-- this game's own link to the host, when it is not fine (nil otherwise)
+local function linkLine(st)
+	if not st then return T("En attente de MPFever.exe…", "Waiting for MPFever.exe…"), "info" end
+	local attempt = tonumber(st.attempt) or 0
+	if st.conn == "lost" then
+		if attempt > 0 then return C.Tf("Connexion à l'hôte perdue : reconnexion (essai %s)…", "Connection to the host lost: reconnecting (attempt %s)…", attempt), "error" end
+		return T("Connexion à l'hôte perdue…", "Connection to the host lost…"), "error"
+	elseif st.conn == "gone" then
+		return T("Connexion à l'hôte perdue (reconnexion impossible).", "Connection to the host lost (could not reconnect)."), "error"
+	elseif statusStale(st) then
+		return T("Pas de nouvelles de MPFever.exe depuis quelques secondes.", "No news from MPFever.exe for a few seconds."), "warning"
+	end
+	return nil
+end
+
+-- the host asks MPFever.exe to send Steam invitations (as the main menu's MPFever window does)
+local function requestInvite()
+	U.reqSeq = (U.reqSeq or 0) + 1
+	local f = C.IO.open(C.DIR .. C.BS .. "menu_req.txt", "wb")
+	if not f then log("session: cannot write menu_req.txt") return end
+	f:write(tostring(os.time()) .. ".ui" .. U.reqSeq .. C.TAB .. "invite" .. C.TAB .. C.TAB .. (C.NAME or "") .. C.TAB .. C.NL)
+	f:close()
+end
+
+-- re-renders its recipe when the status changes, and once more when it gets old
+local function useStatus(react)
+	local key = function() return tostring(U.statusVersion or 0) .. (statusStale(U.status) and "s" or "") end
+	local ver = react.useState(key())
+	react.onStepTimer(function()
+		local k = key()
+		if ver:old() ~= k then ver:set(k) end
+	end, 0.5)
+	return U.status
+end
+
+-- ---------------------------------------------------------------- in-game chat
+-- MPFever.exe writes every line of the session's chat to chat.txt ("id TAB time TAB kind TAB player TAB text"; kind:
+-- msg, join, left, unsent); this game's messages go to chat_out.txt ("seq TAB text"), which MPFever.exe sends to the host
+
+-- one UTF-8 character (the mod's files have no backslash: the bytes are made with string.char)
+local UTF8_CHAR = "[" .. string.char(1) .. "-" .. string.char(127) .. string.char(194) .. "-" .. string.char(244) .. "][" .. string.char(128) .. "-" .. string.char(191) .. "]*"
+
+local function ulen(t)
+	local n = 0
+	for _ in t:gmatch(UTF8_CHAR) do n = n + 1 end
+	return n
+end
+
+local function usub(t, maxChars)
+	local out, n = {}, 0
+	for ch in t:gmatch(UTF8_CHAR) do
+		n = n + 1
+		if n > maxChars then break end
+		out[#out + 1] = ch
+	end
+	return table.concat(out)
+end
+
+-- a text in lines of at most w characters (the first one: firstW), cut between words when it can
+local function wrap(t, firstW, w)
+	local lines, cur, curLen = {}, "", 0
+	local function limit() return #lines == 0 and firstW or w end
+	local function push() lines[#lines + 1] = cur; cur, curLen = "", 0 end
+	for word in t:gmatch("[^ ]+") do
+		local wl = ulen(word)
+		if curLen > 0 and curLen + 1 + wl > limit() then push() end
+		while wl > limit() do
+			local lim = limit() - curLen - (curLen > 0 and 1 or 0)
+			if lim <= 0 then push() lim = limit() end
+			local head = usub(word, lim)
+			cur = cur .. (curLen > 0 and " " or "") .. head
+			push()
+			word = word:sub(#head + 1)
+			wl = ulen(word)
+		end
+		if wl > 0 then
+			cur = cur .. (curLen > 0 and " " or "") .. word
+			curLen = curLen + (curLen > 0 and 1 or 0) + wl
+		end
+	end
+	if curLen > 0 or #lines == 0 then push() end
+	return lines
+end
+
+-- this player's name as the chat shows it (the host's status: "me", without the connection number)
+local function myChatName()
+	local me = U.status and U.status.me
+	if me and me ~= "" then return me:match("^(.-)#%d+$") or me end
+	return C.NAME
+end
+
+local CHAT_LINE = "^([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "(.*)$"
+
+local function pollChat()
+	local now = os.clock()
+	if U.chatAt and now - U.chatAt < 0.4 then return end
+	U.chatAt = now
+	local f = C.IO.open(C.DIR .. C.BS .. "chat.txt", "rb")
+	if not f then return end
+	local size = f:seek("end") or 0
+	U.chatOff = U.chatOff or 0
+	if size < U.chatOff then U.chatOff = 0 end
+	if size == U.chatOff then f:close() return end
+	f:seek("set", U.chatOff)
+	local data = f:read(size - U.chatOff) or ""
+	f:close()
+	local pos, fresh = 1, {}
+	while true do
+		local e = data:find(C.NL, pos, true)
+		if not e then break end   -- a line still being written: read next time
+		local line = data:sub(pos, e - 1):gsub(C.CR, "")
+		pos = e + 1
+		local id, t, kind, name, txt = line:match(CHAT_LINE)
+		if id then fresh[#fresh + 1] = { id = tonumber(id) or 0, t = tonumber(t) or 0, kind = kind, name = name, text = txt } end
+	end
+	U.chatOff = U.chatOff + pos - 1
+	if #fresh == 0 then return end
+	U.chat = U.chat or {}
+	for _, m in ipairs(fresh) do U.chat[#U.chat + 1] = m end
+	while #U.chat > 100 do table.remove(U.chat, 1) end
+	U.chatVersion = (U.chatVersion or 0) + 1
+	-- the lines already there when this game loaded (a resynchronisation reloads it) are not new
+	if not U.chatSeen then U.chatSeen = true return end
+	local me = myChatName()
+	local news = {}
+	for _, m in ipairs(fresh) do
+		if m.kind == "msg" and m.name ~= me then news[#news + 1] = m end
+	end
+	if #news > 0 and not U.chatOpen then
+		U.chatUnread = (U.chatUnread or 0) + #news
+		if U.onChatNews then pcall(U.onChatNews, news) end
+	end
+end
+
+-- this player's message, for MPFever.exe (which sends it to the host)
+local function sendChat(t)
+	t = tostring(t or ""):gsub("%c", " "):gsub("^ +", ""):gsub(" +$", "")
+	if t == "" then return false end
+	if ulen(t) > 300 then t = usub(t, 300) end
+	U.chatSeq = (U.chatSeq or 0) + 1
+	local f = C.IO.open(C.DIR .. C.BS .. "chat_out.txt", "ab")
+	if not f then log("chat: cannot write chat_out.txt") return false end
+	f:write(tostring(os.time()) .. "." .. U.chatSeq .. C.TAB .. t .. C.NL)
+	f:close()
+	return true
+end
+
+-- re-renders its recipe when a chat line arrives
+local function useChat(react)
+	local ver = react.useState(U.chatVersion or 0)
+	react.onStepTimer(function()
+		local v = U.chatVersion or 0
+		if ver:old() ~= v then ver:set(v) end
+	end, 0.3)
+	return U.chat or {}
+end
+
+-- the game's own window container (to open a window without the pause menu); loaded only in game, when game.tl
+-- has long been loaded by the game itself
+local function defaultWindowApi()
+	local ok, wapi = pcall(function()
+		local g = ug_require("/gui/main/game.tl")
+		local wc = g.game_react_globals.getDefaultWindowContainer()
+		if wc == nil or wc:hasExpired() then return nil end
+		return wc:get():getApi()
+	end)
+	if ok then return wapi end
+	return nil
+end
+
+local function installSession(react, builtin)
+	if U.sessionInstalled then return end
+	U.sessionInstalled = true
+	local V, H = builtin.type.Orientation.Vertical, builtin.type.Orientation.Horizontal
+	local function text(t, class, cls)
+		return builtin.TextView { meta = { class = (class or "font-scale-body") .. (cls and (", " .. cls) or "") }, text = t }
+	end
+
+	-- the game's own colours (default_colors.gres), with fallbacks when they cannot be read
+	local FALLBACK = {
+		Ok = { 0.42, 0.82, 0.45, 1 }, Warning = { 1, 0.76, 0.25, 1 }, Error = { 1, 0.38, 0.33, 1 }, Info = { 0.45, 0.72, 1, 1 },
+		Negative = { 1, 0.38, 0.33, 1 }, NeutralLight = { 0.72, 0.74, 0.77, 1 }, NeutralLightest = { 1, 1, 1, 1 },
+		BaseDarkMedium = { 0.16, 0.18, 0.21, 1 }, AccentVeryDark = { 0.07, 0.24, 0.33, 1 },
+	}
+	local CLASS_COLOR = { success = "Ok", warning = "Warning", error = "Error", info = "Info", negative = "Negative" }
+	-- (the .gres colours are plain tables { r, g, b, a }: a style wants a Vec4f; alpha replaces the colour's own)
+	local colorCache = {}
+	local function color(name, alpha)
+		local key = name .. "/" .. tostring(alpha)
+		if colorCache[key] ~= nil then return colorCache[key] or nil end
+		local okR, raw = pcall(function()
+			local d = api.gui.genericRep.get(api.gui.genericRep.find("::/gui/main/default_colors.gres")).data
+			return d[name]
+		end)
+		if not (okR and type(raw) == "table" and tonumber(raw[1])) then raw = FALLBACK[name] end
+		local c = nil
+		if raw then
+			local ok, v = pcall(function() return api.type.Vec4f.new(raw[1], raw[2], raw[3], alpha or raw[4] or 1) end)
+			if ok then c = v end
+		end
+		colorCache[key] = c or false
+		return c
+	end
+	local function classColor(cls) return color(CLASS_COLOR[cls or ""] or "NeutralLightest") end
+	-- an inline style (meta.styleSheet, as the game's own windows use it); nil when the API refuses
+	local function style(t)
+		local ok, st = pcall(function()
+			local st = api.gui.StyleSheet.new()
+			if t.color then st.color = t.color end
+			if t.bg then st.backgroundColor1 = t.bg end
+			if t.size then st.size = api.type.Vec2f.new(t.size[1], t.size[2]) end
+			if t.image then
+				local n = api.gui.NinePatch.new()
+				n.fileName = t.image
+				if t.nine then n.horizontal = t.nine; n.vertical = t.nine end
+				st.backgroundImage1 = n
+			end
+			return st
+		end)
+		return ok and st or nil
+	end
+	-- a small round dot in a status colour (the game's line colour dot)
+	local function dot(cls)
+		return builtin.Component { meta = { styleSheet = style { size = { 14, 14 }, image = "::/gui/line_vehicle_mgmt/icons/line_surface.tga", bg = classColor(cls) } } }
+	end
+	local function icon(path, size)
+		return builtin.ImageView { path = path, meta = { styleSheet = style { size = { size, size } } } }
+	end
+	local ICON_PLAYERS = "::/gui/statistics/icons/symbol_person_multiple.tga"
+	local ICON_SYNC = "::/gui/menu/icons/symbol_arrows_refresh.tga"
+	local ICON_PERSON = "::/gui/entity_window/icons/symbol_person.tga"
+	local function row(children) return builtin.BoxLayout { orientation = H, children = children } end
+	local function section(path, title) return row { icon(path, 26), text("  " .. title, "font-scale-title-4") } end
+	local function muted(t) return builtin.TextView { meta = { class = "font-scale-body", styleSheet = style { color = color("NeutralLight") } }, text = t } end
+
+	-- MPFever's window: stays open while playing, can be moved and closed
+	U.SessionWindow = react.RegisterWrapperRecipe("MPFeverSessionWindow", builtin.Window, function(wp)
+		local st = useStatus(react)
+		local rows = {}
+		if st and st.host then
+			rows[#rows + 1] = muted(C.Tf("Hôte : %s", "Host: %s", st.host) .. "  ·  "
+				.. (st.mode == "separate" and T("Une entreprise par joueur", "One company per player") or T("Une entreprise pour tous", "One company for everybody")))
+		end
+		local link, linkCls = linkLine(st)
+		if link then rows[#rows + 1] = row { dot(linkCls), text("  " .. link, nil, linkCls) } end
+		rows[#rows + 1] = text(" ")
+		rows[#rows + 1] = section(ICON_SYNC, T("Synchronisation", "Sync"))
+		local sync, syncCls = syncLine(st)
+		rows[#rows + 1] = row { dot(syncCls), text("  " .. sync, nil, syncCls) }
+		local desyncs = tonumber(st and st.desyncs) or 0
+		if desyncs > 0 then rows[#rows + 1] = muted(C.Tf("%s désynchronisation(s) depuis le début", "%s desync(s) since the start", desyncs)) end
+		rows[#rows + 1] = text(" ")
+		rows[#rows + 1] = section(ICON_PLAYERS, T("Joueurs", "Players") .. "  (" .. playerCount(st) .. ")")
+		for _, pl in ipairs(st and st.players or {}) do
+			local line, cls = playerLine(pl, st.me)
+			rows[#rows + 1] = row { icon(ICON_PERSON, 22), text("  " .. line, nil, cls) }
+		end
+		if st and st.invite == "1" and st.me and st.players then
+			local host = false
+			for _, pl in ipairs(st.players) do if pl.id == st.me and pl.role == "host" then host = true end end
+			if host then
+				rows[#rows + 1] = text(" ")
+				rows[#rows + 1] = builtin.Button { meta = { class = "primary" }, content = text(T("Inviter des amis Steam", "Invite Steam friends")), onClick = requestInvite }
+			end
+		end
+		rows[#rows + 1] = text(" ")
+		rows[#rows + 1] = builtin.Button { meta = { class = "secondary" }, content = row { icon(ICON_CHAT, 22), text("  " .. T("Ouvrir la discussion", "Open the chat")) },
+			onClick = function() if U.openChat then U.openChat() end end }
+		return builtin.Window {
+			title = "MPFever – " .. T("Multijoueur", "Multiplayer"),
+			id = "window.mpfever.session",
+			initialX = 0.85,
+			initialY = 0.3,
+			movable = true,
+			closable = true,
+			onClose = wp.onClose,
+			-- wide enough for the title and the longest lines (the window takes its content's size)
+			content = builtin.Component { meta = { styleSheet = style { size = { 540, -1 } } }, layout = builtin.BoxLayout { orientation = V, children = rows } },
+		}
+	end)
+
+	-- ------------------------------------------------ the chat window and the short notice of new messages
+	-- the game has no chat icon: MPFever brings its own (48 x 48 grey levels, like the game's icons)
+	local ICON_CHAT = "mpfever_1::/mpfever_chat.tga"
+	local function hhmm(t)
+		local ok, s = pcall(os.date, "%H:%M", t)
+		return ok and s or ""
+	end
+	local function nameColor(name)
+		return color(name == myChatName() and "Ok" or "Info")
+	end
+	local function coloredText(t, c, class)
+		return builtin.TextView { meta = { class = class or "font-scale-body", styleSheet = style { color = c } }, text = t }
+	end
+
+	-- one chat line: time, player, text (long texts on several lines)
+	local function chatRows(m, out, width)
+		local time = hhmm(m.t)
+		if m.kind == "join" then
+			out[#out + 1] = muted(time .. "   " .. C.Tf("%s a rejoint la partie", "%s joined the game", m.name))
+		elseif m.kind == "left" then
+			out[#out + 1] = muted(time .. "   " .. C.Tf("%s a quitté la partie", "%s left the game", m.name))
+		elseif m.kind == "unsent" then
+			out[#out + 1] = row { muted(time .. "   "), text(T("Non envoyé (pas de connexion à l'hôte) : ", "Not sent (no connection to the host): ") .. m.text, nil, "error") }
+		else
+			local head = m.name .. ":  "
+			local lines = wrap(m.text, math.max(10, width - ulen(head)), width)
+			out[#out + 1] = row { muted(time .. "   "), coloredText(head, nameColor(m.name)), text(lines[1]) }
+			for i = 2, #lines do out[#out + 1] = row { muted("              "), text(lines[i]) } end
+		end
+	end
+
+	U.ChatWindow = react.RegisterWrapperRecipe("MPFeverChatWindow", builtin.Window, function(wp)
+		local chat = useChat(react)
+		local draft = react.useState("")
+		local gen = react.useState(0)   -- a new input field after each message (an empty one)
+		local rows = {}
+		local first = math.max(1, #chat - 13)
+		if #chat == 0 then rows[#rows + 1] = muted(T("Aucun message pour l'instant.", "No messages yet.")) end
+		for i = first, #chat do chatRows(chat[i], rows, 52) end
+		rows[#rows + 1] = text(" ")
+		local function send(v)
+			if sendChat(v) then
+				draft:set("")
+				gen:set(gen:old() + 1)
+			end
+		end
+		rows[#rows + 1] = row {
+			builtin.TextInputField {
+				meta = { class = "font-scale-body", localKey = "mpfever-chat-input-" .. tostring(gen:old()), styleSheet = style { size = { 420, -1 } } },
+				value = "",
+				placeholderText = T("Écrire un message…", "Write a message…"),
+				maxLength = 300,
+				acceptOnFocusLoss = false,
+				onTyping = function(v) draft:set(v or "") end,
+				onValueChange = function(v) send(v) end,
+			},
+			text("  "),
+			builtin.Button { meta = { class = "primary" }, content = text(T("Envoyer", "Send")), onClick = function() send(draft:old()) end },
+		}
+		return builtin.Window {
+			title = "MPFever – " .. T("Discussion", "Chat"),
+			id = "window.mpfever.chat",
+			initialX = 0.02,
+			initialY = 0.45,
+			movable = true,
+			closable = true,
+			onClose = wp.onClose,
+			content = builtin.Component { meta = { styleSheet = style { size = { 560, -1 } } }, layout = builtin.BoxLayout { orientation = V, children = rows } },
+		}
+	end)
+
+	-- the notice: the new messages for a few seconds at the left of the screen (no button: it closes by itself)
+	U.ChatToast = react.RegisterWrapperRecipe("MPFeverChatToast", builtin.Window, function(wp)
+		local ver = react.useState(U.toastVersion or 0)
+		react.onStepTimer(function()
+			local v = U.toastVersion or 0
+			if ver:old() ~= v then ver:set(v) end
+			if U.toastShown and (U.chatOpen or os.time() >= (U.toastUntil or 0)) then
+				U.toastShown = false
+				pcall(function() wp.windowApi.removeAllWindows(U.ChatToast) end)
+			end
+		end, 0.5)
+		local rows = {
+			row { icon(ICON_CHAT, 22), coloredText("  MPFever – " .. T("Discussion", "Chat"), color("NeutralLight")) },
+		}
+		for _, m in ipairs(U.toastItems or {}) do
+			local t = m.text
+			if ulen(t) > 70 then t = usub(t, 68) .. "…" end
+			rows[#rows + 1] = row { coloredText(m.name .. ":  ", nameColor(m.name)), text(t) }
+		end
+		rows[#rows + 1] = muted(T("Répondre : Échap  ›  Discussion", "Reply: Esc  ›  Chat"))
+		return builtin.Window {
+			title = "",
+			id = "window.mpfever.chattoast",
+			initialX = 0.005,
+			initialY = 0.1,
+			movable = false,
+			closable = false,
+			pinnable = false,
+			compact = true,
+			autoFocusOnBecomingVisible = false,
+			onClose = function() end,
+			content = builtin.Component {
+				mouseTransparent = true,
+				meta = { styleSheet = style { size = { 520, -1 } } },
+				layout = builtin.BoxLayout { orientation = V, children = rows },
+			},
+		}
+	end)
+
+	U.onChatNews = function(news)
+		local items = U.toastItems or {}
+		if not U.toastShown then items = {} end
+		for _, m in ipairs(news) do items[#items + 1] = m end
+		while #items > 3 do table.remove(items, 1) end
+		U.toastItems = items
+		U.toastUntil = os.time() + 8
+		U.toastVersion = (U.toastVersion or 0) + 1
+		if U.toastShown then return end
+		local wapi = defaultWindowApi()
+		if not wapi then return end
+		local ok, err = pcall(function() wapi.addSingletonWindow(U.ChatToast, { windowApi = wapi }) end)
+		if ok then U.toastShown = true else log("chat: notice not shown: " .. tostring(err)) end
+	end
+
+	-- the chat window, from the pause menu (its window container) or from MPFever's window (the game's own)
+	local function openChat(wapi)
+		wapi = wapi or defaultWindowApi()
+		if not wapi then log("chat: no window container") return false end
+		local ok, err = pcall(function()
+			wapi.addSingletonWindow(U.ChatWindow, {
+				onClose = function()
+					U.chatOpen = false
+					pcall(function() wapi.removeAllWindows(U.ChatWindow) end)
+				end,
+			})
+		end)
+		if not ok then log("chat window not opened: " .. tostring(err)) return false end
+		U.chatOpen = true
+		U.chatUnread = 0
+		if U.toastShown then
+			U.toastShown = false
+			pcall(function() wapi.removeAllWindows(U.ChatToast) end)
+		end
+		return true
+	end
+	U.openChat = openChat
+
+	local function openSession(commonParams)
+		local ok, err = pcall(function()
+			local wc = commonParams.windowContainer:get():getApi()
+			wc.addSingletonWindow(U.SessionWindow, {
+				onClose = function() commonParams.windowContainer:get():getApi().removeAllWindows(U.SessionWindow) end,
+			})
+		end)
+		if not ok then log("session window not opened: " .. tostring(err)) return end
+		pcall(commonParams.onClose)   -- back to the game: the window stays open
+	end
+
+	-- the card in the pause menu: drawn as the menu's own cards (classes of the pause page: dark card, shadow,
+	-- accent on hover), with an icon, a summary, and a click opens the window
+	local CARD_NINE = { 0, 16, 48, 64 }   -- main_menu_sizes.ninePatchHorizontal/Vertical
+	local Card = react.RegisterRecipe("MPFeverPauseCard", function(p)
+		local st = useStatus(react)
+		local hover = react.useState(false)
+		local sync, syncCls = syncLine(st)
+		local link, linkCls = linkLine(st)
+		local status, cls = link or sync, link and linkCls or syncCls
+		local info = builtin.BoxLayout { orientation = V, children = {
+			text("MPFever  –  " .. T("Multijoueur", "Multiplayer"), "font-scale-title-4"),
+			row { dot(cls), builtin.TextView { meta = { class = "font-scale-body" .. (cls and (", " .. cls) or ""), styleSheet = style { color = classColor(cls) } }, text = "  " .. status } },
+			muted(C.Tf("%s joueur(s) dans la partie", "%s player(s) in the game", playerCount(st)) .. "   ·   " .. T("Afficher pendant la partie  ›", "Show while playing  ›")),
+		} }
+		-- a recipe's result must be a layout (the game refuses a bare button here)
+		return builtin.BoxLayout { children = {
+			builtin.Button {
+				-- the menu card's look, set here: the pause page's CSS does not reach the card (background,
+				-- colour 90 % opaque as the game's cards, accent colour under the mouse)
+				meta = {
+					class = "burger-menu, top-right, ani-pulse",
+					styleSheet = style { size = { 600, 112 }, image = "::/gui/menu/design/main_menu_card_top_right_content_mask.tga", nine = CARD_NINE,
+						bg = color(hover:old() and "AccentVeryDark" or "BaseDarkMedium", 0.9) },
+					onMouseOver = function(h) if hover:old() ~= (h and true or false) then hover:set(h and true or false) end end,
+				},
+				content = builtin.Component { layout = builtin.BoxLayout { orientation = H, children = {
+					builtin.Component { meta = { styleSheet = style { size = { 84, -1 } } }, layout = builtin.BoxLayout { children = { builtin.ImageView { path = ICON_PLAYERS } } } },
+					builtin.Component { layout = info },
+				} } },
+				onClick = function() openSession(p.commonParams) end,
+			},
+		} }
+	end)
+
+	-- the chat's card, under MPFever's card: the new messages, and a click opens the chat
+	local ChatCard = react.RegisterRecipe("MPFeverChatCard", function(p)
+		useChat(react)
+		local hover = react.useState(false)
+		local unread = U.chatUnread or 0
+		local info = builtin.BoxLayout { orientation = V, children = {
+			text(T("Discussion", "Chat"), "font-scale-title-4"),
+			unread > 0 and coloredText(C.Tf("%s nouveau(x) message(s)  ›", "%s new message(s)  ›", unread), color("Info"))
+				or muted(T("Écrire aux autres joueurs  ›", "Write to the other players  ›")),
+		} }
+		return builtin.BoxLayout { children = {
+			builtin.Button {
+				meta = {
+					class = "burger-menu, bottom-left, ani-pulse",
+					styleSheet = style { size = { 600, 88 }, image = "::/gui/menu/design/main_menu_card_bottom_left_content_mask.tga", nine = CARD_NINE,
+						bg = color(hover:old() and "AccentVeryDark" or "BaseDarkMedium", 0.9) },
+					onMouseOver = function(h) if hover:old() ~= (h and true or false) then hover:set(h and true or false) end end,
+				},
+				content = builtin.Component { layout = builtin.BoxLayout { orientation = H, children = {
+					builtin.Component { meta = { styleSheet = style { size = { 84, -1 } } }, layout = builtin.BoxLayout { children = { builtin.ImageView { path = ICON_CHAT } } } },
+					builtin.Component { layout = info },
+				} } },
+				onClick = function()
+					local cp = p.commonParams
+					local wapi = nil
+					pcall(function() wapi = cp.windowContainer:get():getApi() end)
+					if openChat(wapi) then pcall(cp.onClose) end
+				end,
+			},
+		} }
+	end)
+
+	-- the pause menu's main page is wrapped: drawn as usual, with the card floating at its right
+	-- (the game's UI state has no rawget, and maybe no debug library: every step is guarded)
+	local okR, rr = pcall(function() return _react end)
+	if not (okR and type(rr) == "table" and type(rr.recipeReplace) == "table" and type(rr.originalRecipeFn) == "table") then
+		log("session: the pause menu cannot be extended (no _react)")
+		return
+	end
+	local id, how = nil, nil
+	-- 0. the id caught while the page registered (mpfever_pause.lua, loaded by the native module in front of pause_menu.tl)
+	local okP, pid = pcall(function() return package.loaded["mpfever_pause_id"] end)
+	if okP and pid ~= nil and rr.originalRecipeFn[pid] then id, how = pid, "native hook" end
+	-- 1. the recipe's id from react.lua's own table of names (the only upvalue of GetRecipeName): no side effect
+	local okD, dbg = pcall(function() return debug end)
+	if id then
+		-- found
+	elseif okD and type(dbg) == "table" and type(dbg.getupvalue) == "function" and type(react.GetRecipeName) == "function" then
+		for i = 1, 8 do
+			local okU, name, names = pcall(dbg.getupvalue, react.GetRecipeName, i)
+			if not okU or name == nil then break end
+			if type(names) == "table" then
+				for fn, n in pairs(names) do
+					if n == "PauseMainPage" then
+						local okI, rid = pcall(react.GetRecipeId, fn)
+						if okI and rid ~= nil and rr.originalRecipeFn[rid] then id, how = rid, "names table" end
+					end
+				end
+			end
+			if id then break end
+		end
+	else
+		log("session: no debug library in the UI state")
+	end
+	-- 2. the id the engine gives the name, only when it is the id of an existing recipe (ids given per name)
+	if not id then
+		local okM, rid = pcall(function() return api.gui.react.detail.makeRecipeId("PauseMainPage") end)
+		if okM and rid ~= nil and rr.originalRecipeFn[rid] then id, how = rid, "recipe name" end
+	end
+	if not id then
+		log("session: the pause menu's page was not found: MPFever's window cannot be opened in game")
+		return
+	end
+	local original = rr.originalRecipeFn[id]
+	rr.recipeReplace[id] = function(params, ...)
+		if not C.ACTIVE then return original(params, ...) end
+		return builtin.FloatingLayout {
+			children = {
+				builtin.FloatingLayoutChild { h = -1, v = -1, item = builtin.Component { mouseTransparent = true, layout = builtin.BoxLayout { children = { original(params, ...) } } } },
+				builtin.FloatingLayoutChild { h = 0.97, v = 0.5, item = builtin.BoxLayout { orientation = builtin.type.Orientation.Vertical, children = {
+					Card { commonParams = params and params.commonParams },
+					builtin.Component { meta = { styleSheet = style { size = { 600, 12 } } } },
+					ChatCard { commonParams = params and params.commonParams },
+				} } },
+			},
+		}
+	end
+	log("session: MPFever's card added to the pause menu (page found by " .. tostring(how) .. ")")
 end
 
 -- results of our own actions, written by the game-script bridge after the simulation applied them
@@ -682,6 +1369,13 @@ local function tick(pendingState)
 		end
 	end
 	pcall(pollLoanView)
+	pcall(pollStatus)
+	local okch, errch = pcall(pollChat)
+	if not okch then log("chat poll failed: " .. tostring(errch)) end
+	if not U.sessionInstalled and U.react and U.builtin then
+		local oks, errs = pcall(installSession, U.react, U.builtin)
+		if not oks then log("session: not installed: " .. tostring(errs)) end
+	end
 	local okc, errc = pcall(pollControl)
 	if not okc then log("control poll failed: " .. tostring(errc)) end
 	if not U.stepping then U.stepping = true; log("periodic UI hook active") end

@@ -2385,8 +2385,12 @@ static const u8 P_LUA_LOAD[] = { 0x48, 0x89, 0x5C, 0x24, 0x10, 0x56, 0x48, 0x83,
 static LuaLoadF g_luaLoadOrig = 0;
 static const char MENU_PREFIX[] = "do local ok, e = pcall(require, \"mpfever_1::/mpfever_menu.lua\") if not ok then print(\"[MPFEVER-MENU] \" .. tostring(e)) end end ";
 static volatile long g_menuInjected = 0;
+// the same for the in-game pause menu (gui/main/pause_menu.tl, in a game's UI state): mpfever_1::/mpfever_pause.lua catches
+// the id of its main page as it is registered, so that mpfever_ui.script.lua can put MPFever's card beside it
+static const char PAUSE_PREFIX[] = "do local ok, e = pcall(require, \"mpfever_1::/mpfever_pause.lua\") if not ok then print(\"[MPFEVER-PAUSE] \" .. tostring(e)) end end ";
+static volatile long g_pauseInjected = 0;
 
-struct MenuReader { LuaReader reader; void* data; int stage; const char* held; size_t heldSize; };
+struct MenuReader { LuaReader reader; void* data; int stage; const char* held; size_t heldSize; const char* prefix; size_t prefixSize; };
 
 extern "C" const char* MenuReaderFn(void* L, void* ud, size_t* size)
 {
@@ -2396,8 +2400,8 @@ extern "C" const char* MenuReaderFn(void* L, void* ud, size_t* size)
         const char* blk = m->reader(L, m->data, &n);
         if (!blk || n == 0 || blk[0] == 0x1B) { m->stage = 2; *size = n; return blk; }   // empty or precompiled: untouched
         m->held = blk; m->heldSize = n; m->stage = 1;
-        *size = sizeof(MENU_PREFIX) - 1;
-        return MENU_PREFIX;
+        *size = m->prefixSize;
+        return m->prefix;
     }
     if (m->stage == 1) { m->stage = 2; *size = m->heldSize; return m->held; }
     return m->reader(L, m->data, size);
@@ -2414,9 +2418,15 @@ static bool EndsWith(const char* s, const char* tail)
 extern "C" int LuaLoadDetour(void* L, LuaReader reader, void* data, const char* chunkname, const char* mode)
 {
     if (chunkname && EndsWith(chunkname, "gui/menu/main_menu.tl")) {
-        MenuReader m = { reader, data, 0, 0, 0 };
+        MenuReader m = { reader, data, 0, 0, 0, MENU_PREFIX, sizeof(MENU_PREFIX) - 1 };
         int r = g_luaLoadOrig(L, MenuReaderFn, &m, chunkname, mode);
         if (_InterlockedIncrement(&g_menuInjected) == 1) { Buf b; b.str("main menu: multiplayer page added (").str(chunkname).str(")"); LogLine(b); }
+        return r;
+    }
+    if (chunkname && EndsWith(chunkname, "gui/main/pause_menu.tl")) {
+        MenuReader m = { reader, data, 0, 0, 0, PAUSE_PREFIX, sizeof(PAUSE_PREFIX) - 1 };
+        int r = g_luaLoadOrig(L, MenuReaderFn, &m, chunkname, mode);
+        if (_InterlockedIncrement(&g_pauseInjected) == 1) { Buf b; b.str("pause menu: MPFever card hook added (").str(chunkname).str(")"); LogLine(b); }
         return r;
     }
     return g_luaLoadOrig(L, reader, data, chunkname, mode);
