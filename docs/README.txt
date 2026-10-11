@@ -119,7 +119,7 @@ REPORTING A PROBLEM
 -------------------
 Please describe what you did, what you expected and what happened, and attach:
 1. the newest file from the "logs" folder next to MPFever.exe (launcher-....log);
-2. the folders %TEMP%\mpfever\Hote-... or Client-... of that session (zip them);
+2. the folders %TEMP%\mpfever\Host-... or Client-... of that session (zip them);
 3. if the game crashed: the newest files of
    C:\Program Files (x86)\Steam\userdata\<your id>\3493540\local\crash_dump\
 

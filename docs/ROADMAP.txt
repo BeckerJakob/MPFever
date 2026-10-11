@@ -13,18 +13,21 @@ it is stable enough.
       automatic resynchronisation from the host's savegame
   [x] Built into the game: no extra button in the game interface
 
-0.2 - Stability and easier start (this version: 0.2.5)
+0.2 - Stability and easier start
   [x] Automatic transfer of the host's savegame when joining (0.2.0)
   [x] Start from any savegame, mod added automatically (0.2.1)
   [x] Fix the slow simulation drift without limiting the processor (0.1.1)
   [x] Reconnect after a lost connection (0.2.1)
+  [x] Main cause of desyncs found and fixed: the game's Lua walked its tables in a different
+      order on every PC (0.3.4, see RESEARCH.md)
   [ ] Tests and fixes for 3 to 8 players
   [ ] Feedback from the first testers
 
 0.3 - Playing with friends
   [x] Steam invites (join through your Steam friends list) (0.2.0)
   [x] Join a session that is already running (0.2.0)
-  [ ] Player list and chat inside the game interface
+  [x] Player list and sync state inside the game, from the pause menu (0.3.4)
+  [ ] Chat inside the game interface
   [ ] Settings for the host (who may build, bulldoze, spend money)
 
 0.4 - Separate companies

@@ -4,7 +4,7 @@ Experimental cooperative multiplayer for Transport Fever 3: several players play
 
 The game starts from `MPFever.exe`; a multiplayer button in the main menu lets you host one of your savegames or join a host by IP address (the host's game is received automatically). Steam invitations are supported. Roads, tracks, signals, stations, depots, buildings and the other construction tools are replicated exactly in every game.
 
-Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL](docs/INSTALL.txt), [ROADMAP](docs/ROADMAP.txt) and [CHANGELOG](docs/CHANGELOG.txt).
+Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL](docs/INSTALL.txt), [ROADMAP](docs/ROADMAP.txt) and [CHANGELOG](docs/CHANGELOG.txt). What we learned about the engine, the causes of desyncs and what must be synchronised in each mode is in [RESEARCH](docs/RESEARCH.md).
 
 ## How it works
 
@@ -49,4 +49,4 @@ python tests\test_lockstep.py
 
 ## Status
 
-Experimental (0.2.5). The game builds supported by the native module are 40408 and 40420 (Steam). See [`docs/ROADMAP.txt`](docs/ROADMAP.txt).
+Experimental (0.3.4). The game builds supported by the native module are 40408 and 40420 (Steam). See [`docs/ROADMAP.txt`](docs/ROADMAP.txt).

@@ -9,6 +9,12 @@ MPFever - Changelog
     module now gives Lua the same seed on every game. Checked on the savegame of a report: two games left alone stay
     identical for 18 minutes of game time (three runs, every entity created and removed in the same order; before:
     apart after 6 minutes), a 10-minute session at x4 stays identical, and so do the scenarios with players' actions.
+  - NEW (thanks to SlikerDev): an MPFever window in the game, opened from a card in the pause menu: the players and
+    their link (connected, behind, not responding, loading, left), the sync state and, for the host, Steam invites.
+    It stays open while playing and can be moved or closed. The station window offers a list of fees (not shared,
+    $100 ... $50,000 per stop) instead of the - / + buttons, and follows a change at once.
+  - NEW (for developers): docs/RESEARCH.md - what we learned about the engine, the causes of desyncs and what must
+    be synchronised in co-op and with separate companies.
   - NEW (diagnostic, for developers): a full census of the game state (every component of every entity) compared
     between two games (MPFEVER_CENSUS with the "det" autotest, or the "census" scenario).
   - FIX (crash): the host's game (or a client's) could crash while loading the game of a resynchronisation, or a little
