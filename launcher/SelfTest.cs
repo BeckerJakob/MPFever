@@ -17,11 +17,11 @@ namespace MPFever
         {
             int port = 28191;
             var relay = new Relay();
-            var hostGame = new GameLink("Hote", "host");
+            var hostGame = new GameLink("Host", "host");
             var clientGame = new GameLink("Client", "client");
             relay.Received += (p, m) => hostGame.ToGame(m);
-            relay.Joined += p => relay.Send(p, Msg.Make("welcome", "Hote", "{[\"you\"]=\"" + p.Name + "\"}"));
-            hostGame.FromGame += (g, m) => { m.From = "Hote"; relay.Broadcast(m); };
+            relay.Joined += p => relay.Send(p, Msg.Make("welcome", "Host", "{[\"you\"]=\"" + p.Name + "\"}"));
+            hostGame.FromGame += (g, m) => { m.From = "Host"; relay.Broadcast(m); };
             relay.Start(port);
 
             var client = new Client();
@@ -29,7 +29,7 @@ namespace MPFever
             clientGame.FromGame += (g, m) => client.Send(m);
             client.Connect("127.0.0.1", port, "Client");
 
-            GameWrites(hostGame, "hello\tHote\t{[\"name\"]=\"Hote\"}");
+            GameWrites(hostGame, "hello\tHost\t{[\"name\"]=\"Host\"}");
             GameWrites(clientGame, "det_hash\tClient\t{[\"round\"]=0,[\"parts\"]={[\"time\"]=123,[\"txt\"]=\"a\\\"b\"}}");
             File.AppendAllText(Path.Combine(clientGame.Dir, "out.log"), "act_req" + (char)9 + "Client" + (char)9 + "{}" + (char)10, new UTF8Encoding(false));
             Thread.Sleep(800);

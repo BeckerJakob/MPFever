@@ -250,6 +250,7 @@ local function pollShares()
 		if k then t[k] = tonumber(fee) end
 	end
 	U.shares = t
+	U.shareVersion = (U.shareVersion or 0) + 1
 end
 
 local SHARE_FEES = { 0, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000 }
@@ -257,6 +258,17 @@ local SHARE_FEES = { 0, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000 }
 local function money(n)
 	local ok, s = pcall(api.util.formatMoney, n)
 	return ok and tostring(s) or tostring(n)
+end
+
+-- what the share line of a station window says, for the fee in force (nil or 0: not shared)
+local function shareText(mine, fee)
+	if fee == 0 then fee = nil end
+	if mine then
+		return fee and (T("Partagée avec les autres entreprises : ", "Shared with the other companies: ") .. money(fee) .. T(" par arrêt", " per stop"))
+			or T("Non partagée (les autres entreprises ne peuvent pas s'y arrêter)", "Not shared (the other companies cannot stop here)")
+	end
+	return fee and (T("Partagée : ", "Shared: ") .. money(fee) .. T(" par arrêt de vos véhicules", " per stop of your vehicles"))
+		or T("Non partagée : vos lignes ne peuvent pas s'y arrêter", "Not shared: your lines cannot stop here")
 end
 
 -- the share line of a station window: what it costs the other companies to stop there (nil when not a station)
@@ -268,15 +280,18 @@ local function shareInfo(e, owner)
 	local fee = C.shareFee(U.shares, key)
 	if fee <= 0 then fee = nil end
 	local mine = U.myCo ~= nil and U.coMap and U.coMap[owner] == U.myCo
-	local text
-	if mine then
-		text = fee and (T("Partagée avec les autres entreprises : ", "Shared with the other companies: ") .. money(fee) .. T(" par arrêt", " per stop"))
-			or T("Non partagée (les autres entreprises ne peuvent pas s'y arrêter)", "Not shared (the other companies cannot stop here)")
-	else
-		text = fee and (T("Partagée : ", "Shared: ") .. money(fee) .. T(" par arrêt de vos véhicules", " per stop of your vehicles"))
-			or T("Non partagée : vos lignes ne peuvent pas s'y arrêter", "Not shared: your lines cannot stop here")
+	return { key = key, fee = fee or 0, text = shareText(mine, fee), canEdit = mine }
+end
+
+-- the choices of the share list: not shared, then the usual fees (and the fee in force, when it is another one)
+local function shareChoices(current)
+	local fees, listed = {}, false
+	for _, f in ipairs(SHARE_FEES) do
+		fees[#fees + 1] = f
+		if f == current then listed = true end
 	end
-	return { key = key, fee = fee or 0, text = text, canEdit = mine }
+	if not listed and type(current) == "number" and current > 0 then fees[#fees + 1] = current; table.sort(fees) end
+	return fees
 end
 
 -- the station group of what the line tool points at (a station, its construction, its group, or the street of a street stop)
@@ -417,25 +432,55 @@ local function installOwnerLine(react, builtin)
 		return
 	end
 	local Wrap = react.RegisterRecipe("MPFeverOwnerLine", function(p)
+		-- the fee changes while the window is open (this player's choice, or the owner's): read again from shares.txt
+		local ver = react.useState(U.shareVersion or 0)
+		local pending = react.useState(nil)   -- the fee just chosen, until every game has applied it: { fee, at }
+		react.onStepTimer(function()
+			local v = U.shareVersion or 0
+			if ver:old() ~= v then ver:set(v) end
+			local pd = pending:old()
+			if pd and ((U.shares and U.shares[p.shareKey] or 0) == pd.fee or os.clock() - pd.at > 10) then pending:set(nil) end
+		end, 0.5)
 		local inner = nil
 		if p.innerRecipe then inner = p.innerRecipe(p.innerParam)
 		elseif p.innerBuiltin then inner = p.innerBuiltin({ entity = p.innerParam and p.innerParam.keyEntity }) end
 		local children = { builtin.TextView { meta = { class = "font-scale-body" }, text = p.ownerText } }
-		if p.shareText then
-			local row = { builtin.TextView { meta = { class = "font-scale-body" }, text = p.shareText } }
+		if p.shareKey then
+			local fee = U.shares and U.shares[p.shareKey] or 0
 			if p.shareEdit then
-				-- the owner sets the fee per stop of the other companies' vehicles (0: not shared)
-				local idx = 1
-				for i, f in ipairs(SHARE_FEES) do if f <= (p.shareFee or 0) then idx = i end end
+				-- the owner chooses the fee per stop of the other companies' vehicles (0: not shared)
+				local pd = pending:old()
+				local shown = pd and pd.fee or fee
+				local items = {}
+				for _, f in ipairs(shareChoices(shown)) do
+					items[#items + 1] = builtin.ComboBoxItem {
+						value = f,
+						content = builtin.TextView { meta = { class = "font-scale-body" },
+							text = f == 0 and T("Non partagée", "Not shared") or (money(f) .. T(" par arrêt", " per stop")) },
+					}
+				end
 				local key = p.shareKey
-				row[#row + 1] = builtin.Button { content = builtin.TextView { text = " - " }, onClick = function()
-					sendShare(key, SHARE_FEES[math.max(1, idx - 1)])
-				end }
-				row[#row + 1] = builtin.Button { content = builtin.TextView { text = " + " }, onClick = function()
-					sendShare(key, SHARE_FEES[math.min(#SHARE_FEES, idx + 1)])
-				end }
+				children[#children + 1] = builtin.BoxLayout { orientation = builtin.type.Orientation.Horizontal, children = {
+					builtin.TextView { meta = { class = "font-scale-body" }, text = T("Partage avec les autres entreprises :  ", "Sharing with the other companies:  ") },
+					builtin.ComboBox {
+						value = shown,
+						items = items,
+						onValueChange = function(v)
+							v = tonumber(v)
+							if v == nil or v == shown then return end
+							sendShare(key, v)
+							pending:set({ fee = v, at = os.clock() })
+						end,
+					},
+				} }
+				local note
+				if pd then note = T("Modification en cours pour tous les joueurs…", "Applying for every player…")
+				elseif shown > 0 then note = T("Leurs véhicules paient ce montant à chaque arrêt ici ; vos lignes s'y arrêtent gratuitement.", "Their vehicles pay this at every stop here; your own lines stop for free.")
+				else note = T("Les autres entreprises ne peuvent pas s'arrêter ici.", "The other companies cannot stop here.") end
+				children[#children + 1] = builtin.TextView { meta = { class = "font-scale-body" .. (pd and ", info" or "") }, text = note }
+			else
+				children[#children + 1] = builtin.TextView { meta = { class = "font-scale-body" }, text = shareText(false, fee) }
 			end
-			children[#children + 1] = builtin.BoxLayout { orientation = builtin.type.Orientation.Horizontal, children = row }
 		end
 		children[#children + 1] = inner
 		return builtin.BoxLayout { orientation = builtin.type.Orientation.Vertical, children = children }
@@ -460,6 +505,326 @@ local function installOwnerLine(react, builtin)
 		return w
 	end
 	log("companies: the entity windows show their owner")
+end
+
+-- ---------------------------------------------------------------- the session: players, their link, the sync state
+-- MPFever.exe writes mp_status.txt every second (the host's view, relayed to every player): "key=value" lines and one
+-- "p=id TAB name TAB state TAB lag TAB role" line per player. It is shown in MPFever's own window, opened from a card that
+-- MPFever puts in the game's pause menu (no button in the game's HUD).
+
+local function pollStatus()
+	local now = os.clock()
+	if U.statusAt and now - U.statusAt < 0.5 then return end
+	U.statusAt = now
+	local f = C.IO.open(C.DIR .. C.BS .. "mp_status.txt", "rb")
+	if not f then return end
+	local txt = f:read("*a") or ""
+	f:close()
+	if txt == U.statusTxt then return end
+	U.statusTxt = txt
+	local st = { players = {} }
+	for line in txt:gmatch("[^" .. C.NL .. "]+") do
+		line = line:gsub(C.CR, "")
+		local k, v = line:match("^([%w_]+)=(.*)$")
+		if k == "p" then
+			local f1, f2, f3, f4, f5 = v:match("^([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "?(.*)$")
+			if f1 then st.players[#st.players + 1] = { id = f1, name = f2, state = f3, lag = tonumber(f4) or 0, role = f5 } end
+		elseif k then
+			st[k] = v
+		end
+	end
+	U.status = st
+	U.statusVersion = (U.statusVersion or 0) + 1
+end
+
+-- the status is older than a few seconds: MPFever.exe no longer writes it
+local function statusStale(st)
+	local t = st and tonumber(st.t)
+	return t ~= nil and os.time() - t > 6
+end
+
+-- the sync line: text and colour class
+local function syncLine(st)
+	local sync = st and st.sync or "none"
+	local parts = (st and st.parts and st.parts ~= "") and (" (" .. st.parts .. ")") or ""
+	if sync == "ok" then
+		local age = tonumber(st.age) or -1
+		return T("Synchrone", "In sync") .. (age >= 0 and ("  ·  " .. C.Tf("vérifiée il y a %s s", "checked %s s ago", age)) or ""), "success"
+	elseif sync == "drift" then
+		return T("Légère dérive", "Slight drift") .. parts .. "  ·  " .. T("corrigée si elle dure", "corrected if it lasts"), "warning"
+	elseif sync == "desync" then
+		return T("Désynchronisé", "Out of sync") .. parts .. "  ·  " .. T("la partie de l'hôte est rechargée si l'écart persiste", "the host's game is reloaded if it persists"), "error"
+	elseif sync == "resync" then
+		return T("Resynchro…", "Resyncing…") .. "  ·  " .. T("rechargement de la partie de l'hôte", "reloading the host's game"), "info"
+	end
+	return T("pas encore vérifiée", "not checked yet"), nil
+end
+
+local PLAYER_STATES = {
+	ok = function() return T("connecté", "connected"), nil end,
+	slow = function(pl) return C.Tf("%s pas de retard", "%s steps behind", pl.lag), "warning" end,
+	noresp = function() return T("ne répond plus", "not responding"), "error" end,
+	loading = function() return T("charge la partie de l'hôte…", "loading the host's game…"), "info" end,
+	joining = function() return T("se connecte…", "connecting…"), "info" end,
+	left = function() return T("a quitté la partie", "left the game"), "negative" end,
+}
+
+-- a player's line: name, (you), host, its state; and the colour class
+local function playerLine(pl, me)
+	local text = pl.name
+	if pl.id == me then text = text .. T(" (vous)", " (you)") end
+	if pl.role == "host" then text = text .. "  –  " .. T("hôte", "host") end
+	local state, cls = (PLAYER_STATES[pl.state] or PLAYER_STATES.ok)(pl)
+	return text .. "  ·  " .. state, cls
+end
+
+-- the players still in the session (those who left are listed too, for a while)
+local function playerCount(st)
+	local n = 0
+	for _, pl in ipairs(st and st.players or {}) do if pl.state ~= "left" then n = n + 1 end end
+	return n
+end
+
+-- this game's own link to the host, when it is not fine (nil otherwise)
+local function linkLine(st)
+	if not st then return T("En attente de MPFever.exe…", "Waiting for MPFever.exe…"), "info" end
+	local attempt = tonumber(st.attempt) or 0
+	if st.conn == "lost" then
+		if attempt > 0 then return C.Tf("Connexion à l'hôte perdue : reconnexion (essai %s)…", "Connection to the host lost: reconnecting (attempt %s)…", attempt), "error" end
+		return T("Connexion à l'hôte perdue…", "Connection to the host lost…"), "error"
+	elseif st.conn == "gone" then
+		return T("Connexion à l'hôte perdue (reconnexion impossible).", "Connection to the host lost (could not reconnect)."), "error"
+	elseif statusStale(st) then
+		return T("Pas de nouvelles de MPFever.exe depuis quelques secondes.", "No news from MPFever.exe for a few seconds."), "warning"
+	end
+	return nil
+end
+
+-- the host asks MPFever.exe to send Steam invitations (as the main menu's MPFever window does)
+local function requestInvite()
+	U.reqSeq = (U.reqSeq or 0) + 1
+	local f = C.IO.open(C.DIR .. C.BS .. "menu_req.txt", "wb")
+	if not f then log("session: cannot write menu_req.txt") return end
+	f:write(tostring(os.time()) .. ".ui" .. U.reqSeq .. C.TAB .. "invite" .. C.TAB .. C.TAB .. (C.NAME or "") .. C.TAB .. C.NL)
+	f:close()
+end
+
+-- re-renders its recipe when the status changes, and once more when it gets old
+local function useStatus(react)
+	local key = function() return tostring(U.statusVersion or 0) .. (statusStale(U.status) and "s" or "") end
+	local ver = react.useState(key())
+	react.onStepTimer(function()
+		local k = key()
+		if ver:old() ~= k then ver:set(k) end
+	end, 0.5)
+	return U.status
+end
+
+local function installSession(react, builtin)
+	if U.sessionInstalled then return end
+	U.sessionInstalled = true
+	local V, H = builtin.type.Orientation.Vertical, builtin.type.Orientation.Horizontal
+	local function text(t, class, cls)
+		return builtin.TextView { meta = { class = (class or "font-scale-body") .. (cls and (", " .. cls) or "") }, text = t }
+	end
+
+	-- the game's own colours (default_colors.gres), with fallbacks when they cannot be read
+	local FALLBACK = {
+		Ok = { 0.42, 0.82, 0.45, 1 }, Warning = { 1, 0.76, 0.25, 1 }, Error = { 1, 0.38, 0.33, 1 }, Info = { 0.45, 0.72, 1, 1 },
+		Negative = { 1, 0.38, 0.33, 1 }, NeutralLight = { 0.72, 0.74, 0.77, 1 }, NeutralLightest = { 1, 1, 1, 1 },
+		BaseDarkMedium = { 0.16, 0.18, 0.21, 1 }, AccentVeryDark = { 0.07, 0.24, 0.33, 1 },
+	}
+	local CLASS_COLOR = { success = "Ok", warning = "Warning", error = "Error", info = "Info", negative = "Negative" }
+	-- (the .gres colours are plain tables { r, g, b, a }: a style wants a Vec4f; alpha replaces the colour's own)
+	local colorCache = {}
+	local function color(name, alpha)
+		local key = name .. "/" .. tostring(alpha)
+		if colorCache[key] ~= nil then return colorCache[key] or nil end
+		local okR, raw = pcall(function()
+			local d = api.gui.genericRep.get(api.gui.genericRep.find("::/gui/main/default_colors.gres")).data
+			return d[name]
+		end)
+		if not (okR and type(raw) == "table" and tonumber(raw[1])) then raw = FALLBACK[name] end
+		local c = nil
+		if raw then
+			local ok, v = pcall(function() return api.type.Vec4f.new(raw[1], raw[2], raw[3], alpha or raw[4] or 1) end)
+			if ok then c = v end
+		end
+		colorCache[key] = c or false
+		return c
+	end
+	local function classColor(cls) return color(CLASS_COLOR[cls or ""] or "NeutralLightest") end
+	-- an inline style (meta.styleSheet, as the game's own windows use it); nil when the API refuses
+	local function style(t)
+		local ok, st = pcall(function()
+			local st = api.gui.StyleSheet.new()
+			if t.color then st.color = t.color end
+			if t.bg then st.backgroundColor1 = t.bg end
+			if t.size then st.size = api.type.Vec2f.new(t.size[1], t.size[2]) end
+			if t.image then
+				local n = api.gui.NinePatch.new()
+				n.fileName = t.image
+				if t.nine then n.horizontal = t.nine; n.vertical = t.nine end
+				st.backgroundImage1 = n
+			end
+			return st
+		end)
+		return ok and st or nil
+	end
+	-- a small round dot in a status colour (the game's line colour dot)
+	local function dot(cls)
+		return builtin.Component { meta = { styleSheet = style { size = { 14, 14 }, image = "::/gui/line_vehicle_mgmt/icons/line_surface.tga", bg = classColor(cls) } } }
+	end
+	local function icon(path, size)
+		return builtin.ImageView { path = path, meta = { styleSheet = style { size = { size, size } } } }
+	end
+	local ICON_PLAYERS = "::/gui/statistics/icons/symbol_person_multiple.tga"
+	local ICON_SYNC = "::/gui/menu/icons/symbol_arrows_refresh.tga"
+	local ICON_PERSON = "::/gui/entity_window/icons/symbol_person.tga"
+	local function row(children) return builtin.BoxLayout { orientation = H, children = children } end
+	local function section(path, title) return row { icon(path, 26), text("  " .. title, "font-scale-title-4") } end
+	local function muted(t) return builtin.TextView { meta = { class = "font-scale-body", styleSheet = style { color = color("NeutralLight") } }, text = t } end
+
+	-- MPFever's window: stays open while playing, can be moved and closed
+	U.SessionWindow = react.RegisterWrapperRecipe("MPFeverSessionWindow", builtin.Window, function(wp)
+		local st = useStatus(react)
+		local rows = {}
+		if st and st.host then
+			rows[#rows + 1] = muted(C.Tf("Hôte : %s", "Host: %s", st.host) .. "  ·  "
+				.. (st.mode == "separate" and T("Une entreprise par joueur", "One company per player") or T("Une entreprise pour tous", "One company for everybody")))
+		end
+		local link, linkCls = linkLine(st)
+		if link then rows[#rows + 1] = row { dot(linkCls), text("  " .. link, nil, linkCls) } end
+		rows[#rows + 1] = text(" ")
+		rows[#rows + 1] = section(ICON_SYNC, T("Synchronisation", "Sync"))
+		local sync, syncCls = syncLine(st)
+		rows[#rows + 1] = row { dot(syncCls), text("  " .. sync, nil, syncCls) }
+		local desyncs = tonumber(st and st.desyncs) or 0
+		if desyncs > 0 then rows[#rows + 1] = muted(C.Tf("%s désynchronisation(s) depuis le début", "%s desync(s) since the start", desyncs)) end
+		rows[#rows + 1] = text(" ")
+		rows[#rows + 1] = section(ICON_PLAYERS, T("Joueurs", "Players") .. "  (" .. playerCount(st) .. ")")
+		for _, pl in ipairs(st and st.players or {}) do
+			local line, cls = playerLine(pl, st.me)
+			rows[#rows + 1] = row { icon(ICON_PERSON, 22), text("  " .. line, nil, cls) }
+		end
+		if st and st.invite == "1" and st.me and st.players then
+			local host = false
+			for _, pl in ipairs(st.players) do if pl.id == st.me and pl.role == "host" then host = true end end
+			if host then
+				rows[#rows + 1] = text(" ")
+				rows[#rows + 1] = builtin.Button { meta = { class = "primary" }, content = text(T("Inviter des amis Steam", "Invite Steam friends")), onClick = requestInvite }
+			end
+		end
+		return builtin.Window {
+			title = "MPFever – " .. T("Multijoueur", "Multiplayer"),
+			id = "window.mpfever.session",
+			initialX = 0.85,
+			initialY = 0.3,
+			movable = true,
+			closable = true,
+			onClose = wp.onClose,
+			-- wide enough for the title and the longest lines (the window takes its content's size)
+			content = builtin.Component { meta = { styleSheet = style { size = { 540, -1 } } }, layout = builtin.BoxLayout { orientation = V, children = rows } },
+		}
+	end)
+
+	local function openSession(commonParams)
+		local ok, err = pcall(function()
+			local wc = commonParams.windowContainer:get():getApi()
+			wc.addSingletonWindow(U.SessionWindow, {
+				onClose = function() commonParams.windowContainer:get():getApi().removeAllWindows(U.SessionWindow) end,
+			})
+		end)
+		if not ok then log("session window not opened: " .. tostring(err)) return end
+		pcall(commonParams.onClose)   -- back to the game: the window stays open
+	end
+
+	-- the card in the pause menu: drawn as the menu's own cards (classes of the pause page: dark card, shadow,
+	-- accent on hover), with an icon, a summary, and a click opens the window
+	local CARD_NINE = { 0, 16, 48, 64 }   -- main_menu_sizes.ninePatchHorizontal/Vertical
+	local Card = react.RegisterRecipe("MPFeverPauseCard", function(p)
+		local st = useStatus(react)
+		local hover = react.useState(false)
+		local sync, syncCls = syncLine(st)
+		local link, linkCls = linkLine(st)
+		local status, cls = link or sync, link and linkCls or syncCls
+		local info = builtin.BoxLayout { orientation = V, children = {
+			text("MPFever  –  " .. T("Multijoueur", "Multiplayer"), "font-scale-title-4"),
+			row { dot(cls), builtin.TextView { meta = { class = "font-scale-body" .. (cls and (", " .. cls) or ""), styleSheet = style { color = classColor(cls) } }, text = "  " .. status } },
+			muted(C.Tf("%s joueur(s) dans la partie", "%s player(s) in the game", playerCount(st)) .. "   ·   " .. T("Afficher pendant la partie  ›", "Show while playing  ›")),
+		} }
+		-- a recipe's result must be a layout (the game refuses a bare button here)
+		return builtin.BoxLayout { children = {
+			builtin.Button {
+				-- the menu card's look, set here: the pause page's CSS does not reach the card (background,
+				-- colour 90 % opaque as the game's cards, accent colour under the mouse)
+				meta = {
+					class = "burger-menu, top-right, ani-pulse",
+					styleSheet = style { size = { 600, 112 }, image = "::/gui/menu/design/main_menu_card_top_right_content_mask.tga", nine = CARD_NINE,
+						bg = color(hover:old() and "AccentVeryDark" or "BaseDarkMedium", 0.9) },
+					onMouseOver = function(h) if hover:old() ~= (h and true or false) then hover:set(h and true or false) end end,
+				},
+				content = builtin.Component { layout = builtin.BoxLayout { orientation = H, children = {
+					builtin.Component { meta = { styleSheet = style { size = { 84, -1 } } }, layout = builtin.BoxLayout { children = { builtin.ImageView { path = ICON_PLAYERS } } } },
+					builtin.Component { layout = info },
+				} } },
+				onClick = function() openSession(p.commonParams) end,
+			},
+		} }
+	end)
+
+	-- the pause menu's main page is wrapped: drawn as usual, with the card floating at its right
+	-- (the game's UI state has no rawget, and maybe no debug library: every step is guarded)
+	local okR, rr = pcall(function() return _react end)
+	if not (okR and type(rr) == "table" and type(rr.recipeReplace) == "table" and type(rr.originalRecipeFn) == "table") then
+		log("session: the pause menu cannot be extended (no _react)")
+		return
+	end
+	local id, how = nil, nil
+	-- 0. the id caught while the page registered (mpfever_pause.lua, loaded by the native module in front of pause_menu.tl)
+	local okP, pid = pcall(function() return package.loaded["mpfever_pause_id"] end)
+	if okP and pid ~= nil and rr.originalRecipeFn[pid] then id, how = pid, "native hook" end
+	-- 1. the recipe's id from react.lua's own table of names (the only upvalue of GetRecipeName): no side effect
+	local okD, dbg = pcall(function() return debug end)
+	if id then
+		-- found
+	elseif okD and type(dbg) == "table" and type(dbg.getupvalue) == "function" and type(react.GetRecipeName) == "function" then
+		for i = 1, 8 do
+			local okU, name, names = pcall(dbg.getupvalue, react.GetRecipeName, i)
+			if not okU or name == nil then break end
+			if type(names) == "table" then
+				for fn, n in pairs(names) do
+					if n == "PauseMainPage" then
+						local okI, rid = pcall(react.GetRecipeId, fn)
+						if okI and rid ~= nil and rr.originalRecipeFn[rid] then id, how = rid, "names table" end
+					end
+				end
+			end
+			if id then break end
+		end
+	else
+		log("session: no debug library in the UI state")
+	end
+	-- 2. the id the engine gives the name, only when it is the id of an existing recipe (ids given per name)
+	if not id then
+		local okM, rid = pcall(function() return api.gui.react.detail.makeRecipeId("PauseMainPage") end)
+		if okM and rid ~= nil and rr.originalRecipeFn[rid] then id, how = rid, "recipe name" end
+	end
+	if not id then
+		log("session: the pause menu's page was not found: MPFever's window cannot be opened in game")
+		return
+	end
+	local original = rr.originalRecipeFn[id]
+	rr.recipeReplace[id] = function(params, ...)
+		if not C.ACTIVE then return original(params, ...) end
+		return builtin.FloatingLayout {
+			children = {
+				builtin.FloatingLayoutChild { h = -1, v = -1, item = builtin.Component { mouseTransparent = true, layout = builtin.BoxLayout { children = { original(params, ...) } } } },
+				builtin.FloatingLayoutChild { h = 0.97, v = 0.5, item = Card { commonParams = params and params.commonParams } },
+			},
+		}
+	end
+	log("session: MPFever's card added to the pause menu (page found by " .. tostring(how) .. ")")
 end
 
 -- results of our own actions, written by the game-script bridge after the simulation applied them
@@ -682,6 +1047,11 @@ local function tick(pendingState)
 		end
 	end
 	pcall(pollLoanView)
+	pcall(pollStatus)
+	if not U.sessionInstalled and U.react and U.builtin then
+		local oks, errs = pcall(installSession, U.react, U.builtin)
+		if not oks then log("session: not installed: " .. tostring(errs)) end
+	end
 	local okc, errc = pcall(pollControl)
 	if not okc then log("control poll failed: " .. tostring(errc)) end
 	if not U.stepping then U.stepping = true; log("periodic UI hook active") end

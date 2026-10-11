@@ -441,6 +441,20 @@ namespace MPFever
             catch (Exception e) { Log.W("lang.txt: " + e.Message); }
         }
 
+        /// <summary>The session as the in-game MPFever window shows it (mp_status.txt: key=value lines and one
+        /// "p=id TAB name TAB state TAB lag TAB role" line per player), replaced in one go.</summary>
+        public void WriteStatus(string text)
+        {
+            var tmp = Path.Combine(Dir, "mp_status.tmp");
+            var dst = Path.Combine(Dir, "mp_status.txt");
+            lock (writeGate)
+            {
+                File.WriteAllText(tmp, text, Utf8);
+                try { if (File.Exists(dst)) File.Replace(tmp, dst, null); else File.Move(tmp, dst); }
+                catch { File.Copy(tmp, dst, true); }
+            }
+        }
+
         public void WriteMenuState(IDictionary<string, string> st)
         {
             var sb = new StringBuilder();
@@ -526,7 +540,7 @@ namespace MPFever
                             if (m != null) FromGame?.Invoke(this, m);
                         }
                     }
-                    catch (Exception e) { Log.W($"[{Name}] lecture {Path.GetFileName(src.Path)} : {e.Message}"); Thread.Sleep(500); }
+                    catch (Exception e) { Log.Warn(L.F("[{0}] lecture {1} : {2}", "[{0}] reading {1}: {2}", Name, Path.GetFileName(src.Path), e.Message)); Thread.Sleep(500); }
                 }
                 Thread.Sleep(5);
             }
@@ -588,6 +602,9 @@ namespace MPFever
 
         public int Count { get { lock (peers) return peers.Count; } }
 
+        /// <summary>The players connected right now (name#id), including those whose game is not ready yet.</summary>
+        public string[] PeerNames() { lock (peers) return peers.Where(p => p.Name != null).Select(p => p.Name).ToArray(); }
+
         public void Start(int port)
         {
             listener = new TcpListener(IPAddress.Any, port);
@@ -605,7 +622,7 @@ namespace MPFever
                     var c = listener.AcceptTcpClient();
                     c.NoDelay = true;
                     var p = new Peer { Id = nextId++, Tcp = c, Writer = new StreamWriter(c.GetStream(), new UTF8Encoding(false)) { NewLine = "\n", AutoFlush = true } };
-                    p.Name = "joueur" + p.Id;
+                    p.Name = "Player" + p.Id;
                     lock (peers) peers.Add(p);
                     Log.Dim(L.F("Connexion entrante de {0} (id {1})", "Incoming connection from {0} (id {1})", c.Client.RemoteEndPoint, p.Id));
                     new Thread(() => ReadLoop(p)) { IsBackground = true, Name = "Relay peer " + p.Id }.Start();
@@ -642,7 +659,7 @@ namespace MPFever
         static string Sanitize(string s)
         {
             var t = new string((s ?? "").Where(ch => char.IsLetterOrDigit(ch) || ch == '_' || ch == '-').ToArray());
-            return t.Length == 0 ? "joueur" : (t.Length > 24 ? t.Substring(0, 24) : t);
+            return t.Length == 0 ? "Player" : (t.Length > 24 ? t.Substring(0, 24) : t);
         }
 
         /// <summary>A player who comes back (reconnection) under the same name: the old connection, which may still look
