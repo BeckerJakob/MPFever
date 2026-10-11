@@ -42,7 +42,7 @@ namespace MPFever
 
     sealed class MainForm : Form
     {
-        public const string Version = "0.3.6-experimental";
+        public const string Version = "0.3.7-experimental";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -745,19 +745,21 @@ namespace MPFever
                 // Steam: friends can join from their friends list or an invitation
                 new Thread(() =>
                 {
-                    steamConnect = "+mpfever_connect " + PublicAddress() + ":" + port;
+                    // the public IPv4 and, when this PC has one, its IPv6 (behind DS-Lite only the IPv6 reaches it)
+                    var v6 = LoadSettings().TryGetValue("ipv6", out var i6) && i6.Trim() == "0" ? new List<string>() : NetAddr.PublicIPv6List();
+                    steamConnect = "+mpfever_connect " + PublicAddress() + ":" + port + string.Concat(v6.Select(a => "," + NetAddr.Show(a, port)));
                     SteamCtl("presence", steamConnect);
                     Log.Ok(T("Steam : invitations possibles (", "Steam: invitations enabled (") + steamConnect + ")");
                     MenuStatus();
                 }) { IsBackground = true, Name = "Steam presence" }.Start();
                 menuPhase = "hosting";
-                menuText = F("Partie hébergée (« {0} »). Les autres joueurs rejoignent avec votre adresse IP, port {1} (TCP, à rediriger sur votre box pour Internet). Adresse locale : {2}", "Game hosted (« {0} »). Other players join with your IP address, port {1} (TCP, to forward on your router for the Internet). Local address: {2}", arg, port, LocalAddresses());
+                menuText = F("Partie hébergée (« {0} »). Les autres joueurs rejoignent avec votre adresse IP, port {1} (TCP, à rediriger sur votre box pour Internet). Adresse locale : {2}", "Game hosted (« {0} »). Other players join with your IP address, port {1} (TCP, to forward on your router for the Internet). Local address: {2}", arg, port, LocalAddresses() + string.Concat(NetAddr.PublicIPv6List().Select(a6 => ", " + NetAddr.Show(a6, port))));
                 MenuStatus();
             }
             else if (cmd == "join")
             {
                 if (hostGame != null) return;
-                string host = arg.Trim();
+                string host = arg.Trim();   // one address or several (IPv4 and IPv6), each with or without its port
                 if (clients.Count > 0 || menuGame.InGame)
                 {
                     // the same host asked twice (at startup, the command line and a Steam invitation)
@@ -768,17 +770,15 @@ namespace MPFever
                 }
                 joinedAddr = host;
                 int port = (int)portBox.Value;
-                int c = host.LastIndexOf(':');
-                if (c > 0 && int.TryParse(host.Substring(c + 1), out int p2)) { port = p2; host = host.Substring(0, c); }
                 SaveSetting("addr", arg.Trim());
                 menuGame.SetIdentity(name, "client");
-                menuPhase = "connecting"; menuText = F("Connexion à {0}:{1}...", "Connecting to {0}:{1}...", host, port); MenuStatus();
+                menuPhase = "connecting"; menuText = F("Connexion à {0}...", "Connecting to {0}...", NetAddr.First(host, port)); MenuStatus();
                 try { StartClient(name, host, port, false, menuGame); }
                 catch (Exception e)
                 {
                     clients.Clear();
                     games.Remove(menuGame); games.Add(menuGame);
-                    menuPhase = "error"; menuText = F("Connexion impossible à {0}:{1} : ", "Cannot connect to {0}:{1}: ", host, port) + e.Message; MenuStatus();
+                    menuPhase = "error"; menuText = F("Connexion impossible à {0} : ", "Cannot connect to {0}: ", NetAddr.First(host, port)) + e.Message; MenuStatus();
                     return;
                 }
                 menuPhase = "connected"; menuText = T("Connecté. L'hôte prépare sa partie...", "Connected. The host is preparing its game..."); MenuStatus();
@@ -1161,11 +1161,18 @@ namespace MPFever
                     }) { IsBackground = true, Name = "Reconnect" }.Start();
                 };
             };
-            // the in-game chat: this player's messages go to the host, which sends them to everybody
-            int chatGen = sessionGen;
+            var first = new Client();
+            wire(first);
+            first.Connect(host, port, name);
+            lock (clients) clients.Add(first);
+            current = first;
+            // the in-game chat: this player's messages go to the host, which sends them to everybody. Started once the
+            // connection is up, and only one at a time: a join that failed before (timeout, wrong address) must not leave
+            // a reader behind that takes the messages and marks them unsent
+            int chatGen = sessionGen, chatMine = ++chatReaders;
             new Thread(() =>
             {
-                while (chatGen == sessionGen && !clientCancelled)
+                while (chatGen == sessionGen && chatMine == chatReaders && !clientCancelled)
                 {
                     Thread.Sleep(250);
                     foreach (var line in game.ReadChatOut())
@@ -1178,11 +1185,6 @@ namespace MPFever
                     }
                 }
             }) { IsBackground = true, Name = "Chat" }.Start();
-            var first = new Client();
-            wire(first);
-            first.Connect(host, port, name);
-            lock (clients) clients.Add(first);
-            current = first;
             if (launch) game.Launch(gameDir);
         }
 
@@ -1271,6 +1273,7 @@ namespace MPFever
 
         // ---------------------------------------------------------------- in-game chat
 
+        int chatReaders;   // the chat reader of the latest client session (a newer join stops the older one)
         readonly List<Msg> chatLog = new List<Msg>();   // the last messages, for players who join later
         long chatId;
 

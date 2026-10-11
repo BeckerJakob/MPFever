@@ -40,7 +40,7 @@ namespace MPFever
             Log.W("client in.log: " + clientIn.Replace("\n", " | "));
             var parsed = LuaLit.Show(LuaLit.Parse("{[\"round\"]=0,[\"parts\"]={[\"time\"]=123,[\"txt\"]=\"a\\\"b\"}}"));
             Log.W("parse: " + parsed);
-            bool ok = hostIn.Contains("act_req" + (char)9 + "Client#1") && hostIn.Contains("det_hash\tClient#1\t") && clientIn.Contains("welcome\tHote") && clientIn.Contains("hello\tHote") && parsed == "{parts={time=123,txt=a\"b},round=0}";
+            bool ok = hostIn.Contains("act_req" + (char)9 + "Client#1") && hostIn.Contains("det_hash\tClient#1\t") && clientIn.Contains("welcome\tHost") && clientIn.Contains("hello\tHost") && parsed == "{parts={time=123,txt=a\"b},round=0}";
             Log.W(ok ? "SELFTEST OK" : "SELFTEST FAILED");
             client.Dispose(); relay.Dispose();
             return ok ? 0 : 1;
