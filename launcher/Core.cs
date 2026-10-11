@@ -590,8 +590,20 @@ namespace MPFever
 
         public void Start(int port)
         {
-            listener = new TcpListener(IPAddress.Any, port);
-            listener.Start();
+            // IPv4 and IPv6 on one socket (players behind DS-Lite, without a public IPv4 of their own, are reached over
+            // IPv6); IPv4 only where the PC has no IPv6
+            try
+            {
+                listener = new TcpListener(IPAddress.IPv6Any, port);
+                listener.Server.DualMode = true;
+                listener.Start();
+            }
+            catch (Exception)
+            {
+                try { listener?.Stop(); } catch { }
+                listener = new TcpListener(IPAddress.Any, port);
+                listener.Start();
+            }
             new Thread(AcceptLoop) { IsBackground = true, Name = "Relay accept" }.Start();
             Log.W(L.F("Hôte : écoute TCP sur le port {0}", "Host: listening on TCP port {0}", port));
         }
@@ -691,14 +703,45 @@ namespace MPFever
         public event Action<Msg> Received;
         public event Action Closed;
 
+        /// <summary>Connects to the host. host may list several addresses (a Steam invitation gives the host's IPv4 and
+        /// IPv6 addresses, "1.2.3.4:28090,[2a02:...]:28090"); each one may carry its port, else port. IPv6 is tried first:
+        /// a host behind DS-Lite is only reachable that way.</summary>
         public void Connect(string host, int port, string name)
         {
-            tcp = new TcpClient { NoDelay = true };
-            tcp.Connect(host, port);
+            var targets = new List<IPEndPoint>();
+            var errors = new List<string>();
+            foreach (var t in NetAddr.Parse(host, port))
+            {
+                if (IPAddress.TryParse(t.Key, out var ip)) { targets.Add(new IPEndPoint(ip, t.Value)); continue; }
+                try { foreach (var a in Dns.GetHostAddresses(t.Key)) targets.Add(new IPEndPoint(a, t.Value)); }
+                catch (Exception e) { errors.Add(NetAddr.Show(t.Key, t.Value) + " : " + e.Message); }
+            }
+            targets = targets.Where(e => e.AddressFamily == AddressFamily.InterNetworkV6).Concat(targets.Where(e => e.AddressFamily != AddressFamily.InterNetworkV6)).ToList();
+            IPEndPoint used = null;
+            foreach (var ep in targets)
+            {
+                TcpClient c = null;
+                try
+                {
+                    c = new TcpClient(ep.AddressFamily) { NoDelay = true };   // fails at once on a PC without IPv6
+                    var task = c.ConnectAsync(ep.Address, ep.Port);
+                    if (!task.Wait(TimeSpan.FromSeconds(targets.Count > 1 ? 8 : 20))) throw new TimeoutException(L.T("pas de réponse", "no answer"));
+                    tcp = c;
+                    used = ep;
+                    break;
+                }
+                catch (Exception e)
+                {
+                    try { c?.Close(); } catch { }
+                    var inner = e is AggregateException ae && ae.InnerException != null ? ae.InnerException : e;
+                    errors.Add(NetAddr.Show(ep.Address.ToString(), ep.Port) + " : " + inner.Message);
+                }
+            }
+            if (tcp == null) throw new IOException(errors.Count > 0 ? string.Join("  |  ", errors) : L.T("adresse vide", "empty address"));
             writer = new StreamWriter(tcp.GetStream(), new UTF8Encoding(false)) { NewLine = "\n", AutoFlush = true };
             Send(Msg.Make("join", name));
             new Thread(ReadLoop) { IsBackground = true, Name = "Client read" }.Start();
-            Log.Ok(L.F("Client : connecté à {0}:{1}", "Client: connected to {0}:{1}", host, port));
+            Log.Ok(L.F("Client : connecté à {0}", "Client: connected to {0}", NetAddr.Show(used.Address.ToString(), used.Port)));
         }
 
         void ReadLoop()
@@ -724,6 +767,83 @@ namespace MPFever
         }
 
         public void Dispose() { stop = true; try { tcp?.Close(); } catch { } }
+    }
+
+    /// <summary>Host addresses as players type them: "1.2.3.4:28090", "[2a02:8071::1]:28090", "2a02:8071::1" (IPv6 without
+    /// port), "name:28090", several separated by commas.</summary>
+    static class NetAddr
+    {
+        public static List<KeyValuePair<string, int>> Parse(string spec, int defaultPort)
+        {
+            var res = new List<KeyValuePair<string, int>>();
+            foreach (var raw in (spec ?? "").Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var s = raw.Trim();
+                string host = s;
+                int port = defaultPort;
+                if (s.StartsWith("["))
+                {
+                    int close = s.IndexOf(']');
+                    if (close < 0) { host = s.Trim('['); }
+                    else
+                    {
+                        host = s.Substring(1, close - 1);
+                        var rest = s.Substring(close + 1);
+                        if (rest.StartsWith(":") && int.TryParse(rest.Substring(1), out int p)) port = p;
+                    }
+                }
+                else if (s.Count(ch => ch == ':') == 1)
+                {
+                    int c = s.IndexOf(':');
+                    if (int.TryParse(s.Substring(c + 1), out int p)) { port = p; host = s.Substring(0, c); }
+                }
+                if (host.Length > 0) res.Add(new KeyValuePair<string, int>(host, port));
+            }
+            return res;
+        }
+
+        public static string Show(string host, int port) => (host.Contains(":") ? "[" + host + "]" : host) + ":" + port;
+
+        /// <summary>The first address of a list, to show it: "1.2.3.4:28090".</summary>
+        public static string First(string spec, int defaultPort)
+        {
+            var l = Parse(spec, defaultPort);
+            return l.Count == 0 ? (spec ?? "") : Show(l[0].Key, l[0].Value);
+        }
+
+        /// <summary>This PC's public IPv6 address (global, the most stable one: given by the router's DHCPv6, else not a
+        /// temporary one), or null.</summary>
+        public static string PublicIPv6()
+        {
+            try
+            {
+                var found = new List<KeyValuePair<int, IPAddress>>();
+                foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                    if (nic.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback
+                        || nic.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Tunnel) continue;
+                    foreach (var u in nic.GetIPProperties().UnicastAddresses)
+                    {
+                        var a = u.Address;
+                        if (a.AddressFamily != AddressFamily.InterNetworkV6) continue;
+                        var b = a.GetAddressBytes();
+                        if ((b[0] & 0xE0) != 0x20 || (b[0] == 0x20 && b[1] == 0x02) || a.IsIPv6Teredo) continue;   // global unicast, not 6to4 / Teredo
+                        int rank = 2;
+                        try
+                        {
+                            if (u.PrefixOrigin == System.Net.NetworkInformation.PrefixOrigin.Dhcp) rank = 0;
+                            else if (u.SuffixOrigin != System.Net.NetworkInformation.SuffixOrigin.Random) rank = 1;
+                            else if (u.AddressPreferredLifetime < 86400 * 2) rank = 3;   // a temporary address
+                        }
+                        catch { }
+                        found.Add(new KeyValuePair<int, IPAddress>(rank, a));
+                    }
+                }
+                return found.Count == 0 ? null : found.OrderBy(kv => kv.Key).First().Value.ToString();
+            }
+            catch { return null; }
+        }
     }
 
     static class GameInstall

@@ -38,9 +38,19 @@ def cs_literal(s, i):
 
 
 def lua_literal(s, i):
+    """Lua short string literal starting at s[i] (' or ") -> (text, end index)."""
     q = s[i]
-    j = s.index(q, i + 1)   # the mod's Lua code has no backslash escapes
-    return s[i + 1:j], j + 1
+    i += 1
+    out = []
+    while s[i] != q:
+        if s[i] == "\\":
+            n = s[i + 1]
+            out.append({"n": "\n", "t": "\t", "r": "\r"}.get(n, n))
+            i += 2
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out), i + 1
 
 
 def two_literals(s, i, literal, quotes):

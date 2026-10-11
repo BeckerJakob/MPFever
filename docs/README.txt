@@ -90,6 +90,12 @@ KNOWN LIMITATIONS
   MPFever is updated.
 - Without port forwarding on the host's box, players need a virtual LAN (Radmin VPN,
   ZeroTier, Tailscale) or Steam invitations will not reach the host.
+- IPv6: the host also accepts players over IPv6, and Steam invitations carry its IPv6
+  address as well. A host behind DS-Lite (no public IPv4 address of its own, as on many
+  cable connections) is reached that way when the joining player has IPv6 too and the
+  host opens TCP port 28090 for IPv6 on its router. To join by hand, type the address
+  in brackets: [2a02:...]:28090. Write  ipv6=0  in mpfever_settings.txt to leave it out
+  of invitations.
 
 
 WHAT MPFEVER CHANGES ON YOUR PC

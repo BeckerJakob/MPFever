@@ -729,31 +729,31 @@ namespace MPFever
                 // Steam: friends can join from their friends list or an invitation
                 new Thread(() =>
                 {
-                    steamConnect = "+mpfever_connect " + PublicAddress() + ":" + port;
+                    // the public IPv4 and, when this PC has one, its IPv6 (behind DS-Lite only the IPv6 reaches it)
+                    var v6 = LoadSettings().TryGetValue("ipv6", out var i6) && i6.Trim() == "0" ? null : NetAddr.PublicIPv6();
+                    steamConnect = "+mpfever_connect " + PublicAddress() + ":" + port + (v6 != null ? "," + NetAddr.Show(v6, port) : "");
                     SteamCtl("presence", steamConnect);
                     Log.Ok(T("Steam : invitations possibles (", "Steam: invitations enabled (") + steamConnect + ")");
                     MenuStatus();
                 }) { IsBackground = true, Name = "Steam presence" }.Start();
                 menuPhase = "hosting";
-                menuText = F("Partie hébergée (« {0} »). Les autres joueurs rejoignent avec votre adresse IP, port {1} (TCP, à rediriger sur votre box pour Internet). Adresse locale : {2}", "Game hosted (« {0} »). Other players join with your IP address, port {1} (TCP, to forward on your router for the Internet). Local address: {2}", arg, port, LocalAddresses());
+                menuText = F("Partie hébergée (« {0} »). Les autres joueurs rejoignent avec votre adresse IP, port {1} (TCP, à rediriger sur votre box pour Internet). Adresse locale : {2}", "Game hosted (« {0} »). Other players join with your IP address, port {1} (TCP, to forward on your router for the Internet). Local address: {2}", arg, port, LocalAddresses() + (NetAddr.PublicIPv6() is string a6 ? ", " + NetAddr.Show(a6, port) : ""));
                 MenuStatus();
             }
             else if (cmd == "join")
             {
                 if (hostGame != null || clients.Count > 0) return;
-                string host = arg.Trim();
+                string host = arg.Trim();   // one address or several (IPv4 and IPv6), each with or without its port
                 int port = (int)portBox.Value;
-                int c = host.LastIndexOf(':');
-                if (c > 0 && int.TryParse(host.Substring(c + 1), out int p2)) { port = p2; host = host.Substring(0, c); }
                 SaveSetting("addr", arg.Trim());
                 menuGame.SetIdentity(name, "client");
-                menuPhase = "connecting"; menuText = F("Connexion à {0}:{1}...", "Connecting to {0}:{1}...", host, port); MenuStatus();
+                menuPhase = "connecting"; menuText = F("Connexion à {0}...", "Connecting to {0}...", NetAddr.First(host, port)); MenuStatus();
                 try { StartClient(name, host, port, false, menuGame); }
                 catch (Exception e)
                 {
                     clients.Clear();
                     games.Remove(menuGame); games.Add(menuGame);
-                    menuPhase = "error"; menuText = F("Connexion impossible à {0}:{1} : ", "Cannot connect to {0}:{1}: ", host, port) + e.Message; MenuStatus();
+                    menuPhase = "error"; menuText = F("Connexion impossible à {0} : ", "Cannot connect to {0}: ", NetAddr.First(host, port)) + e.Message; MenuStatus();
                     return;
                 }
                 menuPhase = "connected"; menuText = T("Connecté. L'hôte prépare sa partie...", "Connected. The host is preparing its game..."); MenuStatus();
