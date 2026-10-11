@@ -141,15 +141,18 @@ namespace MPFever
         static readonly HashSet<string> CorrectedParts = new HashSet<string> { "money" };
         // game state that is never a local measure, even when it differs right after a reload (a company a game missed must be seen)
         static readonly HashSet<string> NeverLocalParts = new HashSet<string> { "companies", "money", "owners", "loans", "edges", "constructions", "lines" };
-        // slow drift of the engine's own simulation (passengers boarding, vehicle positions, the town statistics that
-        // follow): not caused by a missed action; reloaded only when it lasts, so that players are not interrupted
-        // every two minutes
+        // the simulation's own state (passengers boarding, vehicle positions, the towns and what follows them): it used to drift
+        // by itself (the game's Lua walked its tables in a different order on every PC, fixed in 0.3.4), so it was only reloaded
+        // when it lasted. The games now stay identical: a difference there comes from an action applied differently and must be
+        // corrected soon (a game that goes on with other towns can crash at the next build the others make).
         static readonly HashSet<string> DriftParts = new HashSet<string> { "vehicles", "onboard", "persons", "stocks",
             "script:towns", "script:towncargo", "script:celebrations", "script:progression", "script:industries",
             // (not the engine's drift: lane connections, crosswalks and traffic lights of the road nodes. New and little
             // proven as a check, so it only reloads when it lasts)
             "nodeConfigs" };
-        const double DriftResyncSeconds = 300;
+        const double DriftResyncSeconds = 30;
+        // the crosswalk order of a few road nodes differs between games by itself (no effect seen): reloaded only when it lasts
+        const double NodeConfigsResyncSeconds = 300;
         double driftSince = -1;
         double lastNotStartedLog = -1e9;
 
@@ -1378,7 +1381,10 @@ namespace MPFever
                             lock (clocks) clocks[m.From] = new PlayerClock { T = (long)td, Sp = sp, At = Now };
                             // every other game uses it as a barrier: none may run past the slowest player
                             int ah = t.TryGetValue("ah", out var av) && av is double ad ? (int)ad : 3;
-                            var pc = Msg.Make("peerclock", hostName, "{[\"name\"]=" + LuaLit.Quote(m.From) + ",[\"t\"]=" + (long)td + ",[\"ah\"]=" + ah + "}");
+                            // tl: that player has a terrain tool in hand (1, 2 when used in the last seconds), the others stay behind its game
+                            int tl = t.TryGetValue("tl", out var lv) && lv is double ld ? (int)ld : 0;
+                            var pc = Msg.Make("peerclock", hostName, "{[\"name\"]=" + LuaLit.Quote(m.From) + ",[\"t\"]=" + (long)td + ",[\"ah\"]=" + ah
+                                + (tl > 0 ? ",[\"tl\"]=" + tl : "") + "}");
                             lock (sendGate)
                             {
                                 if (from != null) hostGame?.ToGame(pc);
@@ -1565,7 +1571,8 @@ namespace MPFever
                 // simulation drift only: reload once it has lasted DriftResyncSeconds
                 diffStreak = 0; lastDiffKeys = "";
                 if (driftSince < 0) driftSince = Now;
-                if (Now - driftSince < DriftResyncSeconds || Now - lastResync < ResyncCooldownSeconds) return;
+                double wait = keys.All(x => x == "nodeConfigs") ? NodeConfigsResyncSeconds : DriftResyncSeconds;
+                if (Now - driftSince < wait || Now - lastResync < ResyncCooldownSeconds) return;
                 driftSince = -1;
                 int others; lock (players) others = players.Count(p => p != hostName);
                 if (others == 0) return;
