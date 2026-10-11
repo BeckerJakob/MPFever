@@ -7,6 +7,8 @@ Experimental multiplayer for Transport Fever 3. Several players play the same wo
 
 The game starts from `MPFever.exe`. A multiplayer button in the main menu lets you host one of your savegames or join a host by IP address; the host's game is received automatically. Steam invitations are supported.
 
+Enjoying MPFever? You can support its development on [Ko-fi](https://ko-fi.com/H2H717LY5N).
+
 Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL](docs/INSTALL.txt), [ROADMAP](docs/ROADMAP.txt) and [CHANGELOG](docs/CHANGELOG.txt). What we learned about the engine, the causes of desyncs and what must be synchronised in each mode is in [RESEARCH](docs/RESEARCH.md).
 
 ## Features
@@ -101,6 +103,14 @@ Experimental (0.3.4). Supported game builds:
 - **40408**: supported, but the Lua seed fix is only applied on 40420.
 
 See [`docs/ROADMAP.txt`](docs/ROADMAP.txt).
+
+## Support the project
+
+MPFever is free and open source, developed on free time. If you enjoy playing Transport Fever 3 with your friends and want to help the development, you can support it on Ko-fi:
+
+[![Support MPFever on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/H2H717LY5N)
+
+Testing and reporting problems with your logs helps just as much: thank you!
 
 ## Credits
 
