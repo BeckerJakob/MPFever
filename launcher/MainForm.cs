@@ -814,6 +814,7 @@ namespace MPFever
             lock (players) players.Clear();
             lock (clocks) clocks.Clear();
             lock (hashes) hashes.Clear();
+            lock (chatLog) { chatLog.Clear(); chatId = 0; }
             hashN = 0; syncText = "—"; actsRelayed = actRefused = actFails = desyncs = 0;
             resyncing = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = "";
             joinPending = false;
@@ -822,7 +823,8 @@ namespace MPFever
             {
                 menuGame.InGame = false;
                 foreach (var f in new[] { "in.log", "out.log", "ui.log", "started.txt", "results.log", "native_events.log", "resync_claims.txt",
-                                          "resync_pending.txt", "bindings.log", "captured.txt", "companies.txt", "shares.txt" })
+                                          "resync_pending.txt", "bindings.log", "captured.txt", "companies.txt", "shares.txt",
+                                          "chat.txt", "chat_out.txt" })
                     try { var p = Path.Combine(menuGame.Dir, f); if (File.Exists(p)) File.WriteAllText(p, ""); } catch { }
             }
             menuPhase = "idle"; menuText = ""; menuLoad = ""; menuLoadSeq = "";
@@ -1008,6 +1010,9 @@ namespace MPFever
                 lock (leftAt) leftAt.Remove(BaseName(p.Name));
                 relay.DropOlder(p);
                 relay.Send(p, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(p.Name) + ",[\"role\"]=\"client\"}"));
+                Msg[] history; lock (chatLog) history = chatLog.ToArray();
+                foreach (var c in history) relay.Send(p, c);   // the chat so far (a reconnecting player skips what it has)
+                HostChat("join", BaseName(p.Name), "");
                 BroadcastSession();
                 // started from the main menu: the new player receives the host's game (every game reloads it)
                 if (menuMode) { joinPending = true; MenuStatus(); }
@@ -1016,6 +1021,7 @@ namespace MPFever
             {
                 Log.Warn(F("{0} a quitté la session", "{0} left the session", p.Name));
                 lock (leftAt) leftAt[BaseName(p.Name)] = Now;
+                HostChat("left", BaseName(p.Name), "");
                 lock (players) players.Remove(p.Name);
                 lock (clocks) clocks.Remove(p.Name);
                 HostSend(Msg.Make("peerleft", hostName, "{[\"name\"]=" + LuaLit.Quote(p.Name) + "}"));
@@ -1050,6 +1056,7 @@ namespace MPFever
             clientCancelled = false;
             // the in-game MPFever window: the host's view of the session, and this game's own link to the host
             string myId = name, hostStatus = "";
+            long lastChatId = 0;   // the host sends its chat history again on a reconnection
             void ClientStatus(string conn, int attempt)
             {
                 try { game.WriteStatus(hostStatus + "me=" + myId + "\nconn=" + conn + "\nattempt=" + attempt + "\nt=" + UnixNow() + "\n"); }
@@ -1072,6 +1079,17 @@ namespace MPFever
                         {
                             hostStatus = text;
                             ClientStatus("ok", 0);
+                        }
+                        return;
+                    }
+                    if (m.Kind == "chatmsg")
+                    {
+                        if (LuaLit.Parse(m.Payload) is Dictionary<object, object> c && c.TryGetValue("id", out var iv) && iv is double id && (long)id > lastChatId)
+                        {
+                            lastChatId = (long)id;
+                            string S(string k) => c.TryGetValue(k, out var v) ? Convert.ToString(v, CultureInfo.InvariantCulture) : "";
+                            long.TryParse(S("t"), out long ct);
+                            game.AppendChat((long)id, ct, S("kind"), S("name"), S("text"));
                         }
                         return;
                     }
@@ -1118,6 +1136,23 @@ namespace MPFever
                     }) { IsBackground = true, Name = "Reconnect" }.Start();
                 };
             };
+            // the in-game chat: this player's messages go to the host, which sends them to everybody
+            int chatGen = sessionGen;
+            new Thread(() =>
+            {
+                while (chatGen == sessionGen && !clientCancelled)
+                {
+                    Thread.Sleep(250);
+                    foreach (var line in game.ReadChatOut())
+                    {
+                        var text = ChatClean(line);
+                        if (text.Length == 0) continue;
+                        var to = current;
+                        if (to != null) to.Send(Msg.Make("chat", name, "{[\"text\"]=" + LuaLit.Quote(text) + "}"));
+                        else game.AppendChat(0, UnixNow(), "unsent", BaseName(myId), text);
+                    }
+                }
+            }) { IsBackground = true, Name = "Chat" }.Start();
             var first = new Client();
             wire(first);
             first.Connect(host, port, name);
@@ -1207,6 +1242,43 @@ namespace MPFever
                 foreach (var kv in leftAt.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)) if (!present.Contains(kv.Key)) P(kv.Key, "left", 0);
             }
             return sb.ToString();
+        }
+
+        // ---------------------------------------------------------------- in-game chat
+
+        readonly List<Msg> chatLog = new List<Msg>();   // the last messages, for players who join later
+        long chatId;
+
+        /// <summary>A chat line as players may write it: no control characters, at most 300 characters.</summary>
+        static string ChatClean(string s)
+        {
+            if (s == null) return "";
+            var sb = new System.Text.StringBuilder();
+            foreach (var ch in s) sb.Append(char.IsControl(ch) ? ' ' : ch);
+            var t = sb.ToString().Trim();
+            if (t.Length > 300) t = t.Substring(0, char.IsHighSurrogate(t[299]) ? 299 : 300);
+            return t;
+        }
+
+        /// <summary>The host numbers every chat line (a player's message, or a player who joined or left) and sends it to
+        /// every game: its own (chat.txt) and the clients' ("chatmsg").</summary>
+        void HostChat(string kind, string name, string text)
+        {
+            text = ChatClean(text);
+            if (kind == "msg" && text.Length == 0) return;
+            long id, t = UnixNow();
+            Msg m;
+            lock (chatLog)
+            {
+                id = ++chatId;
+                m = Msg.Make("chatmsg", hostName ?? "", "{[\"id\"]=" + id + ",[\"t\"]=" + t + ",[\"kind\"]=" + LuaLit.Quote(kind)
+                    + ",[\"name\"]=" + LuaLit.Quote(name ?? "") + ",[\"text\"]=" + LuaLit.Quote(text) + "}");
+                chatLog.Add(m);
+                if (chatLog.Count > 50) chatLog.RemoveAt(0);
+            }
+            hostGame?.AppendChat(id, t, kind, name, text);
+            relay?.Broadcast(m);
+            if (kind == "msg") Log.Dim("[chat] " + name + ": " + text);
         }
 
         /// <summary>Every second: the status to the host's own game (mp_status.txt) and to every client.</summary>
@@ -1324,6 +1396,7 @@ namespace MPFever
             {
                 Thread.Sleep(250);
                 if (hostGame == null) continue;
+                foreach (var line in hostGame.ReadChatOut()) HostChat("msg", BaseName(hostName), line);
                 if (Now - lastStatus >= 1)
                 {
                     lastStatus = Now;
@@ -1437,6 +1510,12 @@ namespace MPFever
 
                 case "sync_hash":
                     OnSyncHash(m);
+                    break;
+
+                case "chat":
+                    // a player's chat message: the host numbers it and sends it to everybody (the sender included)
+                    if (from != null && LuaLit.Parse(m.Payload) is Dictionary<object, object> ct && ct.TryGetValue("text", out var ctx) && ctx is string ctext)
+                        HostChat("msg", BaseName(from.Name), ctext);
                     break;
 
                 case "autotest_done":

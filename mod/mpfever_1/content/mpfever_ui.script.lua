@@ -651,6 +651,141 @@ local function useStatus(react)
 	return U.status
 end
 
+-- ---------------------------------------------------------------- in-game chat
+-- MPFever.exe writes every line of the session's chat to chat.txt ("id TAB time TAB kind TAB player TAB text"; kind:
+-- msg, join, left, unsent); this game's messages go to chat_out.txt ("seq TAB text"), which MPFever.exe sends to the host
+
+-- one UTF-8 character (the mod's files have no backslash: the bytes are made with string.char)
+local UTF8_CHAR = "[" .. string.char(1) .. "-" .. string.char(127) .. string.char(194) .. "-" .. string.char(244) .. "][" .. string.char(128) .. "-" .. string.char(191) .. "]*"
+
+local function ulen(t)
+	local n = 0
+	for _ in t:gmatch(UTF8_CHAR) do n = n + 1 end
+	return n
+end
+
+local function usub(t, maxChars)
+	local out, n = {}, 0
+	for ch in t:gmatch(UTF8_CHAR) do
+		n = n + 1
+		if n > maxChars then break end
+		out[#out + 1] = ch
+	end
+	return table.concat(out)
+end
+
+-- a text in lines of at most w characters (the first one: firstW), cut between words when it can
+local function wrap(t, firstW, w)
+	local lines, cur, curLen = {}, "", 0
+	local function limit() return #lines == 0 and firstW or w end
+	local function push() lines[#lines + 1] = cur; cur, curLen = "", 0 end
+	for word in t:gmatch("[^ ]+") do
+		local wl = ulen(word)
+		if curLen > 0 and curLen + 1 + wl > limit() then push() end
+		while wl > limit() do
+			local lim = limit() - curLen - (curLen > 0 and 1 or 0)
+			if lim <= 0 then push() lim = limit() end
+			local head = usub(word, lim)
+			cur = cur .. (curLen > 0 and " " or "") .. head
+			push()
+			word = word:sub(#head + 1)
+			wl = ulen(word)
+		end
+		if wl > 0 then
+			cur = cur .. (curLen > 0 and " " or "") .. word
+			curLen = curLen + (curLen > 0 and 1 or 0) + wl
+		end
+	end
+	if curLen > 0 or #lines == 0 then push() end
+	return lines
+end
+
+-- this player's name as the chat shows it (the host's status: "me", without the connection number)
+local function myChatName()
+	local me = U.status and U.status.me
+	if me and me ~= "" then return me:match("^(.-)#%d+$") or me end
+	return C.NAME
+end
+
+local CHAT_LINE = "^([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "(.*)$"
+
+local function pollChat()
+	local now = os.clock()
+	if U.chatAt and now - U.chatAt < 0.4 then return end
+	U.chatAt = now
+	local f = C.IO.open(C.DIR .. C.BS .. "chat.txt", "rb")
+	if not f then return end
+	local size = f:seek("end") or 0
+	U.chatOff = U.chatOff or 0
+	if size < U.chatOff then U.chatOff = 0 end
+	if size == U.chatOff then f:close() return end
+	f:seek("set", U.chatOff)
+	local data = f:read(size - U.chatOff) or ""
+	f:close()
+	local pos, fresh = 1, {}
+	while true do
+		local e = data:find(C.NL, pos, true)
+		if not e then break end   -- a line still being written: read next time
+		local line = data:sub(pos, e - 1):gsub(C.CR, "")
+		pos = e + 1
+		local id, t, kind, name, txt = line:match(CHAT_LINE)
+		if id then fresh[#fresh + 1] = { id = tonumber(id) or 0, t = tonumber(t) or 0, kind = kind, name = name, text = txt } end
+	end
+	U.chatOff = U.chatOff + pos - 1
+	if #fresh == 0 then return end
+	U.chat = U.chat or {}
+	for _, m in ipairs(fresh) do U.chat[#U.chat + 1] = m end
+	while #U.chat > 100 do table.remove(U.chat, 1) end
+	U.chatVersion = (U.chatVersion or 0) + 1
+	-- the lines already there when this game loaded (a resynchronisation reloads it) are not new
+	if not U.chatSeen then U.chatSeen = true return end
+	local me = myChatName()
+	local news = {}
+	for _, m in ipairs(fresh) do
+		if m.kind == "msg" and m.name ~= me then news[#news + 1] = m end
+	end
+	if #news > 0 and not U.chatOpen then
+		U.chatUnread = (U.chatUnread or 0) + #news
+		if U.onChatNews then pcall(U.onChatNews, news) end
+	end
+end
+
+-- this player's message, for MPFever.exe (which sends it to the host)
+local function sendChat(t)
+	t = tostring(t or ""):gsub("%c", " "):gsub("^ +", ""):gsub(" +$", "")
+	if t == "" then return false end
+	if ulen(t) > 300 then t = usub(t, 300) end
+	U.chatSeq = (U.chatSeq or 0) + 1
+	local f = C.IO.open(C.DIR .. C.BS .. "chat_out.txt", "ab")
+	if not f then log("chat: cannot write chat_out.txt") return false end
+	f:write(tostring(os.time()) .. "." .. U.chatSeq .. C.TAB .. t .. C.NL)
+	f:close()
+	return true
+end
+
+-- re-renders its recipe when a chat line arrives
+local function useChat(react)
+	local ver = react.useState(U.chatVersion or 0)
+	react.onStepTimer(function()
+		local v = U.chatVersion or 0
+		if ver:old() ~= v then ver:set(v) end
+	end, 0.3)
+	return U.chat or {}
+end
+
+-- the game's own window container (to open a window without the pause menu); loaded only in game, when game.tl
+-- has long been loaded by the game itself
+local function defaultWindowApi()
+	local ok, wapi = pcall(function()
+		local g = ug_require("/gui/main/game.tl")
+		local wc = g.game_react_globals.getDefaultWindowContainer()
+		if wc == nil or wc:hasExpired() then return nil end
+		return wc:get():getApi()
+	end)
+	if ok then return wapi end
+	return nil
+end
+
 local function installSession(react, builtin)
 	if U.sessionInstalled then return end
 	U.sessionInstalled = true
@@ -712,6 +847,8 @@ local function installSession(react, builtin)
 	local ICON_PLAYERS = "::/gui/statistics/icons/symbol_person_multiple.tga"
 	local ICON_SYNC = "::/gui/menu/icons/symbol_arrows_refresh.tga"
 	local ICON_PERSON = "::/gui/entity_window/icons/symbol_person.tga"
+	-- the game has no chat icon: MPFever brings its own (48 x 48 grey levels, like the game's icons)
+	local ICON_CHAT = "mpfever_1::/mpfever_chat.tga"
 	local function row(children) return builtin.BoxLayout { orientation = H, children = children } end
 	local function section(path, title) return row { icon(path, 26), text("  " .. title, "font-scale-title-4") } end
 	local function muted(t) return builtin.TextView { meta = { class = "font-scale-body", styleSheet = style { color = color("NeutralLight") } }, text = t } end
@@ -746,6 +883,9 @@ local function installSession(react, builtin)
 				rows[#rows + 1] = builtin.Button { meta = { class = "primary" }, content = text(T("Inviter des amis Steam", "Invite Steam friends")), onClick = requestInvite }
 			end
 		end
+		rows[#rows + 1] = text(" ")
+		rows[#rows + 1] = builtin.Button { meta = { class = "secondary" }, content = row { icon(ICON_CHAT, 22), text("  " .. T("Ouvrir la discussion", "Open the chat")) },
+			onClick = function() if U.openChat then U.openChat() end end }
 		return builtin.Window {
 			title = "MPFever – " .. T("Multijoueur", "Multiplayer"),
 			id = "window.mpfever.session",
@@ -758,6 +898,152 @@ local function installSession(react, builtin)
 			content = builtin.Component { meta = { styleSheet = style { size = { 540, -1 } } }, layout = builtin.BoxLayout { orientation = V, children = rows } },
 		}
 	end)
+
+	-- ------------------------------------------------ the chat window and the short notice of new messages
+	local function hhmm(t)
+		local ok, s = pcall(os.date, "%H:%M", t)
+		return ok and s or ""
+	end
+	local function nameColor(name)
+		return color(name == myChatName() and "Ok" or "Info")
+	end
+	local function coloredText(t, c, class)
+		return builtin.TextView { meta = { class = class or "font-scale-body", styleSheet = style { color = c } }, text = t }
+	end
+
+	-- one chat line: time, player, text (long texts on several lines)
+	local function chatRows(m, out, width)
+		local time = hhmm(m.t)
+		if m.kind == "join" then
+			out[#out + 1] = muted(time .. "   " .. C.Tf("%s a rejoint la partie", "%s joined the game", m.name))
+		elseif m.kind == "left" then
+			out[#out + 1] = muted(time .. "   " .. C.Tf("%s a quitté la partie", "%s left the game", m.name))
+		elseif m.kind == "unsent" then
+			out[#out + 1] = row { muted(time .. "   "), text(T("Non envoyé (pas de connexion à l'hôte) : ", "Not sent (no connection to the host): ") .. m.text, nil, "error") }
+		else
+			local head = m.name .. ":  "
+			local lines = wrap(m.text, math.max(10, width - ulen(head)), width)
+			out[#out + 1] = row { muted(time .. "   "), coloredText(head, nameColor(m.name)), text(lines[1]) }
+			for i = 2, #lines do out[#out + 1] = row { muted("              "), text(lines[i]) } end
+		end
+	end
+
+	U.ChatWindow = react.RegisterWrapperRecipe("MPFeverChatWindow", builtin.Window, function(wp)
+		local chat = useChat(react)
+		local draft = react.useState("")
+		local gen = react.useState(0)   -- a new input field after each message (an empty one)
+		local rows = {}
+		local first = math.max(1, #chat - 13)
+		if #chat == 0 then rows[#rows + 1] = muted(T("Aucun message pour l'instant.", "No messages yet.")) end
+		for i = first, #chat do chatRows(chat[i], rows, 52) end
+		rows[#rows + 1] = text(" ")
+		local function send(v)
+			if sendChat(v) then
+				draft:set("")
+				gen:set(gen:old() + 1)
+			end
+		end
+		rows[#rows + 1] = row {
+			builtin.TextInputField {
+				meta = { class = "font-scale-body", localKey = "mpfever-chat-input-" .. tostring(gen:old()), styleSheet = style { size = { 420, -1 } } },
+				value = "",
+				placeholderText = T("Écrire un message…", "Write a message…"),
+				maxLength = 300,
+				acceptOnFocusLoss = false,
+				onTyping = function(v) draft:set(v or "") end,
+				onValueChange = function(v) send(v) end,
+			},
+			text("  "),
+			builtin.Button { meta = { class = "primary" }, content = text(T("Envoyer", "Send")), onClick = function() send(draft:old()) end },
+		}
+		return builtin.Window {
+			title = "MPFever – " .. T("Discussion", "Chat"),
+			id = "window.mpfever.chat",
+			initialX = 0.02,
+			initialY = 0.45,
+			movable = true,
+			closable = true,
+			onClose = wp.onClose,
+			content = builtin.Component { meta = { styleSheet = style { size = { 560, -1 } } }, layout = builtin.BoxLayout { orientation = V, children = rows } },
+		}
+	end)
+
+	-- the notice: the new messages for a few seconds at the left of the screen (no button: it closes by itself)
+	U.ChatToast = react.RegisterWrapperRecipe("MPFeverChatToast", builtin.Window, function(wp)
+		local ver = react.useState(U.toastVersion or 0)
+		react.onStepTimer(function()
+			local v = U.toastVersion or 0
+			if ver:old() ~= v then ver:set(v) end
+			if U.toastShown and (U.chatOpen or os.time() >= (U.toastUntil or 0)) then
+				U.toastShown = false
+				pcall(function() wp.windowApi.removeAllWindows(U.ChatToast) end)
+			end
+		end, 0.5)
+		local rows = {
+			row { icon(ICON_CHAT, 22), coloredText("  MPFever – " .. T("Discussion", "Chat"), color("NeutralLight")) },
+		}
+		for _, m in ipairs(U.toastItems or {}) do
+			local t = m.text
+			if ulen(t) > 70 then t = usub(t, 68) .. "…" end
+			rows[#rows + 1] = row { coloredText(m.name .. ":  ", nameColor(m.name)), text(t) }
+		end
+		rows[#rows + 1] = muted(T("Répondre : Échap  ›  Discussion", "Reply: Esc  ›  Chat"))
+		return builtin.Window {
+			title = "",
+			id = "window.mpfever.chattoast",
+			initialX = 0.005,
+			initialY = 0.1,
+			movable = false,
+			closable = false,
+			pinnable = false,
+			compact = true,
+			autoFocusOnBecomingVisible = false,
+			onClose = function() end,
+			content = builtin.Component {
+				mouseTransparent = true,
+				meta = { styleSheet = style { size = { 520, -1 } } },
+				layout = builtin.BoxLayout { orientation = V, children = rows },
+			},
+		}
+	end)
+
+	U.onChatNews = function(news)
+		local items = U.toastItems or {}
+		if not U.toastShown then items = {} end
+		for _, m in ipairs(news) do items[#items + 1] = m end
+		while #items > 3 do table.remove(items, 1) end
+		U.toastItems = items
+		U.toastUntil = os.time() + 8
+		U.toastVersion = (U.toastVersion or 0) + 1
+		if U.toastShown then return end
+		local wapi = defaultWindowApi()
+		if not wapi then return end
+		local ok, err = pcall(function() wapi.addSingletonWindow(U.ChatToast, { windowApi = wapi }) end)
+		if ok then U.toastShown = true else log("chat: notice not shown: " .. tostring(err)) end
+	end
+
+	-- the chat window, from the pause menu (its window container) or from MPFever's window (the game's own)
+	local function openChat(wapi)
+		wapi = wapi or defaultWindowApi()
+		if not wapi then log("chat: no window container") return false end
+		local ok, err = pcall(function()
+			wapi.addSingletonWindow(U.ChatWindow, {
+				onClose = function()
+					U.chatOpen = false
+					pcall(function() wapi.removeAllWindows(U.ChatWindow) end)
+				end,
+			})
+		end)
+		if not ok then log("chat window not opened: " .. tostring(err)) return false end
+		U.chatOpen = true
+		U.chatUnread = 0
+		if U.toastShown then
+			U.toastShown = false
+			pcall(function() wapi.removeAllWindows(U.ChatToast) end)
+		end
+		return true
+	end
+	U.openChat = openChat
 
 	local function openSession(commonParams)
 		local ok, err = pcall(function()
@@ -800,6 +1086,38 @@ local function installSession(react, builtin)
 					builtin.Component { layout = info },
 				} } },
 				onClick = function() openSession(p.commonParams) end,
+			},
+		} }
+	end)
+
+	-- the chat's card, under MPFever's card: the new messages, and a click opens the chat
+	local ChatCard = react.RegisterRecipe("MPFeverChatCard", function(p)
+		useChat(react)
+		local hover = react.useState(false)
+		local unread = U.chatUnread or 0
+		local info = builtin.BoxLayout { orientation = V, children = {
+			text(T("Discussion", "Chat"), "font-scale-title-4"),
+			unread > 0 and coloredText(C.Tf("%s nouveau(x) message(s)  ›", "%s new message(s)  ›", unread), color("Info"))
+				or muted(T("Écrire aux autres joueurs  ›", "Write to the other players  ›")),
+		} }
+		return builtin.BoxLayout { children = {
+			builtin.Button {
+				meta = {
+					class = "burger-menu, bottom-left, ani-pulse",
+					styleSheet = style { size = { 600, 88 }, image = "::/gui/menu/design/main_menu_card_bottom_left_content_mask.tga", nine = CARD_NINE,
+						bg = color(hover:old() and "AccentVeryDark" or "BaseDarkMedium", 0.9) },
+					onMouseOver = function(h) if hover:old() ~= (h and true or false) then hover:set(h and true or false) end end,
+				},
+				content = builtin.Component { layout = builtin.BoxLayout { orientation = H, children = {
+					builtin.Component { meta = { styleSheet = style { size = { 84, -1 } } }, layout = builtin.BoxLayout { children = { builtin.ImageView { path = ICON_CHAT } } } },
+					builtin.Component { layout = info },
+				} } },
+				onClick = function()
+					local cp = p.commonParams
+					local wapi = nil
+					pcall(function() wapi = cp.windowContainer:get():getApi() end)
+					if openChat(wapi) then pcall(cp.onClose) end
+				end,
 			},
 		} }
 	end)
@@ -851,7 +1169,11 @@ local function installSession(react, builtin)
 		return builtin.FloatingLayout {
 			children = {
 				builtin.FloatingLayoutChild { h = -1, v = -1, item = builtin.Component { mouseTransparent = true, layout = builtin.BoxLayout { children = { original(params, ...) } } } },
-				builtin.FloatingLayoutChild { h = 0.97, v = 0.5, item = Card { commonParams = params and params.commonParams } },
+				builtin.FloatingLayoutChild { h = 0.97, v = 0.5, item = builtin.BoxLayout { orientation = builtin.type.Orientation.Vertical, children = {
+					Card { commonParams = params and params.commonParams },
+					builtin.Component { meta = { styleSheet = style { size = { 600, 12 } } } },
+					ChatCard { commonParams = params and params.commonParams },
+				} } },
 			},
 		}
 	end
@@ -1083,6 +1405,8 @@ local function tick(pendingState)
 	end
 	pcall(pollLoanView)
 	pcall(pollStatus)
+	local okch, errch = pcall(pollChat)
+	if not okch then log("chat poll failed: " .. tostring(errch)) end
 	if not U.sessionInstalled and U.react and U.builtin then
 		local oks, errs = pcall(installSession, U.react, U.builtin)
 		if not oks then log("session: not installed: " .. tostring(errs)) end
