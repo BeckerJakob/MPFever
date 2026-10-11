@@ -35,8 +35,8 @@ WHAT WORKS
     each player only sees their own contracts and the offers they did not decline.
   - Loans: every company has its own loans (offers, loans taken, monthly payments).
   - Shared stations: every station or stop is shared with the other companies from the start,
-    for $100 per stop. In the station's window, its owner changes the fee with the - and +
-    buttons (0 = not shared). The other companies' lines may only stop at stations that are
+    for $100 per stop. In the station's window, its owner chooses the fee in a list
+    ("Not shared", or $100 to $50,000 per stop). The other companies' lines may only stop at stations that are
     shared; each time one of their vehicles stops there, they pay the fee to the owner. The
     line windows show the fee next to the name of every other company's station.
 - Start from the game itself: MPFever.exe starts Transport Fever 3, and a
@@ -62,8 +62,15 @@ WHAT WORKS
     and the game resumes (about 20 seconds).
   - A build one game cannot reproduce makes the host resynchronise at once.
 - If the connection is lost, the player's MPFever reconnects by itself (for 5 minutes).
-- The mod is built into the game: the only addition to the game interface is the
-  MPFever button in the main menu.
+- MPFever window in the game: open the pause menu (Esc) and click the MPFever card. It shows
+  the players and their link (connected, behind, not responding, loading the host's game,
+  left), whether the games are in sync and, for the host, a button to invite Steam friends.
+  It stays open while you play; move it or close it as any game window.
+- The mod is built into the game: the only additions to the game interface are the
+  MPFever button in the main menu and the MPFever card in the pause menu.
+- Since 0.3.4 the games stay identical much longer: the main cause of the desyncs (the
+  game's own scripts did not take their decisions in the same order on every PC) is fixed.
+  Resynchronisations should now be rare.
 
 
 KNOWN LIMITATIONS
@@ -84,7 +91,7 @@ KNOWN LIMITATIONS
 - Trees and plants of the brush are copied (since 0.3.3). Ground PAINT (textures) is not copied
   yet: each game keeps its own paint (it does not cause a resynchronisation).
 - Tested with 2 players. More players should work but are untested.
-- No player list or chat in the game yet.
+- No chat in the game yet.
 - Windows only. Made for the current Steam version of Transport Fever 3 (builds 40408 and 40420).
   After a game update, the mod still runs but synchronisation may be worse until
   MPFever is updated.
@@ -122,5 +129,13 @@ Please describe what you did, what you expected and what happened, and attach:
 2. the folders %TEMP%\mpfever\Host-... or Client-... of that session (zip them);
 3. if the game crashed: the newest files of
    C:\Program Files (x86)\Steam\userdata\<your id>\3493540\local\crash_dump\
+
+CREDITS
+-------
+- dkdknight: author and maintainer.
+- SlikerDev: the launcher's design, MPFever in the 13 languages of the game, the in-game
+  MPFever window and the fee list of the station windows.
+- Thanks to every tester who reported a problem with their logs.
+
 
 See INSTALL.txt to get started and ROADMAP.txt for what comes next.

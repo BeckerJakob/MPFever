@@ -1,54 +1,84 @@
 # MPFever – Multiplayer for Transport Fever 3 (experimental)
 
-**Build your transport empire together.** MPFever adds cooperative multiplayer to Transport Fever 3: you and your friends play the same world, in one shared company or each with your own company, each in your own game, over the internet or a local network.
+**Build your transport empire together.** MPFever adds multiplayer to Transport Fever 3. You and your friends play the same world, each in your own game, over the internet or a local network. You can share one company or each run your own.
 
-> ⚠️ **Experimental version (0.1.1).** It works, but expect bugs, short pauses and the occasional crash. Back up your savegames, and please send feedback: it decides what comes next.
+> ⚠️ **Experimental version (0.3.4).** It works, but expect bugs, short pauses and the occasional crash. Back up your savegames, and please send feedback: it decides what comes next.
 
 ## Features
 
-- **Co-op in one shared company, or one company per player.** The host chooses when hosting: either shared money, vehicles, lines and infrastructure, or every player has their own company (own money, roads, stations, vehicles, lines and colour) on the same map. A player finds their company again after a reconnection (it belongs to their Steam account); every company has its own loans and contracts, the windows show who owns what, and stations are shared with the other companies for a fee per stop. The "one company per player" mode is still in development: many bugs remain, use it mainly to test it and help the development of the mod.
-- **Real-time sync of what you build.** Roads and tracks (including joins in the middle of a road and upgrades), bus and tram stops, stations, depots, buildings, the bulldozer and terrain editing (raising / lowering the ground). Vehicle purchases, lines, vehicle assignments, game speed and pause too.
+- **Co-op in one shared company, or one company per player.** The host chooses when hosting.
+  - Shared company: shared money, vehicles, lines and infrastructure.
+  - One company per player: own money, roads, stations, vehicles, lines and colour, on the same map.
+    - A player finds their company again after a reconnection: it belongs to their Steam account.
+    - Every company has its own loans and contracts.
+    - The windows show who owns what.
+    - Stations are shared with the other companies for a fee per stop.
+
+  The "one company per player" mode is still in development and many bugs remain: use it mainly to test it and help the development of the mod.
+- **Real-time sync of what you build.** Every game applies it at the same game time:
+  - roads and tracks, including joins in the middle of a road and upgrades;
+  - bus and tram stops, stations, depots, buildings;
+  - the bulldozer, terrain editing and trees;
+  - vehicle purchases, lines, vehicle assignments, game speed and pause.
+- **Games that stay identical.** Since 0.3.4 the main cause of desyncs is fixed: the game's own scripts now take their decisions in the same order on every PC.
 - **Host authority.** Every 10 seconds the games compare their state:
   - money, loans, company progress, contracts, towns and industries;
   - cargo in buildings and vehicles;
   - vehicles and roads.
 
   Money is corrected automatically. Any other lasting difference triggers an **automatic resync**: a short pause, the host's game is sent to everyone, all games reload it, and play resumes (about 20 s).
-- **Built into the game.** No extra buttons in the game interface. A small launcher window handles hosting, joining and speed.
-- **Direct IP connection.** Use port forwarding or a virtual LAN (Radmin VPN, ZeroTier, Tailscale…).
-- **In the 13 languages of the game.** The launcher and the in-game window follow the language of Transport Fever 3 (it can also be chosen in the launcher).
+- **Easy start.** Host any savegame from the multiplayer button of the main menu. Friends join by IP address or through a Steam invitation, even in a game already running. The host's game is sent to them automatically.
+- **MPFever window in the game.** Open it from the pause menu to see:
+  - the players and their connection;
+  - whether the games are in sync;
+  - for the host, a button to invite Steam friends.
+- **Built into the game.** Nothing is added to the game screen. MPFever only adds a button in the main menu and a card in the pause menu.
+- **In the 13 languages of the game.** The launcher and the in-game windows follow the language of Transport Fever 3. The language can also be chosen in the launcher.
 
-## Known limitations (0.1)
+## Known limitations
 
-- Separate companies: the Company window's actions only work for the host's company for now; the level of the savegame's company is shared. Ground paint is not copied yet.
-- All players must load the same savegame file. The host shares it for now; automatic transfer is planned.
-- No joining a session that is already running, and no Steam invites yet.
-- Vehicles may drift slightly after road building; the automatic resync fixes it.
+- Separate companies:
+  - the Company window's actions only work for the host's company for now;
+  - the level of the savegame's company is shared;
+  - there is no money transfer between companies.
+- Ground paint is not copied yet.
+- Each build appears after about 1 to 2 seconds: every game applies it at the same game time.
 - Tested with 2 players. Windows only.
-- Made for the current Steam version of the game (build 40408).
+- Made for the current Steam version of the game (builds 40408 and 40420).
 
 ## Open source and transparent
 
-The full source code is public (link below), with the steps to build it yourself. MPFever copies a small `winhttp.dll` into the game folder, which the game loads by itself, the same way well-known mod loaders work. It passes the game's network calls unchanged to Windows and stays inactive in normal solo games. MPFever only connects to the address you enter.
+The full source code is public (link below), with the steps to build it yourself.
+
+MPFever copies a small `winhttp.dll` into the game folder, which the game loads by itself, the same way well-known mod loaders work. It passes the game's network calls unchanged to Windows and stays inactive in normal solo games. MPFever only connects to the address you enter.
 
 **Source code:** https://github.com/dkdknight/MPFever
 
 ## Installation
 
 1. Extract the archive anywhere.
-2. Run **MPFever.exe** once. It finds the game through Steam, installs the mod and enables it for new games.
-3. Follow **INSTALL.txt** to prepare a shared savegame, set up the network and start your first session.
+2. Run **MPFever.exe**. It finds the game through Steam, installs the mod and starts the game.
+3. In the main menu, click the multiplayer button to host one of your savegames or join a friend. **INSTALL.txt** explains the network setup.
 
 The mod does nothing in normal solo games. It only activates when the game is started through MPFever.exe.
 
 ## Roadmap
 
-- **0.2 – Stability and easier start:** automatic savegame transfer when joining, any savegame, fewer resyncs, reconnection, 3–8 players.
-- **0.3 – Playing with friends:** Steam invites, joining a running game, player list and chat in the game UI, host permissions.
-- **0.4 – Separate companies** on the same map, with competition and rankings.
-- **0.5 – Mixed modes:** shared and separate companies in the same game.
+- **0.4 – Separate companies, complete:** Company window actions for every company, money transfers, competition and rankings.
+- **0.5 – Mixed modes:** shared and separate companies in the same game, joining and merging companies.
 - **Later – Persistent worlds:** dedicated server, drop-in/drop-out, larger player counts.
+
+## Credits
+
+- **dkdknight** – author and maintainer.
+- **SlikerDev** – the launcher's design, MPFever in the 13 languages of the game, and the in-game MPFever window.
+- Thanks to every tester who reported a problem with their logs.
 
 ## Feedback and bug reports
 
-Describe what you did and what happened, and attach the newest `logs\launcher-….log` next to MPFever.exe and the `%TEMP%\mpfever` session folders. Details are in README.txt.
+Describe what you did and what happened, and attach:
+
+- the newest `logs\launcher-….log`, next to MPFever.exe;
+- the `%TEMP%\mpfever` session folders.
+
+Details are in README.txt.
