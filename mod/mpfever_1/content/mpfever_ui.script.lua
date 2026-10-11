@@ -566,39 +566,95 @@ local function installSession(react, builtin)
 	if U.sessionInstalled then return end
 	U.sessionInstalled = true
 	local V, H = builtin.type.Orientation.Vertical, builtin.type.Orientation.Horizontal
-	local WIDTH = 460
 	local function text(t, class, cls)
-		return builtin.TextView { meta = { class = (class or "font-scale-body") .. (cls and (", " .. cls) or "") }, text = t, width = WIDTH }
+		return builtin.TextView { meta = { class = (class or "font-scale-body") .. (cls and (", " .. cls) or "") }, text = t }
 	end
+
+	-- the game's own colours (default_colors.gres), with fallbacks when they cannot be read
+	local FALLBACK = {
+		Ok = { 0.42, 0.82, 0.45, 1 }, Warning = { 1, 0.76, 0.25, 1 }, Error = { 1, 0.38, 0.33, 1 }, Info = { 0.45, 0.72, 1, 1 },
+		Negative = { 1, 0.38, 0.33, 1 }, NeutralLight = { 0.72, 0.74, 0.77, 1 }, NeutralLightest = { 1, 1, 1, 1 },
+		BaseDarkMedium = { 0.16, 0.18, 0.21, 1 }, AccentVeryDark = { 0.07, 0.24, 0.33, 1 },
+	}
+	local CLASS_COLOR = { success = "Ok", warning = "Warning", error = "Error", info = "Info", negative = "Negative" }
+	-- (the .gres colours are plain tables { r, g, b, a }: a style wants a Vec4f; alpha replaces the colour's own)
+	local colorCache = {}
+	local function color(name, alpha)
+		local key = name .. "/" .. tostring(alpha)
+		if colorCache[key] ~= nil then return colorCache[key] or nil end
+		local okR, raw = pcall(function()
+			local d = api.gui.genericRep.get(api.gui.genericRep.find("::/gui/main/default_colors.gres")).data
+			return d[name]
+		end)
+		if not (okR and type(raw) == "table" and tonumber(raw[1])) then raw = FALLBACK[name] end
+		local c = nil
+		if raw then
+			local ok, v = pcall(function() return api.type.Vec4f.new(raw[1], raw[2], raw[3], alpha or raw[4] or 1) end)
+			if ok then c = v end
+		end
+		colorCache[key] = c or false
+		return c
+	end
+	local function classColor(cls) return color(CLASS_COLOR[cls or ""] or "NeutralLightest") end
+	-- an inline style (meta.styleSheet, as the game's own windows use it); nil when the API refuses
+	local function style(t)
+		local ok, st = pcall(function()
+			local st = api.gui.StyleSheet.new()
+			if t.color then st.color = t.color end
+			if t.bg then st.backgroundColor1 = t.bg end
+			if t.size then st.size = api.type.Vec2f.new(t.size[1], t.size[2]) end
+			if t.image then
+				local n = api.gui.NinePatch.new()
+				n.fileName = t.image
+				if t.nine then n.horizontal = t.nine; n.vertical = t.nine end
+				st.backgroundImage1 = n
+			end
+			return st
+		end)
+		return ok and st or nil
+	end
+	-- a small round dot in a status colour (the game's line colour dot)
+	local function dot(cls)
+		return builtin.Component { meta = { styleSheet = style { size = { 14, 14 }, image = "::/gui/line_vehicle_mgmt/icons/line_surface.tga", bg = classColor(cls) } } }
+	end
+	local function icon(path, size)
+		return builtin.ImageView { path = path, meta = { styleSheet = style { size = { size, size } } } }
+	end
+	local ICON_PLAYERS = "::/gui/statistics/icons/symbol_person_multiple.tga"
+	local ICON_SYNC = "::/gui/menu/icons/symbol_arrows_refresh.tga"
+	local ICON_PERSON = "::/gui/entity_window/icons/symbol_person.tga"
+	local function row(children) return builtin.BoxLayout { orientation = H, children = children } end
+	local function section(path, title) return row { icon(path, 26), text("  " .. title, "font-scale-title-4") } end
+	local function muted(t) return builtin.TextView { meta = { class = "font-scale-body", styleSheet = style { color = color("NeutralLight") } }, text = t } end
 
 	-- MPFever's window: stays open while playing, can be moved and closed
 	U.SessionWindow = react.RegisterWrapperRecipe("MPFeverSessionWindow", builtin.Window, function(wp)
 		local st = useStatus(react)
 		local rows = {}
 		if st and st.host then
-			rows[#rows + 1] = text(C.Tf("Hôte : %s", "Host: %s", st.host) .. "  ·  "
+			rows[#rows + 1] = muted(C.Tf("Hôte : %s", "Host: %s", st.host) .. "  ·  "
 				.. (st.mode == "separate" and T("Une entreprise par joueur", "One company per player") or T("Une entreprise pour tous", "One company for everybody")))
 		end
 		local link, linkCls = linkLine(st)
-		if link then rows[#rows + 1] = text(link, nil, linkCls) end
+		if link then rows[#rows + 1] = row { dot(linkCls), text("  " .. link, nil, linkCls) } end
 		rows[#rows + 1] = text(" ")
-		rows[#rows + 1] = text(T("Synchronisation", "Sync"), "font-scale-title-4")
+		rows[#rows + 1] = section(ICON_SYNC, T("Synchronisation", "Sync"))
 		local sync, syncCls = syncLine(st)
-		rows[#rows + 1] = text(sync, nil, syncCls)
+		rows[#rows + 1] = row { dot(syncCls), text("  " .. sync, nil, syncCls) }
 		local desyncs = tonumber(st and st.desyncs) or 0
-		if desyncs > 0 then rows[#rows + 1] = text(C.Tf("%s désynchronisation(s) depuis le début", "%s desync(s) since the start", desyncs)) end
+		if desyncs > 0 then rows[#rows + 1] = muted(C.Tf("%s désynchronisation(s) depuis le début", "%s desync(s) since the start", desyncs)) end
 		rows[#rows + 1] = text(" ")
-		rows[#rows + 1] = text(T("Joueurs", "Players") .. "  (" .. playerCount(st) .. ")", "font-scale-title-4")
+		rows[#rows + 1] = section(ICON_PLAYERS, T("Joueurs", "Players") .. "  (" .. playerCount(st) .. ")")
 		for _, pl in ipairs(st and st.players or {}) do
 			local line, cls = playerLine(pl, st.me)
-			rows[#rows + 1] = text(line, nil, cls)
+			rows[#rows + 1] = row { icon(ICON_PERSON, 22), text("  " .. line, nil, cls) }
 		end
 		if st and st.invite == "1" and st.me and st.players then
 			local host = false
 			for _, pl in ipairs(st.players) do if pl.id == st.me and pl.role == "host" then host = true end end
 			if host then
 				rows[#rows + 1] = text(" ")
-				rows[#rows + 1] = builtin.Button { meta = { class = "secondary" }, content = text(T("Inviter des amis Steam", "Invite Steam friends")), onClick = requestInvite }
+				rows[#rows + 1] = builtin.Button { meta = { class = "primary" }, content = text(T("Inviter des amis Steam", "Invite Steam friends")), onClick = requestInvite }
 			end
 		end
 		return builtin.Window {
@@ -609,7 +665,8 @@ local function installSession(react, builtin)
 			movable = true,
 			closable = true,
 			onClose = wp.onClose,
-			content = builtin.Component { layout = builtin.BoxLayout { orientation = V, children = rows } },
+			-- wide enough for the title and the longest lines (the window takes its content's size)
+			content = builtin.Component { meta = { styleSheet = style { size = { 540, -1 } } }, layout = builtin.BoxLayout { orientation = V, children = rows } },
 		}
 	end)
 
@@ -624,22 +681,35 @@ local function installSession(react, builtin)
 		pcall(commonParams.onClose)   -- back to the game: the window stays open
 	end
 
-	-- the card in the pause menu: a summary, and a click opens the window
+	-- the card in the pause menu: drawn as the menu's own cards (classes of the pause page: dark card, shadow,
+	-- accent on hover), with an icon, a summary, and a click opens the window
+	local CARD_NINE = { 0, 16, 48, 64 }   -- main_menu_sizes.ninePatchHorizontal/Vertical
 	local Card = react.RegisterRecipe("MPFeverPauseCard", function(p)
 		local st = useStatus(react)
+		local hover = react.useState(false)
 		local sync, syncCls = syncLine(st)
 		local link, linkCls = linkLine(st)
-		local lines = {
+		local status, cls = link or sync, link and linkCls or syncCls
+		local info = builtin.BoxLayout { orientation = V, children = {
 			text("MPFever  –  " .. T("Multijoueur", "Multiplayer"), "font-scale-title-4"),
-			text(link or sync, nil, link and linkCls or syncCls),
-			text(C.Tf("%s joueur(s) dans la partie", "%s player(s) in the game", playerCount(st))),
-			text(T("Afficher pendant la partie  ›", "Show while playing  ›"), nil, "info"),
-		}
+			row { dot(cls), builtin.TextView { meta = { class = "font-scale-body" .. (cls and (", " .. cls) or ""), styleSheet = style { color = classColor(cls) } }, text = "  " .. status } },
+			muted(C.Tf("%s joueur(s) dans la partie", "%s player(s) in the game", playerCount(st)) .. "   ·   " .. T("Afficher pendant la partie  ›", "Show while playing  ›")),
+		} }
 		-- a recipe's result must be a layout (the game refuses a bare button here)
 		return builtin.BoxLayout { children = {
 			builtin.Button {
-				meta = { class = "secondary" },
-				content = builtin.Component { layout = builtin.BoxLayout { orientation = V, children = lines } },
+				-- the menu card's look, set here: the pause page's CSS does not reach the card (background,
+				-- colour 90 % opaque as the game's cards, accent colour under the mouse)
+				meta = {
+					class = "burger-menu, top-right, ani-pulse",
+					styleSheet = style { size = { 600, 112 }, image = "::/gui/menu/design/main_menu_card_top_right_content_mask.tga", nine = CARD_NINE,
+						bg = color(hover:old() and "AccentVeryDark" or "BaseDarkMedium", 0.9) },
+					onMouseOver = function(h) if hover:old() ~= (h and true or false) then hover:set(h and true or false) end end,
+				},
+				content = builtin.Component { layout = builtin.BoxLayout { orientation = H, children = {
+					builtin.Component { meta = { styleSheet = style { size = { 84, -1 } } }, layout = builtin.BoxLayout { children = { builtin.ImageView { path = ICON_PLAYERS } } } },
+					builtin.Component { layout = info },
+				} } },
 				onClick = function() openSession(p.commonParams) end,
 			},
 		} }

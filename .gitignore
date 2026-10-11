@@ -15,3 +15,4 @@ autotest_result.txt
 __pycache__/
 *.pyc
 /.vscode
+dev-test.bat
