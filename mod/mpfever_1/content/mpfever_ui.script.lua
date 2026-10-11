@@ -867,7 +867,8 @@ local function installSession(react, builtin)
 	end)
 
 	-- ------------------------------------------------ the chat window and the short notice of new messages
-	local ICON_CHAT = "::/gui/menu/icons/edit.tga"
+	-- the game has no chat icon: MPFever brings its own (48 x 48 grey levels, like the game's icons)
+	local ICON_CHAT = "mpfever_1::/mpfever_chat.tga"
 	local function hhmm(t)
 		local ok, s = pcall(os.date, "%H:%M", t)
 		return ok and s or ""
