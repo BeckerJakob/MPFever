@@ -109,6 +109,22 @@ A real game showed the towns drifting right after a client's terrain edit, then 
 - **Exact stops, two older imprecisions found on the way.** Approaching an action's time, a game could run on at speed when the action waited just past the barrier. It also asked for its exact steps while the simulation was still running: the interface sees the simulation clock only at the 200 ms handshake, so a clock still for 12 frames proves nothing. Both are fixed: exact steps whenever an action is near, and a stopped simulation means 0.45 s of real time without its clock moving.
 - **Checked.** Twelve edits in a row by the host and by the client at x4 all land at the same step on the other game; every check is identical.
 
+### Stops on a street cut by a road (found 2026-10-11, fixed in 0.3.5)
+
+A client crashed (access violation in `ecs::CatchmentAreaSystem::EndModification` → `station_util::GetTerminalPersonEdges`) when the host built a road across a street where the client had put a pair of bus stops.
+
+- **Stop replay.** The stop tool removes the node configurations of the segment's two junctions and puts new ones back (`nodeConfigsToAdd`); the replay removed them and never put any back. Right after each pair of stops, the host had 4 fewer node configurations than the client (`nodeConfigs` part of the check). Fixed: the replay adds the tool's configurations. Replaying the report's two stops on its savegame now gives exactly the client's value.
+- **Road across a street with stops.** The tool's native proposal moves the existing stops (edge objects) onto the new segments.
+  - A script proposal (`SimpleProposal`) cannot do that. Without the objects, the stops stay on the removed segment and the game crashes in their catchment area.
+  - With them, the engine asserts while adding a component the stop already has (`Find(components, compTypeIndex) == components.end()`).
+  - A rebuilt native proposal is refused (`lc.segment0 not found`) or, given the node configurations, hangs the game.
+
+  So such a build is now never replayed by script: it is reported as not reproduced and the host's game is reloaded for everybody (`C.movesObjects`).
+
+### Line routes on the map (found 2026-10-11, fix to be confirmed in a real game)
+
+`UI::LineViewer::Update` (0x7f7180) draws the lines of one player, looked up in a per-player table (0xad3840), the player being a field of the viewer (+0x28). The viewer is made in 0x29f9d50, whose read of the player word at 0x29f9f14 takes it from an object of the interface's own (not one of the two game states), holding the savegame's company. On a client playing another company, the routes of its own lines flashed and vanished. 0x29f9f14 is now a "UI object" site like the tool factory: off the simulation thread, the savegame's company read there becomes the player's. Each company sees the routes of its own lines only, as in a solo game.
+
 ---
 
 ## 4. Tools built for this research
@@ -191,4 +207,4 @@ Next:
 - [ ] A lighter continuous check: hash only what can drift (entity count and order, money, town and industry summaries) instead of the 32 parts
 - [ ] Contracts, company growth and achievements per company
 - [ ] Ground paint
-- [ ] Separate companies: the route of the client's lines is not drawn on its map (under investigation)
+- [ ] Separate companies: confirm in a real game that the line routes on the map are the player's own (0x29f9f14, line viewer)

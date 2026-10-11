@@ -1942,6 +1942,11 @@ local REPLAY_FORMS = {
 	{ v = "minimal", ctx = "terrain" }, { v = "full", raw = true, ctx = "terrain" },
 }
 if os.getenv("MPFEVER_FORM1") then REPLAY_FORMS[1].ctx = os.getenv("MPFEVER_FORM1") end
+-- a build that cuts a segment carrying stops or signals (they move to its new segments): only a native proposal moves them,
+-- and the one rebuilt here is refused by the engine (an assert, "lc.segment0 not found") or, given the node configurations,
+-- hangs the game. The script forms would strand the stops (a crash in their catchment area). So no form is tried: the build
+-- is reported as not reproduced and the host's game is reloaded everywhere.
+local OBJECT_FORMS = {}
 
 -- A pure upgrade (every added segment replaces a removed one between the same nodes, nothing else): the engine's
 -- replaceSegment builds it exactly as the upgrade tool does.
@@ -2186,6 +2191,12 @@ local function replayStop(a, plan, variant)
 	ssp.edgeObjectsToAdd = eos
 	if #removeIds > 0 then ssp.edgeObjectsToRemove = removeIds end
 	if #ncr > 0 then ssp.nodeConfigsToRemove = ncr end
+	-- and the configurations the stop tool puts back on them (lane connections, crosswalks): without them the junctions of the
+	-- replaced segment were left without, unlike the player's game, and a later build there differed (variant 3: without)
+	if variant < 3 and #(plan.nodeConfigs or {}) > 0 then
+		local okn, errn = pcall(function() ssp.nodeConfigsToAdd = C.nodeConfigs(plan.nodeConfigs) end)
+		if not okn then log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: node configurations not copied: " .. tostring(errn)) end
+	end
 	sp.streetProposal = ssp
 	local okf, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, sContext(), false, true) end)
 	if not okf or not cmd then
@@ -2643,10 +2654,14 @@ local function replayNative(a, formIndex)
 				return api.engine.util.proposal.makeSegmentsRemoveProposal(removal)
 			end)
 		end
+		if C.movesObjects(stp) then
+			a.objectForms = true
+			log("NATIVE REPLAY " .. tostring(a.uid) .. ": the build cuts a segment with stops or signals: native forms only")
+		end
 	end
-	local form = REPLAY_FORMS[formIndex]
+	local form = (a.objectForms and OBJECT_FORMS or REPLAY_FORMS)[formIndex]
 	if not form then
-		if replayTwoStep(a) then return end
+		if not a.objectForms and replayTwoStep(a) then return end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. ": every form refused (desync)")
 		replayFailed(a, "every form refused")
 		return
@@ -2660,15 +2675,17 @@ local function replayNative(a, formIndex)
 	end
 	if form.ie ~= nil then margs[3] = form.ie end
 	if form.pi ~= nil then margs[4] = form.pi end
-	local okr, args, n = pcall(C.rebuildArgs, a.fn, margs, { seed = 7919, variant = form.v, ctx = form.ctx, raw = form.raw })
+	local okr, args, n = pcall(C.rebuildArgs, a.fn, margs, { seed = 7919, variant = form.v, ctx = form.ctx, raw = form.raw, rm = form.rm })
 	local label = form.v .. (form.raw and "/raw" or "") .. "/" .. form.ctx .. (form.ie and "/ie" or "") .. (form.pi == false and "/pi0" or "")
+		.. (form.rm and ("/rm-" .. form.rm) or "")
 	if not okr then
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " form " .. label .. ": rebuild " .. shortErr(args))
 		return replayNative(a, formIndex + 1)
 	end
 	local okc, cmd = pcall(function() return api.cmd[a.fn](table.unpack(args, 1, n)) end)
 	if not okc or not cmd then
-		log("NATIVE REPLAY " .. tostring(a.uid) .. " form " .. label .. ": factory " .. shortErr(cmd))
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " form " .. label .. ": factory " .. shortErr(cmd)
+			.. (#(C.errors or {}) > 0 and (" [" .. table.concat(C.errors, " ; "):sub(1, 200) .. "]") or ""))
 		return replayNative(a, formIndex + 1)
 	end
 	toSim("replaying", {})

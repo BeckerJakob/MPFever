@@ -164,13 +164,18 @@ local function setup()
 		local st0 = readState()
 		-- The window opens from the main menu only: a session still "in game" (or hosting) is the one the player left by going back
 		-- to the main menu. MPFever.exe ends it, and the window offers to host or join again.
+		-- (only when the window opens: once open, "hosting" is the session the player just started from it)
+		local opened = react.useState(false)
 		local left = react.useState(false)
-		if not left:old() and (st0.phase == "ingame" or st0.phase == "hosting") then
-			left:set(true)
-			request("leave", "", st0.name or "")
-			st0.phase = "idle"
-			st0.text = ""
-			autoClosed = false
+		if not opened:old() then
+			opened:set(true)
+			if st0.phase == "ingame" or st0.phase == "hosting" then
+				left:set(true)
+				request("leave", "", st0.name or "")
+				st0.phase = "idle"
+				st0.text = ""
+				autoClosed = false
+			end
 		end
 		local tab = react.useState("host")
 		local saves = react.useStateLazy(listSaves)
@@ -183,8 +188,12 @@ local function setup()
 		react.onStepTimer(function()
 			local s = readState()
 			if s.lang and s.lang ~= "" and s.lang ~= LANGCODE then loadLang() end
-			-- (the end of the left session is on its way: not a reason to close the window)
-			if left:old() and (s.phase == "ingame" or s.phase == "hosting") then s.phase = "idle"; s.text = "" end
+			-- (the end of the left session is on its way: not a reason to close the window; once MPFever.exe says it ended,
+			-- a new session started from this window closes it as usual)
+			if left:old() then
+				if s.phase == "ingame" or s.phase == "hosting" then s.phase = "idle"; s.text = ""
+				else left:set(false) end
+			end
 			state:set(s)
 			-- the game is about to load (the host's own, or the host's game received by a player who joins) or is loaded: the
 			-- window has done its job and goes away. Left open it stayed over the game as a leftover whose close button no

@@ -593,6 +593,22 @@ function C.existingObjectIds(st)
 	return map
 end
 
+-- a build that cuts a segment carrying stops or signals and keeps them (they move to its new segments)
+function C.movesObjects(st)
+	if type(st) ~= "table" then return false end
+	local gone = {}
+	for _, id in ipairs(st.edgeObjectsToRemove or {}) do gone[id] = true end
+	for _, rm in ipairs(st.removedSegments or st.edgesToRemove or {}) do
+		local objs = type(rm) == "table" and type(rm.comp) == "table" and rm.comp.objects
+		if type(objs) == "table" then
+			for _, o in ipairs(objs) do
+				if type(o) == "table" and type(o[1]) == "number" and o[1] >= 0 and not gone[o[1]] then return true end
+			end
+		end
+	end
+	return false
+end
+
 -- the existing objects of a captured added segment, as this game's ({ id, kind } pairs)
 function C.localObjects(src, idMap)
 	local list = {}
@@ -604,6 +620,35 @@ function C.localObjects(src, idMap)
 		end
 	end
 	return list
+end
+
+-- the node configurations (lane connections, crosswalks, traffic lights) of a captured proposal, for a SimpleStreetProposal
+-- (entities already this game's, new segments with the proposal's own negative ids)
+function C.nodeConfigs(list)
+	local cfgs = {}
+	for i, m in ipairs(list or {}) do
+		local o = api.type.BaseNodeLaneConnectionAndEntity.new()
+		o.entity = m.entity
+		local cfg = o.comp
+		local mc = m.comp or {}
+		local lcs = {}
+		for j, l in ipairs(mc.laneConnections or {}) do
+			local lc = api.type.LaneConnection.new()
+			lc.segment0 = l.segment0; lc.lane0 = l.lane0; lc.segment1 = l.segment1; lc.lane1 = l.lane1
+			lc.withRoad = l.withRoad == true; lc.withTram = l.withTram == true
+			lcs[j] = lc
+		end
+		cfg.laneConnections = lcs
+		local cw = {}
+		for j, x in ipairs(mc.crosswalks or {}) do cw[j] = x end
+		cfg.crosswalks = cw
+		pcall(function() cfg.trafficLightPreference = mc.trafficLightPreference end)
+		pcall(function() cfg.doubleSlipSwitch = mc.doubleSlipSwitch == true end)
+		pcall(function() cfg.userModifiedLaneConnections = mc.userModifiedLaneConnections == true end)
+		o.comp = cfg
+		cfgs[i] = o
+	end
+	return cfgs
 end
 
 -- Proposal (native, from the construction tools) or SimpleProposal -> SimpleProposal for makeWorldBuildProposalCmd
@@ -666,6 +711,10 @@ function C.rebuildProposal(m, opts)
 				nodes[i] = ne
 			end
 		end
+		-- the stops and signals already on a segment the build cuts: a script proposal cannot move them to the new segments
+		-- (the engine asserts adding their component again) and leaves them stranded on the removed segment (the game then
+		-- crashed in their catchment area). Only the native form moves them (see C.movesObjects).
+		if C.movesObjects(st) then error("stops or signals on a segment the build cuts: native form only") end
 		local edges = {}
 		for i, s in ipairs(st.edgesToAdd or st.addedSegments or {}) do
 			if variant == "full" then
@@ -733,32 +782,7 @@ function C.rebuildProposal(m, opts)
 		end)
 		-- and the configurations it added (lane connections, crosswalks, traffic lights), with the native ids
 		if opts.raw and #(st.nodeConfigsToAdd or {}) > 0 then
-			local okc, errc = pcall(function()
-				local cfgs = {}
-				for i, m in ipairs(st.nodeConfigsToAdd) do
-					local o = api.type.BaseNodeLaneConnectionAndEntity.new()
-					o.entity = m.entity
-					local cfg = o.comp
-					local mc = m.comp or {}
-					local lcs = {}
-					for j, l in ipairs(mc.laneConnections or {}) do
-						local lc = api.type.LaneConnection.new()
-						lc.segment0 = l.segment0; lc.lane0 = l.lane0; lc.segment1 = l.segment1; lc.lane1 = l.lane1
-						lc.withRoad = l.withRoad == true; lc.withTram = l.withTram == true
-						lcs[j] = lc
-					end
-					cfg.laneConnections = lcs
-					local cw = {}
-					for j, x in ipairs(mc.crosswalks or {}) do cw[j] = x end
-					cfg.crosswalks = cw
-					pcall(function() cfg.trafficLightPreference = mc.trafficLightPreference end)
-					pcall(function() cfg.doubleSlipSwitch = mc.doubleSlipSwitch == true end)
-					pcall(function() cfg.userModifiedLaneConnections = mc.userModifiedLaneConnections == true end)
-					o.comp = cfg
-					cfgs[i] = o
-				end
-				ssp.nodeConfigsToAdd = cfgs
-			end)
+			local okc, errc = pcall(function() ssp.nodeConfigsToAdd = C.nodeConfigs(st.nodeConfigsToAdd) end)
 			if not okc then C.errors[#C.errors + 1] = "node configs: " .. tostring(errc):sub(1, 120) end
 		end
 		ssp.edgeObjectsToRemove = entityList(st.edgeObjectsToRemove)
@@ -1121,7 +1145,7 @@ function C.rebuildArgs(fn, margs, opts)
 		if type(m) ~= "table" then
 			args[i] = m
 		elseif tn == "Proposal" then
-			if opts.variant == "native" then args[i] = C.rebuildNativeProposal(m) else args[i] = C.rebuildProposal(m, opts) end
+			if opts.variant == "native" then args[i] = C.rebuildNativeProposal(m, nil, opts.rm) else args[i] = C.rebuildProposal(m, opts) end
 		elseif tn == "Context" and m.__player then
 			-- the build context of the native tools: this game's player (opts.ctx selects the flags)
 			local k = opts.ctx or "terrain"

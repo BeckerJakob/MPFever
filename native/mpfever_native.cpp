@@ -2076,8 +2076,10 @@ static int RuleOf(u32 rva)
     // copy between the two game states.
     if (rva == 0x255ed9) return RULE_COUNT;
     // interface code that may read the word of an object of the interface's own (not one of the two game states): the tools'
-    // factory (every tool is made for the player read there), the windows, the tools themselves
-    static const u32 uiObj[] = { 0x648f18, 0x65b1f4, 0x529da2, 0x52a01d, 0x537734, 0x53aa67, 0x6568f6, 0x656a31, 0x7354e0, 0x86917c, 0x67b955 };
+    // factory (every tool is made for the player read there), the windows, the tools themselves, and the line viewer (0x29f9f14:
+    // the routes drawn on the map are those of the player read there; the client saw its own lines' routes flash and vanish)
+    static const u32 uiObj[] = { 0x648f18, 0x65b1f4, 0x529da2, 0x52a01d, 0x537734, 0x53aa67, 0x6568f6, 0x656a31, 0x7354e0, 0x86917c, 0x67b955,
+                                 0x29f9f14 };
     for (u32 u : uiObj) if (u == rva) return RULE_SIMTHREAD | RULE_UIOBJ;
     return RULE_SIMTHREAD;
 }
