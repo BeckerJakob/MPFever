@@ -1854,6 +1854,30 @@ H.session = function(from, p)
 	if p.cmode ~= nil then G.cmode = p.cmode; G.coStart = p.cstart end
 	G.session.started = p.started == true
 	G.session.speed = p.speed or 0
+	-- the tutorial: its missions are validated by each game's own interface, so they diverge (a unique building the client
+	-- built for its task stays a task on the host's game...): the players are told, once per game loaded
+	if G.session.started and C.ROLE == "host" and not G.tutorialChecked then
+		G.tutorialChecked = true
+		pcall(function()
+			local found = false
+			local function scan(v, d)
+				if found or d > 12 then return end
+				if type(v) == "string" then
+					if v:lower():find("tutorial", 1, true) then found = true end
+				elseif type(v) == "table" then
+					for k, x in pairs(v) do
+						if type(k) == "string" and k:lower():find("tutorial", 1, true) then found = true return end
+						scan(x, d + 1)
+					end
+				end
+			end
+			local e = api.engine.system.gameScriptSystem.getEntityForGameScript(GAME_SCRIPTS.mission)
+			local c = e and e >= 0 and api.engine.getComponent(e, api.type.ComponentType.GAME_SCRIPT)
+			if c then scan(c.state, 0) end
+			log("tutorial in this game: " .. tostring(found))
+			if found then send("notice", { what = "tutorial" }) end
+		end)
+	end
 	if p.pauseAt ~= G.session.pauseAt then
 		G.session.pauseAt = p.pauseAt
 		if p.pauseAt then toSim("pause_at", { at = p.pauseAt }) else toSim("resume", {}) end
@@ -2071,7 +2095,8 @@ local function removalPlan(margs)
 	local st = margs[1] and margs[1].proposal
 	if type(st) ~= "table" then return nil end
 	if #(st.addedNodes or {}) > 0 or #(st.edgeObjectsToAdd or {}) > 0 then return nil end
-	-- buildings demolished with the road (toRemove) are recomputed by every game's own removal proposal
+	-- town buildings demolished with the road (toRemove) are recomputed by every game's own removal proposal; the player's own
+	-- constructions in it are added to that proposal by engineReplay
 	if #(margs[1].toAdd or {}) > 0 then return nil end
 	-- segments the engine merged after the removal are re-added between surviving nodes: the bulldozed segments are
 	-- the removed ones touching none of those ends (every game's engine redoes the same merge)
@@ -2092,16 +2117,38 @@ local function removalPlan(margs)
 	return list
 end
 
-local function engineReplay(a, what, makeP)
+-- cons: the player's constructions the tool removed with the segments (a street station bulldozed with its entrance
+-- street): the engine's segment removal leaves them, then the station stayed connected to a removed node and the game
+-- crashed (issue #15)
+local function engineReplay(a, what, makeP, cons)
 	local okp, P = pcall(makeP)
 	if not okp or not P then
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " " .. what .. ": no proposal " .. tostring(P))
 		return
 	end
+	if cons and #cons > 0 then
+		local okr, er = pcall(function()
+			local l, have = {}, {}
+			for i = 1, #P.toRemove do l[#l + 1] = P.toRemove[i]; have[P.toRemove[i]] = true end
+			for _, e in ipairs(cons) do if not have[e] then l[#l + 1] = e end end
+			P.toRemove = l
+		end)
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " " .. what .. ": constructions removed with it {" .. table.concat(cons, ",") .. "}" .. (okr and "" or (" NOT WRITTEN " .. shortErr(er))))
+		if not okr then pcall(send, "replay_failed", { uid = tostring(a.uid), why = "constructions of a removal" }) return end
+	end
+	-- the bulldozer's own settings, as the tool built it (issue #20: with terrain alignment and buildings gathered, the
+	-- same removal cost money on the other games, and may have reshaped the ground)
 	local ctx = api.type.Context.new()
-	ctx.checkTerrainAlignment = true
-	ctx.cleanupStreetGraph = true
-	ctx.gatherBuildings = true
+	local bits = tonumber(a.ctx)
+	if bits and bits >= 32 then
+		ctx.gatherBuildings = bits % 2 == 1
+		ctx.checkTerrainAlignment = math.floor(bits / 2) % 2 == 1
+		ctx.cleanupStreetGraph = math.floor(bits / 4) % 2 == 1
+	else
+		ctx.checkTerrainAlignment = false
+		ctx.cleanupStreetGraph = true
+		ctx.gatherBuildings = false
+	end
 	ctx.gatherFields = true
 	ctx.player = api.engine.util.getPlayer()
 	toSim("replaying", {})
@@ -2109,6 +2156,7 @@ local function engineReplay(a, what, makeP)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " " .. what .. ": " .. (success and "BUILT" or ("refused " .. why)))
+		if not success then pcall(send, "replay_failed", { uid = tostring(a.uid), why = ("removal refused " .. why):sub(1, 120) }) end
 	end)
 end
 
@@ -2164,7 +2212,13 @@ local function replayStop(a, plan, variant)
 	cc.node0 = c.node0; cc.node1 = c.node1
 	cc.tangent0 = sVec(c.tangent0); cc.tangent1 = sVec(c.tangent1)
 	cc.position0 = sVec(sNodePos(c.node0)); cc.position1 = sVec(sNodePos(c.node1))
-	cc.type = 0; cc.typeIndex = -1
+	-- the segment as it is (a stop or a signal changes none of these): a tunnel or a bridge stays one (type 2 / 1 and its
+	-- index; written 0 / -1, a signal turned the tunnel into track dug in the ground), and a track keeps its distance
+	-- (5: with 0 the games differed) and decorations (issue #16)
+	cc.type = (type(c.type) == "number") and c.type or 0
+	cc.typeIndex = (type(c.typeIndex) == "number") and c.typeIndex or -1
+	pcall(function() if type(c.distance) == "number" and c.distance ~= 0 then cc.distance = c.distance end end)
+	pcall(function() if #c.edgeDecorations > 0 then cc.edgeDecorations = c.edgeDecorations end end)
 	cc.roadTemplate = sc.roadTemplate or c.roadTemplate
 	cc.roadStyle = sc.roadStyle or c.roadStyle
 	cc.roadType = c.roadType
@@ -2237,6 +2291,8 @@ local function replayStop(a, plan, variant)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " stop on segment " .. plan.E .. ": " .. (success and "BUILT" or ("refused " .. why)))
+		-- (built on the player's game: a refusal here means the games differ, the host reloads at once)
+		if not success then pcall(send, "replay_failed", { uid = tostring(a.uid), why = ("stop refused " .. why):sub(1, 120) }) end
 		if success then
 			G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
 				local after = stopCount()
@@ -2724,6 +2780,7 @@ local function replayNative(a, formIndex)
 		if stp and (#(stp.edgeObjectsToAdd or {}) > 0 or #(stp.edgeObjectsToRemove or {}) > 0) then
 			if #missing > 0 then
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " (stop) SKIPPED, unresolved: " .. table.concat(missing, ","))
+				replayFailed(a, "unresolved references")
 				return
 			end
 			local okp, plan = pcall(function() return stopPlan(probe) end)
@@ -2733,10 +2790,12 @@ local function replayNative(a, formIndex)
 			if removal0 then
 				return engineReplay(a, "removal (stops included) of " .. table.concat(removal0, ","), function()
 					return api.engine.util.proposal.makeSegmentsRemoveProposal(removal0)
-				end)
+				end, R.removedConstructions(probe))
 			end
-			log("NATIVE REPLAY " .. tostring(a.uid) .. ": stop not replicable (" .. tostring(plan) .. ")")
-			return
+			-- a road joined to a street with stops: the tool removes the stops and places them again on the new pieces of street
+			-- (edgeObjectsToRemove / edgeObjectsToAdd). Rebuilt by the script forms below, which do both; before, it was
+			-- given up here and the road existed on its builder's game only (C:12 in the 0.3.6 tests).
+			log("NATIVE REPLAY " .. tostring(a.uid) .. ": stops placed again on a street build (" .. tostring(plan) .. "): rebuilt forms")
 		end
 		-- a construction with its street connection: not replayable as one rebuilt proposal (see replayTwoStep)
 		if hasConstructionSegments(a.args[1]) then
@@ -2747,7 +2806,7 @@ local function replayNative(a, formIndex)
 		if removal then
 			return engineReplay(a, "removal of " .. table.concat(removal, ","), function()
 				return api.engine.util.proposal.makeSegmentsRemoveProposal(removal)
-			end)
+			end, R.removedConstructions(probe))
 		end
 		if C.movesObjects(stp) and #(a.args[1].toAdd or {}) == 0 and #(a.args[1].toRemove or {}) == 0 then
 			log("NATIVE REPLAY " .. tostring(a.uid) .. ": the build cuts a segment with stops or signals: native street proposal")
@@ -2967,6 +3026,9 @@ local function pollNativeEvents()
 		if rid then G.terrainIn[tonumber(rid)] = rst end
 		local id = tonumber(line:match("^deferred (%d+)"))
 		if id then
+			-- the tool's Context flags (1 gatherBuildings, 2 terrain alignment, 4 street graph cleanup; 32 = known), shipped with the build
+			local cbits = tonumber(line:match("^deferred %d+ (%d+)"))
+			if cbits then G.natCtx = G.natCtx or {}; G.natCtx[id] = cbits end
 			markPending(id)
 			local now = gameTime()
 			local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt
@@ -3030,7 +3092,8 @@ local function releaseOne(r, at, how)
 		G.natReleased = G.natReleased - 1
 		pcall(r.fn)
 	else
-		nativeCtl("release " .. G.natReleased)
+		-- (by the DLL's id of the build, not by a count: a count went one off after a dropped build, issue #18)
+		nativeCtl("releaseid " .. r.id)
 		-- any command reaching CommandList::Add lets the DLL release the held build just before it
 		O.sendCommand(O.event("mpfever", "mpfever", "nop", {}))
 	end
@@ -3269,8 +3332,13 @@ local function runNativeReplays()
 	local now = gameTime()
 	table.sort(G.nativeQueue, before)
 	local keep = {}
+	-- a native replay still in the engine's hands (its commands answer in callbacks, a form or a step after the other): the
+	-- next build waits for it, as it may refer to what it makes (four quick edits of one station: the second was translated
+	-- before the first was built, issue #19). Not forever: an engine that never answers lets the queue go after 20 s.
+	local function replayBusy() return ((G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0)) and G.frames - (G.replaySince or 0) < 1200 end
 	for _, a in ipairs(G.nativeQueue) do
-		if a.at <= now and ((a.fn == "terrainEdit" and G.terrainBusy) or (a.fn == "mpfCoJoin" and (G.coBusy or G.frames - (a.recvFrame or 0) < JOIN_GATHER))) then
+		if a.at <= now and ((a.fn == "terrainEdit" and G.terrainBusy) or (a.fn == "mpfCoJoin" and (G.coBusy or G.frames - (a.recvFrame or 0) < JOIN_GATHER))
+			or (a.fn ~= "terrainEdit" and a.fn ~= "mpfCoJoin" and replayBusy())) then
 			keep[#keep + 1] = a      -- the previous one is still being handed to the engine
 		elseif a.at <= now then
 			if a.at < now then
@@ -3654,6 +3722,7 @@ local function shipNativeBuilds(st)
 				end
 				for i = 1, k - 1 do cancelNativeBuild(G.natShipIds[i], "refused before a later build") end
 				a.natId = G.natShipIds[k].id
+			if G.natCtx and G.natCtx[a.natId] then a.ctx = G.natCtx[a.natId]; G.natCtx[a.natId] = nil end
 				local rest = {}
 				for i = k + 1, #G.natShipIds do rest[#rest + 1] = G.natShipIds[i] end
 				G.natShipIds = rest
@@ -5276,7 +5345,7 @@ local function runReplayFile(p)
 			if not ok then line = line .. ", replay error " .. tostring(err) end
 			G.waits[#G.waits + 1] = { at = G.frames + 120, fn = function()
 				line = line .. ", after " .. #R.allEdges()
-				local deco, tram, dist5, track0 = 0, 0, 0, 0
+				local deco, tram, dist5, track0, tunnels = 0, 0, 0, 0, 0
 				pcall(function()
 					for _, e in ipairs(R.allEdges()) do
 						local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
@@ -5286,9 +5355,13 @@ local function runReplayFile(p)
 						if hasTram then tram = tram + 1 end
 						if c and c.distance and c.distance > 0 then dist5 = dist5 + 1 end
 						if c and c.type == 1 and c.distance == 0 then track0 = track0 + 1 end
+					if c and c.type == 2 then tunnels = tunnels + 1 end
 					end
 				end)
-				line = line .. ", edges with decorations " .. deco .. ", with tram lanes " .. tram .. ", with distance " .. dist5 .. ", tracks with distance 0: " .. track0
+				local objs = 0
+			pcall(function() for _ in pairs(api.engine.system.streetSystem.getEdgeObject2EdgeMap()) do objs = objs + 1 end end)
+			line = line .. ", edges with decorations " .. deco .. ", with tram lanes " .. tram .. ", with distance " .. dist5 .. ", tracks with distance 0: " .. track0
+				.. ", tunnel segments " .. tunnels .. ", edge objects " .. objs .. ", constructions " .. #R.entitiesWith("CONSTRUCTION")
 				log("REPLAYFILE " .. line)
 				AUTO.results[#AUTO.results + 1] = line
 				nextAct()
@@ -6572,6 +6645,166 @@ H.split = function(from, p)
 	if not ok then
 		log("SPLIT failed: " .. tostring(err))
 		AUTO.results[#AUTO.results + 1] = "split error " .. tostring(err)
+		autoFinish()
+	end
+end
+
+-- A construction against a street (station, depot) bulldozed, sent like a tool's build (issue #15: the other game removed its
+-- entrance street but not the construction, and crashed). MPFEVER_CONEDIT_FILE=part of a file name picks it.
+H.conbulldoze = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local ok, err = pcall(function()
+		local want = os.getenv("MPFEVER_CONEDIT_FILE")
+		local pick, pc = nil, nil
+		for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
+			local okc, c = pcall(function() return api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) end)
+			if okc and c and R.ownerOf(e) then
+				local f = tostring(c.fileName)
+				local has = false
+				pcall(function() has = #c.stations > 0 or #c.depots > 0 end)
+				local street = f:find("street", 1, true) or f:find("depot", 1, true)
+				if has and street and (not want or f:find(want, 1, true)) and (not pick or e > pick) then pick, pc = e, c end
+			end
+		end
+		if not pick then AUTO.results[#AUTO.results + 1] = "conbulldoze: no construction against a street"; return autoFinish() end
+		local sp = api.type.SimpleProposal.new()
+		sp.constructionsToRemove = { pick }
+		local cons0, edges0 = #R.entitiesWith("CONSTRUCTION"), #R.allEdges()
+		log("AUTOTEST conbulldoze: construction " .. pick .. " " .. tostring(pc.fileName))
+		local ctx = api.type.Context.new()
+		ctx.checkTerrainAlignment = false
+		ctx.cleanupStreetGraph = true
+		ctx.gatherBuildings = false
+		ctx.gatherFields = true
+		ctx.player = api.engine.util.getPlayer()
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), function(res, success)
+			local why = ""
+			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+			G.waits[#G.waits + 1] = { at = G.frames + 20, fn = function()
+				local line = "conbulldoze " .. tostring(pc.fileName) .. ": " .. (success and "built" or ("refused " .. why)) .. ", constructions " .. cons0 .. " -> " .. #R.entitiesWith("CONSTRUCTION") .. ", edges " .. edges0 .. " -> " .. #R.allEdges()
+				log("AUTOTEST " .. line)
+				AUTO.results[#AUTO.results + 1] = line
+				G.waits[#G.waits + 1] = { at = G.frames + 60, fn = autoFinish }
+			end }
+		end)
+	end)
+	if not ok then
+		log("AUTOTEST conbulldoze failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "conbulldoze error " .. tostring(err)
+		autoFinish()
+	end
+end
+
+-- A road joined to the middle of a street that carries a stop, as the street tool builds it (the stops removed and placed
+-- again on the new pieces: edgeObjectsToRemove / edgeObjectsToAdd), sent like a tool's build (C:12 in the 0.3.6 tests)
+H.splitstop = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local ok, err = pcall(function()
+		local E, c = nil, nil
+		for _, e in ipairs(R.allEdges()) do
+			local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+			if be and be.type == 0 and #be.objects > 0 then
+				local a, b = nodePosition(be.node0), nodePosition(be.node1)
+				local stopsOnly = true
+				for i = 1, #be.objects do if be.objects[i][2] == 2 then stopsOnly = false end end
+				if stopsOnly and a and b and math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) > 50 and (not E or e > E) then E, c = e, be end
+			end
+		end
+		if not E then AUTO.results[#AUTO.results + 1] = "splitstop: no street with a stop"; return autoFinish() end
+		local A, B = nodePosition(c.node0), nodePosition(c.node1)
+		local M = { x = (A.x + B.x) / 2, y = (A.y + B.y) / 2, z = (A.z + B.z) / 2 }
+		local dx, dy = B.x - A.x, B.y - A.y
+		local len = math.sqrt(dx * dx + dy * dy)
+		local P = { x = M.x - dy / len * 40, y = M.y + dx / len * 40 }
+		P.z = groundZ(P.x, P.y, M.z)
+		local lanes = C.templateLanes(c.roadTemplate) or c.laneConfigs
+		local function seg(id, n0, n1, p0, p1, objs)
+			local e = api.type.SegmentAndEntity.new()
+			e.entity = id
+			e.type = 0
+			local cc = e.comp
+			cc.node0 = n0; cc.node1 = n1
+			local t = { x = p1.x - p0.x, y = p1.y - p0.y, z = p1.z - p0.z }
+			cc.tangent0 = vec(t); cc.tangent1 = vec(t)
+			cc.position0 = vec(p0); cc.position1 = vec(p1)
+			cc.type = 0; cc.typeIndex = -1
+			cc.roadTemplate = c.roadTemplate; cc.roadStyle = c.roadStyle; cc.roadType = c.roadType
+			cc.laneConfigs = lanes
+			if objs then cc.objects = objs end
+			e.comp = cc
+			local se = e.streetEdge; se.precedenceNode0 = 2; se.precedenceNode1 = 2; e.streetEdge = se
+			return e
+		end
+		local function node(id, q)
+			local n = api.type.NodeAndEntity.new()
+			n.entity = id
+			local bn = n.comp; bn.position = vec(q); n.comp = bn
+			return n
+		end
+		-- the stops of the segment: removed, and placed again on the half where they were
+		local rmObjs, adds, half = {}, {}, { {}, {} }
+		for i = 1, #c.objects do
+			local id, side = c.objects[i][1], c.objects[i][2]
+			local par = 0.25
+			pcall(function() par = api.engine.getComponent(id, api.type.ComponentType.EDGE_OBJECT).param end)
+			rmObjs[#rmObjs + 1] = id
+			local h = par < 0.5 and 1 or 2
+			local eo = api.type.SimpleStreetProposal.EdgeObject.new()
+			eo.edgeEntity = -h
+			eo.param = (h == 1) and par * 2 or (par - 0.5) * 2
+			eo.oneWay = false
+			eo.left = side == 0
+			eo.model = STOP_MODEL
+			eo.playerEntity = api.engine.util.getPlayer()
+			adds[#adds + 1] = eo
+			half[h][#half[h] + 1] = { -400000000 - (#adds - 1), side }
+		end
+		local sp = api.type.SimpleProposal.new()
+		local ssp = sp.streetProposal
+		ssp.nodesToAdd = { node(-1, M), node(-2, P) }
+		ssp.edgesToAdd = { seg(-1, c.node0, -1, A, M, half[1]), seg(-2, -1, c.node1, M, B, half[2]), seg(-3, -1, -2, M, P) }
+		ssp.edgesToRemove = { E }
+		ssp.edgeObjectsToRemove = rmObjs
+		ssp.edgeObjectsToAdd = adds
+		local ncr = {}
+		for _, n in ipairs({ c.node0, c.node1 }) do
+			local okn, nc = pcall(function() return api.engine.getComponent(n, api.type.ComponentType.BASE_NODE_CONFIG) end)
+			if okn and nc then ncr[#ncr + 1] = n end
+		end
+		if #ncr > 0 then ssp.nodeConfigsToRemove = ncr end
+		sp.streetProposal = ssp
+		local stops0 = 0
+		pcall(function() for _ in pairs(api.engine.system.streetSystem.getEdgeObject2EdgeMap()) do stops0 = stops0 + 1 end end)
+		local edges0 = #R.allEdges()
+		log("AUTOTEST splitstop: segment " .. E .. " with " .. #rmObjs .. " stop(s)")
+		local ctx = api.type.Context.new()
+		ctx.checkTerrainAlignment = true
+		ctx.cleanupStreetGraph = false
+		ctx.gatherBuildings = true
+		ctx.gatherFields = true
+		ctx.player = api.engine.util.getPlayer()
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), function(res, success)
+			local why = ""
+			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+			G.waits[#G.waits + 1] = { at = G.frames + 20, fn = function()
+				local stops = 0
+				pcall(function() for _ in pairs(api.engine.system.streetSystem.getEdgeObject2EdgeMap()) do stops = stops + 1 end end)
+				local line = "splitstop on segment " .. E .. ": " .. (success and "built" or ("refused " .. why)) .. ", edges " .. edges0 .. " -> " .. #R.allEdges() .. ", edge objects " .. stops0 .. " -> " .. stops
+				log("AUTOTEST " .. line)
+				AUTO.results[#AUTO.results + 1] = line
+				G.waits[#G.waits + 1] = { at = G.frames + 60, fn = autoFinish }
+			end }
+		end)
+	end)
+	if not ok then
+		log("AUTOTEST splitstop failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "splitstop error " .. tostring(err)
 		autoFinish()
 	end
 end

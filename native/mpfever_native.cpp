@@ -362,7 +362,9 @@ static Held* g_held[64];
 static int g_heldHead = 0, g_heldTail = 0, g_nextId = 0;
 static bool g_enabled = false;
 static int g_released = 0;          // releases performed
-static int g_releaseTarget = 0;     // releases asked by the mod
+static int g_releaseTarget = 0;     // releases asked by the mod (by count: older mods)
+static long g_releaseUpTo = 0;      // held builds asked by the mod, by id: every held build up to this id goes (issue #18: a count went
+                                    // one off after a build was dropped, and every later build was released at once)
 static DWORD g_lastCtl = 0;
 static char g_dir[300];
 static int g_dirLen = 0;
@@ -507,6 +509,10 @@ static void ReadControl()
             for (int k = 8; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
             if (v > g_releaseTarget) g_releaseTarget = v;
         }
+        else if (len >= 11 && memcmp(l, "releaseid ", 10) == 0) {
+            for (int k = 10; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
+            if (v > g_releaseUpTo) g_releaseUpTo = v;
+        }
         i = j + 1;
     }
     { long want = g_tinWant; if (want && _InterlockedExchange(&g_tinLoaded, want) != want) TerrainLoadIn(want); }
@@ -606,10 +612,29 @@ extern "C" u64 SyncDetour(void* a, void* b)
     TimingLine("sync-end", r, 0);
     return r;
 }
+// Line routes on the map (UI::LineViewer, issue C:11 of the 0.3.6 tests): the viewers build their list of lines with
+// 0x7f5c60(..., player, ...), the player being kept in the viewer since it was made, while the game loaded. Then this machine's
+// company was not known yet: every viewer shows the savegame's company's lines, and a client's own routes flashed and vanished.
+// The savegame's company asked for is replaced by this machine's (a machine playing the savegame's company changes nothing).
+typedef void* (*LinesF)(void*, void*, void*, void*, void*, u32, void*, void*);
+static LinesF g_linesOrig = 0;
+static const u8 P_LINES[] = { 0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x70, 0x18, 0x48, 0x89, 0x78, 0x20, 0x55 };
+static u32 RVA_LINES = 0x7f5c60;
+static volatile long g_linesShown = 0;
 typedef u64 (*SwapF)(void*, void*);
 static SwapF g_swapOrig = 0;
 static const u8 P_SWAP[] = { 0x48, 0x89, 0x7C, 0x24, 0x18, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x20, 0x4C, 0x8B, 0xF1 };
 static u32 RVA_SWAP = 0x9d2d20;      // CommandList::Swap
+extern "C" void* LinesDetour(void* out, void* a2, void* a3, void* a4, void* a5, u32 player, void* a7, void* a8)
+{
+    u32 canon = (u32)g_canon, mine = (u32)g_localPlayer;
+    if (canon && mine && canon != mine && player == canon) {
+        player = mine;
+        if (_InterlockedIncrement(&g_linesShown) <= 3) { Buf b; b.str("line routes: the viewer asks for company ").dec(canon).str(", shown for ").dec(mine); LogLine(b); }
+    }
+    return g_linesOrig(out, a2, a3, a4, a5, player, a7, a8);
+}
+
 extern "C" u64 SwapDetour(void* a, void* b)
 {
     TimingLine("swap", (u64)a, (u64)b);
@@ -634,7 +659,7 @@ static unsigned g_defHead = 0, g_defTail = 0;
 // Start of every simulation iteration: the positions of the other companies are emptied like the local one's. A game state seen
 // for the first time is a game that has just been loaded: the entity ids given for the previous one mean nothing there (the mod
 // gives them again once it knows its companies).
-static void* g_preSeen[16]; static int g_nPreSeen = 0;
+static void* g_preSeen[16]; static int g_nPreSeen = 0, g_preNext = 0;
 static void ClearOthersIn(u8* gs, bool learn)
 {
     if (!gs) return;
@@ -642,7 +667,10 @@ static void ClearOthersIn(u8* gs, bool learn)
     for (int i = 0; i < g_nPreSeen; i++) if (g_preSeen[i] == gs) known = true;
     if (!known) {
         if (!learn) return;
-        if (g_nPreSeen < 16) g_preSeen[g_nPreSeen++] = gs; else g_preSeen[0] = gs;
+        // (in turn: replacing always the same entry made the two states of a game evict each other once the table was full,
+        // after 8 loads, and every iteration looked like a new game: held builds were dropped, issue #18)
+        g_preSeen[g_preNext % 16] = gs; g_preNext++;
+        if (g_nPreSeen < 16) g_nPreSeen++;
         if (g_nOthers) { Buf b; b.str("other companies dropped: a new game state ").hex((u64)gs); LogLine(b); g_nOthers = 0; }
         if (g_heldHead != g_heldTail) { g_dropTarget = g_releaseTarget; g_dropId = g_nextId; g_dropHeld = 1; }
         return;
@@ -1470,8 +1498,15 @@ extern "C" void* AddDetour(void* list, void* out, void* cmd, void* done, void* p
                 memset(out, 0, 0x10);
                 g_held[g_heldTail % 64] = h;
                 g_heldTail++;
-                Buf b; b.str("deferred build ").dec(h->id).str(" from tool site ").hex(caller); LogLine(b);
-                Buf e; e.str("deferred ").dec(h->id); AppendEvent(e);
+                // (with the tool's Context flags: the other games rebuild it with the same ones, issue #20)
+                u32 cbits = 0;
+                {
+                    u8* pay = *(u8**)h->cmd;
+                    if (pay && Readable(pay, 0x9c0) && *(u8*)(pay + 0x9b8) == 52)
+                        cbits = (pay[0x358] ? 1u : 0) | (pay[0x360] ? 2u : 0) | (pay[0x362] ? 4u : 0) | 32u;
+                }
+                Buf b; b.str("deferred build ").dec(h->id).str(" from tool site ").hex(caller).str(" context ").dec(cbits); LogLine(b);
+                Buf e; e.str("deferred ").dec(h->id).str(" ").dec(cbits); AppendEvent(e);
                 return out;
             }
         }
@@ -1490,7 +1525,15 @@ extern "C" void* AddDetour(void* list, void* out, void* cmd, void* done, void* p
             if (g_released < g_dropTarget) g_released = g_dropTarget;
             Buf b; b.str("held build(s) of the previous game dropped: ").dec(n); LogLine(b);
         }
-        if (g_heldHead != g_heldTail && g_released < g_releaseTarget) {
+        if (g_releaseUpTo > 0) {
+            // by id: what the mod asks for is exactly the builds it announced (a dropped one is simply not there any more)
+            if (g_heldHead != g_heldTail && g_held[g_heldHead % 64]->id <= g_releaseUpTo) {
+                g_inRelease = 1;
+                while (g_heldHead != g_heldTail && g_held[g_heldHead % 64]->id <= g_releaseUpTo) { ReleaseOne(); g_released++; }
+                g_inRelease = 0;
+            }
+        }
+        else if (g_heldHead != g_heldTail && g_released < g_releaseTarget) {
             (void)list;
             g_inRelease = 1;
             while (g_released < g_releaseTarget && g_heldHead != g_heldTail) { ReleaseOne(); g_released++; }
@@ -2319,6 +2362,7 @@ static DWORD WINAPI Init(void*)
     HookWordReads();
     { Buf b; b.str(g_luaSeedFixed ? "Lua string hash seed: fixed (same table order on every game)" : "Lua string hash seed: NOT fixed"); LogLine(b); }
     if (RVA_REPL == 0x255e60) InstallDetour(RVA_MONEYCHECK, P_MONEYCHECK, sizeof(P_MONEYCHECK), (void*)&MoneyCheckDetour, (void**)&g_moneyOrig);
+    if (RVA_REPL == 0x255e60) InstallDetour(RVA_LINES, P_LINES, sizeof(P_LINES), (void*)&LinesDetour, (void**)&g_linesOrig);
     if (RVA_REPL == 0x255e60 && GetEnvironmentVariableA("MPFEVER_ENTWATCH", 0, 0) > 0) {
         InstallDetour(RVA_ADDENTITY, P_ADDENTITY, sizeof(P_ADDENTITY), (void*)&AddEntityDetour, (void**)&g_addEntOrig);
         InstallDetour(RVA_REMOVEENTITY, P_REMOVEENTITY, sizeof(P_REMOVEENTITY), (void*)&RemoveEntityDetour, (void**)&g_remEntOrig);

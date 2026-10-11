@@ -361,6 +361,16 @@ function R.sgKey(sg)
 end
 
 -- The player entity owning an entity: its own owner, else the owner of its station group's first station, else of its construction
+-- The player's constructions in a removal (translated args): owned by a company. Town buildings belong to nobody, and
+-- every game's own removal proposal finds them.
+function R.removedConstructions(margs)
+	local out = {}
+	for _, e in ipairs((margs[1] or {}).toRemove or {}) do
+		if type(e) == "number" and e >= 0 and comp(e, "CONSTRUCTION") and R.ownerOf(e) then out[#out + 1] = e end
+	end
+	return out
+end
+
 function R.ownerOf(e)
 	if type(e) ~= "number" or e < 0 then return nil end
 	local function po(x)

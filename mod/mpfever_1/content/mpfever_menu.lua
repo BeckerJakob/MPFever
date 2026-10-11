@@ -302,8 +302,14 @@ local function setup()
 				onClose = function() p.commonParams.windowContainer:get():getApi().removeAllWindows(MPWindow) end,
 			})
 		end
-		-- test mode (MPFEVER_MENU_OPEN): the window opens by itself
-		react.onMount(function() if os.getenv("MPFEVER_MENU_OPEN") then open() end end)
+		-- the main menu shows: MPFever.exe ends a session the player left this way without opening the MPFever window (a new
+		-- game started from here then ran in the old session). Test mode (MPFEVER_MENU_OPEN): the window opens by itself.
+		react.onMount(function()
+			local st0 = readState()
+			log("main page shown (phase " .. tostring(st0.phase) .. ")")
+			if st0.phase ~= nil and st0.phase ~= "" and st0.phase ~= "idle" then request("menu", "", st0.name or "") end
+			if os.getenv("MPFEVER_MENU_OPEN") then open() end
+		end)
 		-- inside the menu's box layout a page must be a layout: the original page fills it, the button floats over it
 		return builtin.FloatingLayout{
 			children = {

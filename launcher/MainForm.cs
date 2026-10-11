@@ -117,6 +117,8 @@ namespace MPFever
         readonly Dictionary<int, Dictionary<string, Dictionary<object, object>>> hashes = new Dictionary<int, Dictionary<string, Dictionary<object, object>>>();
         string syncText = "—";
         int actsRelayed, actRefused, actFails, desyncs;
+        double lastLoadOrder = -1000;   // when this machine's game was last told to load a game (a load may pass through the main menu)
+        volatile bool resyncDropping;   // from the host's save to the end of the loads: actions are not relayed
         double lastActRelayed;   // when the last action was relayed (the checks of a paused session wait for quiet)
         string joinedAddr;   // the host this menu joined (a second request for it is ignored)
         volatile bool detRunning;
@@ -790,6 +792,13 @@ namespace MPFever
                 // test only: cuts the connection to the host as a network failure would
                 foreach (var cl in clients.ToList()) cl.Dispose();
             }
+            else if (cmd == "menu")
+            {
+                // the game's main menu shows: a session whose game was running is over (not while a host game is loaded, which
+                // may pass through the menu)
+                if (menuGame.InGame && !resyncing && Now - lastLoadOrder > 120) EndSession();
+                else Log.W(F("Menu principal affiché (session conservée : en jeu {0}, resynchronisation {1})", "Main menu shown (session kept: in game {0}, resynchronisation {1})", menuGame.InGame, resyncing));
+            }
             else if (cmd == "leave")
             {
                 // the player went back to the game's main menu: the session ends here (not during a resynchronisation)
@@ -829,7 +838,7 @@ namespace MPFever
             lock (chatLog) { chatLog.Clear(); chatId = 0; }
             lock (resyncParts) resyncParts.Clear();   // a host game half received in the session that ends
             hashN = 0; syncText = "—"; actsRelayed = actRefused = actFails = desyncs = 0;
-            resyncing = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = "";
+            resyncing = false; resyncDropping = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = "";
             joinPending = false;
             joinedAddr = null;
             if (steamConnect != null) { steamConnect = null; SteamCtl("clear", null); }
@@ -1378,6 +1387,10 @@ namespace MPFever
         void SetSpeed(int s, string who)
         {
             if (!started) return;
+            // (a resynchronisation holds the games paused until it ends: a speed asked meanwhile, by a player or by the start of the
+            // session 1.5 s after it, cleared that pause and the resynchronisation waited for nothing; a player joining then never
+            // got the host's game)
+            if (resyncing) { Log.W(F("Vitesse x{0} demandée par {1} : ignorée pendant la resynchronisation", "Speed x{0} asked by {1}: ignored during the resynchronisation", s, who)); return; }
             lock (sessionGate) { speed = Math.Max(1, Math.Min(4, s)); pauseAt = null; }
             Log.W(F("Vitesse : x{0} (demandée par {1})", "Speed: x{0} (asked by {1})", speed, who));
             BroadcastSession();
@@ -1499,6 +1512,14 @@ namespace MPFever
 
                 case "act":
                     {
+                        // a build made between the host's save and the end of the loads: every game drops it (its sender's own
+                        // load undoes it; relayed, the others kept it and the games differed, issue #17)
+                        if (resyncDropping)
+                        {
+                            Log.Warn(F("{0} : action pendant la resynchronisation, non conservée", "{0}: action during the resynchronisation, not kept", m.From));
+                            HostChat("msg", "MPFever", F("Construction de {0} pendant la resynchronisation : non conservée, refaites-la.", "{0}'s build during the resynchronisation: not kept, please build it again.", BaseName(m.From)));
+                            break;
+                        }
                         // already stamped by its originator: relay it, in order, to every other game
                         lock (sendGate)
                         {
@@ -1576,7 +1597,19 @@ namespace MPFever
                         break;
                     }
 
+                case "notice":
+                    // something every player must know, told in the chat (it shows for a few seconds on every game)
+                    if (m.Payload.Contains("tutorial"))
+                    {
+                        string text = T("Le tutoriel n'est pas pris en charge en multijoueur : ses missions se valident sur chaque jeu séparément et les parties divergent. Jouez une partie sans tutoriel.",
+                                        "The tutorial is not supported in multiplayer: its missions are validated on each game separately and the games diverge. Play a game without the tutorial.");
+                        Log.Warn(text);
+                        HostChat("msg", "MPFever", text);
+                    }
+                    break;
+
                 default:
+                    if (resyncDropping && m.Kind == "nat_pending") break;   // (its build is dropped, see "act")
                     lock (sendGate)
                     {
                         if (from != null) hostGame?.ToGame(m);
@@ -1720,6 +1753,7 @@ namespace MPFever
                 if (!stopped) { Log.Err(T("Resynchronisation abandonnée : les jeux ne se sont pas arrêtés.", "Resynchronisation cancelled: the games did not stop.")); return; }
                 // 2. the host saves
                 saveDone = null;
+                resyncDropping = true;
                 hostGame.ToGame(Msg.Make("resync_save", hostName, "{[\"id\"]=" + id + ",[\"name\"]=" + LuaLit.Quote(ResyncSaveName) + "}"));
                 if (!WaitUntil(() => saveDone != null, 180)) { Log.Err(T("Resynchronisation abandonnée : l'hôte n'a pas sauvegardé.", "Resynchronisation cancelled: the host did not save.")); return; }
                 if (!(saveDone.TryGetValue("ok", out var okv) && okv is bool ok && ok)) { Log.Err(T("Resynchronisation abandonnée : sauvegarde refusée.", "Resynchronisation cancelled: save refused.")); return; }
@@ -1742,9 +1776,11 @@ namespace MPFever
                     relay?.Broadcast(Msg.Make("resync_file", hostName,
                         "{[\"id\"]=" + id + ",[\"i\"]=" + i + ",[\"n\"]=" + parts + ",[\"data\"]=\"" + data + "\"}"));
                 }
+                lastLoadOrder = Now;
                 hostGame.ToGame(Msg.Make("resync_load", hostName, "{[\"id\"]=" + id + ",[\"name\"]=" + LuaLit.Quote(ResyncSaveName) + "}"));
                 bool back = WaitUntil(() => { lock (resyncWaiting) return resyncWaiting.Count == 0; }, 600);
                 if (!back) { lock (resyncWaiting) Log.Warn(T("Resynchronisation : sans nouvelles de ", "Resynchronisation: no news from ") + string.Join(", ", resyncWaiting) + T(" (on reprend quand même).", " (resuming anyway).")); }
+                resyncDropping = false;
                 // 4. all games run the same savegame: check, then resume
                 Thread.Sleep(3000);
                 postResyncHashN = hashN + 1;
@@ -1757,6 +1793,7 @@ namespace MPFever
             {
                 lastResync = Now;
                 diffStreak = 0;
+                resyncDropping = false;
                 resyncing = false;
                 SetSpeed(prevSpeed, T("fin de resynchronisation", "end of resynchronisation"));
             }
@@ -1796,6 +1833,7 @@ namespace MPFever
                     MenuStatus();
                     return;
                 }
+                lastLoadOrder = Now;
                 game.ToGame(Msg.Make("resync_load", m.From, "{[\"id\"]=" + id + ",[\"name\"]=" + LuaLit.Quote(name) + "}"));
             }
             catch (Exception e) { Log.Warn(F("[{0}] partie de l'hôte : {1}", "[{0}] host game: {1}", game.Name, e.Message)); }

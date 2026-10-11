@@ -798,7 +798,13 @@ function C.rebuildProposal(m, opts)
 			local okc, errc = pcall(function() ssp.nodeConfigsToAdd = C.nodeConfigs(st.nodeConfigsToAdd) end)
 			if not okc then C.errors[#C.errors + 1] = "node configs: " .. tostring(errc):sub(1, 120) end
 		end
-		ssp.edgeObjectsToRemove = entityList(st.edgeObjectsToRemove)
+		-- (the removed stops carry the originator's ids: this game's are found by their rank on the removed segments)
+		do
+			local idMap = C.existingObjectIds(st)
+			local rmObjs = {}
+			for _, id in ipairs(entityList(st.edgeObjectsToRemove)) do rmObjs[#rmObjs + 1] = idMap[id] or id end
+			ssp.edgeObjectsToRemove = rmObjs
+		end
 		local objs = {}
 		for i, o in ipairs(st.edgeObjectsToAdd or {}) do
 			if type(o) == "table" and o.model then
