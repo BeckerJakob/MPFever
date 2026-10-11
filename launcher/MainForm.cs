@@ -1119,11 +1119,18 @@ namespace MPFever
                     }) { IsBackground = true, Name = "Reconnect" }.Start();
                 };
             };
-            // the in-game chat: this player's messages go to the host, which sends them to everybody
-            int chatGen = sessionGen;
+            var first = new Client();
+            wire(first);
+            first.Connect(host, port, name);
+            lock (clients) clients.Add(first);
+            current = first;
+            // the in-game chat: this player's messages go to the host, which sends them to everybody. Started once the
+            // connection is up, and only one at a time: a join that failed before (timeout, wrong address) must not leave
+            // a reader behind that takes the messages and marks them unsent
+            int chatGen = sessionGen, chatMine = ++chatReaders;
             new Thread(() =>
             {
-                while (chatGen == sessionGen && !clientCancelled)
+                while (chatGen == sessionGen && chatMine == chatReaders && !clientCancelled)
                 {
                     Thread.Sleep(250);
                     foreach (var line in game.ReadChatOut())
@@ -1136,11 +1143,6 @@ namespace MPFever
                     }
                 }
             }) { IsBackground = true, Name = "Chat" }.Start();
-            var first = new Client();
-            wire(first);
-            first.Connect(host, port, name);
-            lock (clients) clients.Add(first);
-            current = first;
             if (launch) game.Launch(gameDir);
         }
 
@@ -1229,6 +1231,7 @@ namespace MPFever
 
         // ---------------------------------------------------------------- in-game chat
 
+        int chatReaders;   // the chat reader of the latest client session (a newer join stops the older one)
         readonly List<Msg> chatLog = new List<Msg>();   // the last messages, for players who join later
         long chatId;
 
