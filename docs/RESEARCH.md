@@ -121,9 +121,9 @@ A client crashed (access violation in `ecs::CatchmentAreaSystem::EndModification
 
   The fix is to rebuild it exactly as a construction placed against a street is rebuilt (`replayNativeStreet`). The removed segments and nodes come from the engine's own removal proposal (`makeSegmentsRemoveProposal`), not from the capture. The tool's node configurations and id maps are added on top (`C.rebuildNativeWithConstruction` with no construction). Checked with the client's road of a later report: the same number of new segments, all the stops kept. If even that is refused, the build is reported as not reproduced and the host's game is reloaded; the script forms are never tried (`C.movesObjects`). Reloading was the first fix, but every such road a player built then vanished.
 
-### Line routes on the map (found 2026-10-11, fix to be confirmed in a real game)
+### Line routes on the map (2026-10-11, not fixed yet)
 
-`UI::LineViewer::Update` (0x7f7180) draws the lines of one player, looked up in a per-player table (0xad3840), the player being a field of the viewer (+0x28). The viewer is made in 0x29f9d50, whose read of the player word at 0x29f9f14 takes it from an object of the interface's own (not one of the two game states), holding the savegame's company. On a client playing another company, the routes of its own lines flashed and vanished. 0x29f9f14 is now a "UI object" site like the tool factory: off the simulation thread, the savegame's company read there becomes the player's. Each company sees the routes of its own lines only, as in a solo game.
+`UI::LineViewer::Update` (0x7f7180) draws the lines of one player, looked up in a per-player table (0xad3840), the player being a field of the viewer (+0x28). The viewer is made in 0x29f9d50, whose read of the player word at 0x29f9f14 takes it from an object of the interface's own (not one of the two game states), holding the savegame's company. On a client playing another company, the routes of its own lines flashed and vanished. 0x29f9f14 is now a "UI object" site like the tool factory: off the simulation thread, the savegame's company read there becomes the player's. Each company should see the routes of its own lines only, as in a solo game. A real game showed that this is not enough: the client's routes still flash and vanish. The next lead is the other reads of the player word made while the routes are drawn or refreshed (another viewer, or the simulation-side line data sent to the interface).
 
 ---
 
@@ -207,4 +207,4 @@ Next:
 - [ ] A lighter continuous check: hash only what can drift (entity count and order, money, town and industry summaries) instead of the 32 parts
 - [ ] Contracts, company growth and achievements per company
 - [ ] Ground paint
-- [ ] Separate companies: confirm in a real game that the line routes on the map are the player's own (0x29f9f14, line viewer)
+- [ ] Separate companies: the client's line routes still flash and vanish on the map (0x29f9f14 alone did not fix it)

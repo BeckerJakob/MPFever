@@ -13,8 +13,9 @@ MPFever - Changelog
   - FIX (session): the first click on "Host" ended the session at once (the client could never join, the host had to click
     again), and after that the multiplayer window no longer closed by itself. The window now ends a session only when it is
     opened from the main menu after leaving a game.
-  - FIX (separate companies): the routes drawn on the map (line window, line tool) were those of the savegame's company on
-    the other players' games: a player's own routes flashed and vanished. They are now the player's own company's.
+  - KNOWN ISSUE (separate companies): on the other players' games, the routes of their own lines are not drawn on the map
+    (they flash and vanish). The lines themselves work. A first attempt (the map's line viewer reads the player's company)
+    did not fix it; the search goes on.
   - FIX (crash, desync): a terrain edit (raise, lower, flatten...) cannot be held like the other builds, so it is made at
     once on the game of the player who makes it; a game already a little further in time made it a few steps late. An edit
     changes the reputation of the nearest town, so the towns then drifted apart, and a client crashed when the host

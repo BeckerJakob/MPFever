@@ -38,10 +38,10 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 - **Actions arriving near a wait point are no longer one step late at x4.**
 - **No more crash when a road is built across a street with another player's bus stops.** Stops are rebuilt with their junction settings, and a road that cuts a street carrying stops is rebuilt as the game's own tool makes it (the stops move to the new pieces of street).
 - **Hosting works at the first click** (the multiplayer window ended the session it had just started), and the window closes again when the game loads.
-- **Separate companies:** the routes drawn on the map are the player's own lines.
 - **Separate companies:** a terrain edit is paid by the company of the player who made it, on every game.
 - **A simulation difference now reloads the host's game after 30 seconds** instead of 5 minutes, since the games no longer drift by themselves.
 - **In-game chat** (thanks to SlikerDev).
+- **Known issue (separate companies):** the routes of a client's own lines are not drawn on the map yet (they flash and vanish). The lines themselves work.
 
 ## What's new in 0.3.4
 
