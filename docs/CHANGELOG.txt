@@ -2,6 +2,15 @@ MPFever - Changelog
 ===================
 
 0.3.4-experimental - no more crash on resynchronisation, companies stay in sync, shared stations usable
+  - FIX (desync, the main cause): the game's Lua (5.2.2) seeds the hash of its strings with the clock and memory
+    addresses, differently on every PC: the game's own scripts (towns, industries, the scripts of the constructions)
+    walked their tables in a different order on each game and took different decisions - towns grew differently, a
+    new industry got its lanes numbered differently, then people, cars, pollution and money drifted apart. The native
+    module now gives Lua the same seed on every game. Checked on the savegame of a report: two games left alone stay
+    identical for 18 minutes of game time (three runs, every entity created and removed in the same order; before:
+    apart after 6 minutes), a 10-minute session at x4 stays identical, and so do the scenarios with players' actions.
+  - NEW (diagnostic, for developers): a full census of the game state (every component of every entity) compared
+    between two games (MPFEVER_CENSUS with the "det" autotest, or the "census" scenario).
   - FIX (crash): the host's game (or a client's) could crash while loading the game of a resynchronisation, or a little
     after it: the module still wrote this machine's company into the game that had just been unloaded (freed memory).
     It is now written by the simulation only, into the game it is running. Reproduced on the savegame of the report

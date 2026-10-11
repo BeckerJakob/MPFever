@@ -3158,6 +3158,142 @@ H.resync_load = function(from, p)
 	app.loadGame(id, false)
 end
 
+-- Census (diagnostic, MPFEVER_CENSUS set): every component of every entity, written as text (census_<tag>.txt in the
+-- session folder): "TYPE <tab> entity <tab> hash <tab> text". Two games' files compared entity by entity show every value
+-- that differs between them (tools/census_diff.py).
+local CENSUS_TYPES = { "AIRCRAFT", "ANIMAL", "ASSET_GROUP", "BASE_EDGE", "BASE_EDGE_STREET", "BASE_NODE", "BASE_PARALLEL_STRIP",
+	"CUSTOM_STATE", "EMISSION_EMITTER", "FIELD", "GAME_TIME", "GAME_SPEED", "NAME", "LINE", "LOG_BOOK",
+	"MOVE_PATH", "MOVE_PATH_AIRCRAFT", "STATION", "STATION_GROUP", "SIM_PERSON", "SIM_PERSON_AT_TERMINAL",
+	"SIM_PERSON_AT_VEHICLE", "SIM_CARGO", "SIM_ENTITY_AT_BUILDING", "SIM_ENTITY_AT_VEHICLE", "SIM_ENTITY_AT_TERMINAL",
+	"SIM_ENTITY_IDLE", "SIM_ENTITY_MOVING", "SIGNAL_LIST", "TOWN", "INDUSTRY", "STOCK_LIST", "TOWN_BUILDING", "TRANSPORT_VEHICLE",
+	"TRAIN", "CARRIAGE", "CARRIAGE_LIST", "VEHICLE_DEPOT", "COLOR", "CONSTRUCTION", "SUBCONSTRUCTION",
+	"PERSON_CAPACITY", "PLAYER_OWNED", "ACCOUNT", "GAME_SCRIPT", "WAREHOUSE", "TRANSPORT_NETWORK", "MAINTENANCE_COST",
+	"RAILROAD_CROSSING", "PLAYER", "WORLD", "BRIDGE", "BASE_NODE_CONFIG", "LAND_VEHICLE", "BASE_NODE_TRAFFIC_LIGHT", "EDGE_OBJECT",
+	"EMISSION_GRID", "SHIP" }
+-- (left out: what only the renderer uses - MODEL_INSTANCE_LIST, MODEL_PERSON, BOUNDING_VOLUME - and the terrain, compared by
+-- its own signature)
+
+local function census(tag)
+	local c0 = os.clock()
+	local f = C.IO.open(C.DIR .. BS .. "census_" .. tostring(tag) .. ".txt", "wb")
+	if not f then return end
+	local total, only = 0, os.getenv("MPFEVER_CENSUS")
+	-- the entities to look at: those the engine lists per component (not every type can be listed), the street graph,
+	-- the lines, the edges' objects, the players and the world
+	local found, universe, useen = {}, {}, {}
+	local function add(e) if type(e) == "number" and e >= 0 and not useen[e] then useen[e] = true; universe[#universe + 1] = e end end
+	for _, name in ipairs(CENSUS_TYPES) do
+		local list = {}
+		pcall(function() api.engine.forEachEntityWithComponent(function(e) list[#list + 1] = e end, api.type.ComponentType[name]) end)
+		found[name] = list
+		-- (the trees and the emitters - over 100 000 - hold nothing else)
+		if name ~= "ASSET_GROUP" and name ~= "EMISSION_EMITTER" then for _, e in ipairs(list) do add(e) end end
+	end
+	-- the entity groups a type can be on (asking an entity for a component it has not is slow: only plausible ones are asked)
+	local G_ = { edges = R.allEdges(), nodes = R.allNodes(), lines = R.entitiesWith("LINE"), objs = {}, players = {}, world = {},
+		vehicles = found.TRANSPORT_VEHICLE or {}, persons = found.SIM_PERSON or {}, cons = {} }
+	for _, e in ipairs(G_.edges) do
+		add(e)
+		pcall(function()
+			local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+			for _, o in ipairs(be and be.objects or {}) do add(o[1]); G_.objs[#G_.objs + 1] = o[1] end
+		end)
+	end
+	for _, n in ipairs(G_.nodes) do add(n) end
+	for _, l in ipairs(G_.lines) do add(l) end
+	pcall(function() local w = api.engine.util.getWorld(); add(w); G_.world[1] = w end)
+	local pseen = {}
+	local function addPlayer(p) if type(p) == "number" and p >= 0 and not pseen[p] then pseen[p] = true; add(p); G_.players[#G_.players + 1] = p end end
+	pcall(function() addPlayer(api.engine.util.getPlayer()) end)
+	for _, e in ipairs(found.PLAYER_OWNED or {}) do pcall(function() addPlayer(api.engine.getComponent(e, api.type.ComponentType.PLAYER_OWNED).player) end) end
+	for _, k in ipairs({ "CONSTRUCTION", "TOWN_BUILDING", "INDUSTRY", "STATION", "STATION_GROUP", "VEHICLE_DEPOT", "TOWN" }) do
+		for _, e in ipairs(found[k] or {}) do G_.cons[#G_.cons + 1] = e end
+	end
+	table.sort(universe)
+	local WHERE = {
+		BASE_EDGE = { "edges" }, BASE_EDGE_STREET = { "edges" }, BRIDGE = { "edges" }, BASE_PARALLEL_STRIP = { "edges" }, SIGNAL_LIST = { "edges" },
+		BASE_NODE = { "nodes" }, BASE_NODE_CONFIG = { "nodes" }, BASE_NODE_TRAFFIC_LIGHT = { "nodes" }, RAILROAD_CROSSING = { "nodes" },
+		TRANSPORT_NETWORK = { "edges", "nodes", "cons", "objs" }, LINE = { "lines" }, EDGE_OBJECT = { "objs" },
+		NAME = { "lines", "vehicles", "cons", "players", "persons", "objs" }, COLOR = { "lines", "vehicles", "cons", "players" },
+		LOG_BOOK = { "lines", "vehicles", "cons", "players", "persons" }, MOVE_PATH = { "vehicles", "persons" }, LAND_VEHICLE = { "vehicles", "persons" },
+		MOVE_PATH_AIRCRAFT = { "vehicles" }, AIRCRAFT = { "vehicles" }, SHIP = { "vehicles" }, TRAIN = { "vehicles" }, CARRIAGE_LIST = { "vehicles" },
+		SIM_PERSON_AT_TERMINAL = { "persons" }, SIM_PERSON_AT_VEHICLE = { "persons" }, SIM_ENTITY_AT_BUILDING = { "persons" },
+		SIM_ENTITY_AT_VEHICLE = { "persons" }, SIM_ENTITY_AT_TERMINAL = { "persons" }, SIM_ENTITY_IDLE = { "persons" }, SIM_ENTITY_MOVING = { "persons" },
+		SIM_CARGO = { "persons" }, STOCK_LIST = { "cons" }, PERSON_CAPACITY = { "cons" }, SUBCONSTRUCTION = { "cons" }, CUSTOM_STATE = { "cons" },
+		FIELD = { "cons" }, WAREHOUSE = { "cons" }, MAINTENANCE_COST = { "cons", "vehicles", "edges" }, ACCOUNT = { "players", "cons", "lines", "vehicles" },
+		PLAYER = { "players" }, WORLD = { "world" }, GAME_TIME = { "world" }, GAME_SPEED = { "world" }, EMISSION_GRID = { "world" }, GAME_SCRIPT = { "world" },
+	}
+	SIM.censusKnown = SIM.censusKnown or {}
+	for _, name in ipairs(CENSUS_TYPES) do
+		if only == "1" or only == "all" or only:find(name, 1, true) then
+			local tType = os.clock()
+			local ct = api.type.ComponentType[name]
+			local list = found[name]
+			if #list == 0 then
+				local seen = {}
+				local function try(e)
+					if seen[e] then return end
+					seen[e] = true
+					local okc, comp = pcall(api.engine.getComponent, e, ct)
+					if okc and comp ~= nil then list[#list + 1] = e end
+				end
+				local where = WHERE[name]
+				if where then
+					for _, g in ipairs(where) do for _, e in ipairs(G_[g] or {}) do try(e) end end
+				else
+					-- no known group: every entity the first time, then the entities that had it and the new ones
+					local known = SIM.censusKnown[name]
+					if not known then
+						for _, e in ipairs(universe) do try(e) end
+					else
+						for e in pairs(known.has) do try(e) end
+						for _, e in ipairs(universe) do if not known.scanned[e] then try(e) end end
+					end
+					local has, scanned = {}, {}
+					for _, e in ipairs(list) do has[e] = true end
+					for _, e in ipairs(universe) do scanned[e] = true end
+					SIM.censusKnown[name] = { has = has, scanned = scanned }
+				end
+			end
+			table.sort(list)
+			local n = 0
+			for _, e in ipairs(list) do
+				local okc, comp = pcall(api.engine.getComponent, e, ct)
+				local txt
+				if okc and name == "TRANSPORT_NETWORK" then
+					-- (its full text takes a quarter of a second: the lanes' connections and current speeds only)
+					local okt, t = pcall(function()
+						local parts = { "nodes = " .. #comp.nodes, "edges = " .. #comp.edges }
+						for i = 1, #comp.edges do
+							local ed = comp.edges[i]
+							local c = ed.conns
+							parts[#parts + 1] = string.format("e%d = %d.%d-%d.%d %.6g", i, c[1].entity, c[1].index, c[2].entity, c[2].index, ed.curSpeed)
+						end
+						return table.concat(parts, ", ")
+					end)
+					txt = okt and t or ("ERR " .. tostring(t))
+				else
+					txt = okc and C.dump(comp) or ("ERR " .. tostring(comp))
+				end
+				txt = txt:gsub("[%c]", " ")
+				f:write(name, "\t", tostring(e), "\t", tostring(C.hashStr(0, txt)), "\t", (#txt > 2000 and name ~= "GAME_TIME") and txt:sub(1, 2000) or txt, "\n")
+				n = n + 1
+			end
+			f:write("#COUNT\t", name, "\t", tostring(n), "\t", string.format("%.1f", os.clock() - tType), "\n")
+			total = total + n
+		end
+	end
+	f:close()
+	log(string.format("census %s: %d components of %d entities in %.1f s", tostring(tag), total, #universe, os.clock() - c0))
+end
+
+H.census_now = function(from, p)
+	if os.getenv("MPFEVER_CENSUS") then
+		local ok, err = pcall(census, tostring(p.tag) .. "_t" .. tostring(gameTime()))
+		if not ok then log("census failed: " .. tostring(err)) end
+	end
+end
+
 H.det_run = function(from, p)
 	local round, steps = p.round, p.steps or 0
 	setSpeed(0)
@@ -3171,6 +3307,10 @@ H.det_run = function(from, p)
 			local parts = simHash(nil, G.co)
 			parts.reached = (t >= target)
 			send("det_hash", { round = round, steps = steps, parts = parts })
+			-- (MPFEVER_CENSUS_FROM=n: no census before round n)
+			if os.getenv("MPFEVER_CENSUS") and round >= (tonumber(os.getenv("MPFEVER_CENSUS_FROM") or "0") or 0) then
+				pcall(census, "r" .. tostring(round) .. "_t" .. tostring(t))
+			end
 		else
 			G.waits[#G.waits + 1] = { at = G.frames + 1, fn = poll }
 		end

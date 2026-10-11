@@ -93,7 +93,8 @@ namespace MPFever
         GameLink hostGame;
         bool running;
         Action<GameLink, Msg> hostFromGame, clientFromGame;   // the session's handlers on the game's messages (removed at its end)
-        int sessionGen;                                      // a new session: the threads of the previous one stop
+        int sessionGen;
+        int censusN;                                         // autotest: census taken so far                                      // a new session: the threads of the previous one stop
 
         // ---- host session state
         readonly object sendGate = new object();   // every host broadcast goes through this lock: same order for everybody
@@ -881,6 +882,19 @@ namespace MPFever
                 foreach (var scenario in scenarios)
                 foreach (var role in new[] { "host", "client" })
                 {
+                    if (scenario == "census")
+                    {
+                        // every game, paused at the same time, writes its census (MPFEVER_CENSUS): compared afterwards
+                        if (role == "host")
+                        {
+                            Pause("autotest"); Thread.Sleep(8000);
+                            HostSend(Msg.Make("census_now", hostName, "{[\"tag\"]=\"s" + (++censusN) + "\"}"));
+                            AutoLine("census s" + censusN);
+                            Thread.Sleep(150000);
+                            SetSpeed(1, "autotest");
+                        }
+                        continue;
+                    }
                     if (scenario == "resync")
                     {
                         // every game reloads the host's savegame (as when a player joins): the companies must come back as they were
@@ -1559,6 +1573,9 @@ namespace MPFever
         {
             if (started) { Log.W("Test déterminisme : à lancer avant « Démarrer la partie »."); return; }
             int[] schedule = { 0, 100, 500, 1500, 3000 };
+            // MPFEVER_DET_SCHEDULE=0,300,300,...: the steps of each round (diagnostic: find the first step where the games differ)
+            var ds = Environment.GetEnvironmentVariable("MPFEVER_DET_SCHEDULE");
+            if (!string.IsNullOrEmpty(ds)) schedule = ds.Split(',').Select(x => int.Parse(x.Trim())).ToArray();
             int expected;
             lock (players) expected = players.Count;
             if (expected < 2) { Log.W($"Test déterminisme : il faut au moins 2 jeux prêts (actuellement {expected})."); return; }
@@ -1571,9 +1588,11 @@ namespace MPFever
                 {
                     int steps = schedule[round];
                     lock (detGate) { detRound = round; detHashes = new Dictionary<string, Dictionary<object, object>>(); }
+                    // MPFEVER_DET_PAUSE=s: the games stay paused that long before each round (does real time change the simulation?)
+                    if (int.TryParse(Environment.GetEnvironmentVariable("MPFEVER_DET_PAUSE") ?? "", out int detPause) && detPause > 0 && round > 0) Thread.Sleep(detPause * 1000);
                     HostSend(Msg.Make("det_run", hostName, "{[\"round\"]=" + round + ",[\"steps\"]=" + steps + "}"));
                     total += steps;
-                    var deadline = DateTime.UtcNow.AddSeconds(300);
+                    var deadline = DateTime.UtcNow.AddSeconds(Environment.GetEnvironmentVariable("MPFEVER_CENSUS") != null ? 1800 : 300);
                     Dictionary<string, Dictionary<object, object>> got;
                     lock (detGate)
                     {
@@ -1597,6 +1616,7 @@ namespace MPFever
                     }
                 }
                 Log.W("=== Fin du test déterminisme ===");
+                if (Environment.GetEnvironmentVariable("MPFEVER_CENSUS") != null) Thread.Sleep(150000);   // the last census is still being written
             }
             finally { detRunning = false; }
         }
