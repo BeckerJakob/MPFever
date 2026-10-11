@@ -1,6 +1,27 @@
 MPFever - Changelog
 ===================
 
+0.3.6-experimental - fixes from the GitHub issues
+  - FIX (issue #12, builds lost while paused, then a crash): while the game time stood still (a paused session, e.g. in the
+    tutorial), every replayed action (vehicle purchase, line, name...) was counted as a build to come back, so the
+    player's own builds were taken for replays and never sent to the other games. Only the actions that can make a build
+    are counted now.
+  - FIX (issue #12, crash): an action on a vehicle or a line whose purchase or creation had been skipped used the plain id,
+    which was another entity on that game (the engine crashed on it). A vehicle or a line must now still be one.
+  - FIX (issue #12): an action skipped on a game because something it refers to is missing (the games already differ)
+    reloads the host's game at once, as a build that cannot be reproduced does. A skipped action of a paused session is
+    now reported to the host too, and the games are checked during a pause when actions went through (once every game is
+    at the same time and no action came for 5 seconds).
+  - FIX (issue #13, rejoining from the main menu): "Cancel" in the MPFever window now ends the session (the next host game
+    went to the in-game scripts, which do not run in the main menu: the game never loaded). Joining from the main menu
+    ends what is left of an earlier session, a Steam invitation is no longer ignored there, and a reconnection of the
+    earlier session can no longer connect a second time.
+  - FIX (issue #14): editing an existing street station (adding a module to a modular terminal) was refused by the other
+    games ("Collision" with the old station) and reloaded everybody: the old station is now replaced as on the player's
+    game, and its stations kept (the lines stopping there keep their stops).
+  - FIX (issue #4): the session starts when the games loaded the same savegame but one ran a few steps more (up to 10).
+  - Build: the native module links with recent Visual Studio toolsets (__chkstk, issue #4 and PR #8).
+
 0.3.5-experimental - terrain edits in step, in-game chat
   - FIX (crash): a client crashed when the host built a road across a street where the client had put bus stops. Two causes:
     the stops were rebuilt on the other games without the junction settings the stop tool puts back (lane connections,

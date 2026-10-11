@@ -651,6 +651,19 @@ function C.nodeConfigs(list)
 	return cfgs
 end
 
+-- Whether replaying a command can reach onPreBuildProposal (and must be marked as a replay so that it is not shipped
+-- again). Vehicles, lines, names, events... never do: counting them while the game time stood still (a paused session)
+-- made every later build of the player look like a replay, and none was shipped (issue #12).
+local NO_PROPOSAL_PREFIXES = { "makeVehicle", "makeLine", "makeEntitySet", "makeScriptingSendEvent", "makeGameSet",
+	"makeJournal", "makeStockList", "makeTownSet", "makeTownBuildingSet", "makeIndustrySet" }
+function C.makesProposal(fn)
+	fn = tostring(fn)
+	for _, p in ipairs(NO_PROPOSAL_PREFIXES) do
+		if fn:sub(1, #p) == p then return false end
+	end
+	return true
+end
+
 -- Proposal (native, from the construction tools) or SimpleProposal -> SimpleProposal for makeWorldBuildProposalCmd
 -- opts.noStreet: constructions only (their .con template regenerates its own street connector)
 -- opts.seed: deterministic seed for constructions that have none (a script ConstructionEntity needs params.seed)
@@ -960,6 +973,24 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 		end
 		conList[1] = ce
 		P.toAdd = conList
+		-- an edited construction (a module added to a street station): the old one is replaced, and old2new keeps its
+		-- stations (the lines stopping there keep their stops). Without them the new one collided with the old (issue #14).
+		local removeList = entityList(m.toRemove or m.constructionsToRemove)
+		if #removeList > 0 and os.getenv("MPFEVER_CONREMOVE") ~= "0" then
+			local okr, er = pcall(function() P.toRemove = removeList end)
+			if not okr then C.errors[#C.errors + 1] = "toRemove: " .. tostring(er):sub(1, 100) end
+			if type(m.old2newByRank) == "table" then
+				local okm, em = pcall(function()
+					local map = {}
+					for i, e in ipairs(removeList) do
+						local v = m.old2newByRank[i] or m.old2newByRank[tostring(i)]
+						if v ~= nil then map[e] = v end
+					end
+					P.old2new = map
+				end)
+				if not okm then C.errors[#C.errors + 1] = "old2new: " .. tostring(em):sub(1, 100) end
+			end
+		end
 	end
 	local sp = P.proposal
 	local nodes, edges = {}, {}

@@ -407,7 +407,10 @@ end
 
 -- Executes one replicated action. Returns a result record (for the originator's UI and the bindings).
 -- done (optional, with useCallback): called with the result once the engine has answered (or at once on failure)
-local function executeAction(a, sendCommand, useCallback, bind, done)
+-- (in a block: the main chunk of this script is at Lua's limit of 200 locals)
+local executeAction
+do
+local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 	local result = { tok = a.tok, id = a.id, uid = a.uid, fn = a.fn, success = false }
 	-- companies mode: a new line takes its company's colour (a little darker for each line the company already has), so that the
 	-- lines of each company can be told apart on the map and in the line lists
@@ -572,6 +575,22 @@ local function executeAction(a, sendCommand, useCallback, bind, done)
 	end
 	log("action " .. tostring(a.uid) .. " " .. tostring(a.fn) .. " at t=" .. tostring(gameTime()) .. " -> " .. (result.success and "OK" or "REFUSED"))
 	return result
+end
+
+-- done is called exactly once, also for an action skipped before it reached the engine (an unresolved reference...):
+-- a skipped paused action was never reported (issue #12)
+executeAction = function(a, sendCommand, useCallback, bind, done)
+	if not (useCallback and done) then return executeActionOnce(a, sendCommand, useCallback, bind, done) end
+	local fired = false
+	local function once(r)
+		if fired then return end
+		fired = true
+		done(r)
+	end
+	local r = executeActionOnce(a, sendCommand, useCallback, bind, once)
+	if not r.returned then once(r) end
+	return r
+end
 end
 
 local function reverseOf(bind)
@@ -808,7 +827,9 @@ local function simApplyDue(state)
 						st.late = (st.late or 0) + 1
 					end
 					-- mark the replay so that onPreBuildProposal does not ship it again
-					st.replay = { at = now, n = ((st.replay and st.replay.at == now) and st.replay.n or 0) + 1 }
+					if C.makesProposal(a.fn) then
+						st.replay = { at = now, n = ((st.replay and st.replay.at == now) and st.replay.n or 0) + 1 }
+					end
 					state:set(st)
 					SIM.actor = (st.co and a.co) and CO.entityOf(st.co, a.co) or nil
 					local okx, r = pcall(executeAction, a, api.cmd.sendCommand, false, st.bind)
@@ -1222,6 +1243,7 @@ local function captureNativeBuild(state, param)
 	if st.replay and st.replay.at == now and st.replay.n > 0 then
 		st.replay.n = st.replay.n - 1     -- our own replay of a shipped action
 		state:set(st)
+		log("build at t=" .. tostring(now) .. " taken as a replay (" .. st.replay.n .. " more expected at this time)")
 		return
 	end
 	local proposal, playerInitiated = nil, nil
@@ -2262,6 +2284,15 @@ end
 -- next checkpoints to notice the difference)
 local function replayFailed(a, why)
 	pcall(send, "replay_failed", { uid = tostring(a.uid), why = tostring(why):sub(1, 120) })
+end
+
+-- the verdict of a replayed action for the host: a refusal is counted; an action skipped because something it refers to
+-- is missing here means the games already differ, so the host's game is reloaded at once (issue #12: the next action
+-- of the same player crashed the game before the next state check)
+function G.reportResult(r)
+	if r.success then return end
+	send("act_refused", { uid = r.uid, fn = r.fn, err = r.err })
+	if tostring(r.err or ""):find("^DESYNC") then replayFailed(r, r.err) end
 end
 
 -- the street segments a construction brings with it (the entrance of a depot or of a street station, the paths of a
@@ -3665,7 +3696,7 @@ local function runPausedActions()
 			elseif a.fn == "mpfCoJoin" or coIsLoanEvent({ co = G.co }, a) then
 				toSim("co_apply", a)
 			else
-				toSim("replaying", {})
+				if C.makesProposal(a.fn) then toSim("replaying", {}) end
 				-- paused: the engine answers in a callback, a frame later; the result is reported then
 				withActor(PL(a), executeAction, a, O.sendCommand, true, G.bind, function(r)
 					r.at = now
@@ -3675,7 +3706,7 @@ local function runPausedActions()
 					G.resultsSeen[tostring(r.uid) .. "@" .. tostring(r.at)] = true
 					C.appendFile(C.DIR .. BS .. "results.log", C.line("result", r))
 					if r.created then C.appendFile(C.DIR .. BS .. "bindings.log", r.created.key .. " " .. tostring(r.created.e) .. NL) end
-					if not r.success then send("act_refused", { uid = r.uid, fn = r.fn, err = r.err }) end
+					G.reportResult(r)
 				end)
 			end
 		else
@@ -4741,6 +4772,67 @@ H.attach = function(from, p)
 	if not ok then
 		log("AUTOTEST attach failed: " .. tostring(err))
 		AUTO.results[#AUTO.results + 1] = "attach error " .. tostring(err)
+		autoFinish()
+	end
+end
+
+-- an existing construction against a street rebuilt in place, as the construction tool does when a module is added
+-- (toRemove = the old one, old2new = its stations kept; issue #14). MPFEVER_CONEDIT_FILE=part of a file name picks it.
+H.conedit = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	local ok, err = pcall(function()
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local want = os.getenv("MPFEVER_CONEDIT_FILE")
+	local pick, pc = nil, nil
+	for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
+		local okc, c = pcall(function() return api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) end)
+		if okc and c then
+			local f = tostring(c.fileName)
+			local street = f:find("street", 1, true) or f:find("modular_terminal", 1, true) or f:find("depot", 1, true)
+			local has = false
+			pcall(function() has = #c.stations > 0 or #c.depots > 0 end)
+			if has and street and (not want or f:find(want, 1, true)) and (not pick or e < pick) then pick, pc = e, c end
+		end
+	end
+	if not pick then log("AUTOTEST conedit: no construction against a street"); AUTO.results[#AUTO.results + 1] = "conedit: none"; return autoFinish() end
+	-- what C.rebuildNativeWithConstruction writes on a native proposal for an edit (read back, nothing sent)
+	pcall(function()
+		local P = api.type.Proposal.new()
+		local okw, ew = pcall(function() P.toRemove = { pick }; P.old2new = { [pick] = 0 } end)
+		local line = "conedit native fields: " .. (okw and ("toRemove " .. #P.toRemove .. " {" .. tostring(P.toRemove[1]) .. "} old2new[" .. pick .. "]=" .. tostring(P.old2new[pick])) or ("write failed " .. shortErr(ew)))
+		log("AUTOTEST " .. line)
+		AUTO.results[#AUTO.results + 1] = line
+	end)
+	local params = C.marshal(pc.params) or {}
+	params.upgrade = true
+	local m = { toAdd = { { fileName = pc.fileName, params = params, transf = C.marshal(pc.transf), playerEntity = api.engine.util.getPlayer() } },
+		toRemove = { pick }, old2newByRank = { [1] = 0 } }
+	local okp, sp = pcall(C.rebuildProposal, m, { noStreet = true, seed = 7919 })
+	if not okp then log("AUTOTEST conedit proposal error " .. shortErr(sp)); AUTO.results[#AUTO.results + 1] = "conedit: no proposal"; return autoFinish() end
+	local cons0 = #R.entitiesWith("CONSTRUCTION")
+	log("AUTOTEST conedit: rebuilding construction " .. pick .. " " .. tostring(pc.fileName))
+	local ctx = api.type.Context.new()
+	ctx.checkTerrainAlignment = true
+	ctx.cleanupStreetGraph = false
+	ctx.gatherBuildings = true
+	ctx.gatherFields = true
+	ctx.player = api.engine.util.getPlayer()
+	deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), function(res, success)
+		local why = ""
+		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+		G.waits[#G.waits + 1] = { at = G.frames + 20, fn = function()
+			local line = "conedit " .. tostring(pc.fileName) .. ": " .. (success and "built" or ("refused " .. why)) .. ", constructions " .. cons0 .. " -> " .. #R.entitiesWith("CONSTRUCTION")
+			log("AUTOTEST " .. line)
+			AUTO.results[#AUTO.results + 1] = line
+			G.waits[#G.waits + 1] = { at = G.frames + 60, fn = autoFinish }
+		end }
+	end)
+	end)
+	if not ok then
+		log("AUTOTEST conedit failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "conedit error " .. tostring(err)
 		autoFinish()
 	end
 end
@@ -7082,7 +7174,7 @@ local function guiUpdate(userParams, state, guiState)
 		if not G.resultsSeen[key] then
 			G.resultsSeen[key] = true
 			C.appendFile(C.DIR .. BS .. "results.log", C.line("result", r))
-			if not r.success then send("act_refused", { uid = r.uid, fn = r.fn, err = r.err }) end
+			G.reportResult(r)
 		end
 	end
 

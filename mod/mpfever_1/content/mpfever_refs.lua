@@ -330,6 +330,10 @@ resolve = function(r, bind)
 		end
 		return api.engine.util.getPlayer()
 	end
+	-- a vehicle or a line: the id must still be one (a skipped purchase left the key unbound, and the same id was
+	-- something else here: the engine then crashed on the vehicle command, issue #12)
+	if k == "veh" then return comp(r.id, "TRANSPORT_VEHICLE") and r.id or nil end
+	if k == "line" then return comp(r.id, "LINE") and r.id or nil end
 	-- plain id (things from the save keep their id everywhere)
 	local ok, exists = pcall(function() return api.engine.entityExists(r.id) end)
 	if ok and exists then return r.id end

@@ -32,6 +32,17 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 - **Joining and reconnecting.** Joining a session already running works. A lost connection reconnects by itself for 5 minutes.
 - **In the game's 13 languages.** The launcher and the in-game windows follow the language of Transport Fever 3.
 
+## What's new in 0.3.6
+
+Fixes from the GitHub issues (thanks to Steelworm and Shog-SC for their detailed analyses):
+
+- **Builds made while the session is paused** (in the tutorial, for example) are sent to the other games again, and an action on a vehicle that was never bought no longer crashes a game (#12).
+- **A difference found while applying an action** (something it refers to is missing) reloads the host's game at once, and the games are checked during a pause too (#12).
+- **Rejoining from the main menu works:** "Cancel" ends the session, and a join or a Steam invitation from the main menu replaces what is left of an earlier session (#13).
+- **Editing an existing street station** (adding a module to a terminal) is reproduced on the other games: its lines keep their stops (#14).
+- **A session starts** even when one game ran a few steps more after loading (#4).
+- **The native module builds** with recent Visual Studio toolsets (#4).
+
 ## What's new in 0.3.5
 
 - **Terrain edits land at the same step on every game.** A terrain tool cannot be delayed on the game of the player who uses it, so a game slightly ahead used to apply the edit a few steps late. An edit changes the reputation of the nearest town, so the towns drifted apart and a later demolition could crash a game. While a player has a terrain tool in hand, the other games now stay just behind that player's game.
@@ -109,7 +120,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Experimental (0.3.5). Supported game builds:
+Experimental (0.3.6). Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.

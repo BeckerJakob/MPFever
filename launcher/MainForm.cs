@@ -42,7 +42,7 @@ namespace MPFever
 
     sealed class MainForm : Form
     {
-        public const string Version = "0.3.5-experimental";
+        public const string Version = "0.3.6-experimental";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -117,6 +117,8 @@ namespace MPFever
         readonly Dictionary<int, Dictionary<string, Dictionary<object, object>>> hashes = new Dictionary<int, Dictionary<string, Dictionary<object, object>>>();
         string syncText = "—";
         int actsRelayed, actRefused, actFails, desyncs;
+        double lastActRelayed;   // when the last action was relayed (the checks of a paused session wait for quiet)
+        string joinedAddr;   // the host this menu joined (a second request for it is ignored)
         volatile bool detRunning;
 
         // ---- determinism test
@@ -642,7 +644,8 @@ namespace MPFever
             if (k < 0) return;
             var addr = connect.Substring(k + "+mpfever_connect".Length).Trim();
             Log.Ok(T("Invitation Steam acceptée : ", "Steam invitation accepted: ") + addr);
-            if (hostGame != null || clients.Count > 0) { Log.Warn(T("Déjà dans une session : invitation ignorée.", "Already in a session: invitation ignored.")); return; }
+            // in the main menu, a session left behind does not stop an invitation (the join ends it, issue #13)
+            if (hostGame != null || (clients.Count > 0 && menuGame.InGame)) { Log.Warn(T("Déjà dans une session : invitation ignorée.", "Already in a session: invitation ignored.")); return; }
             OnMenuRequest("join", addr, menuGame.Name);
         }
 
@@ -751,8 +754,17 @@ namespace MPFever
             }
             else if (cmd == "join")
             {
-                if (hostGame != null || clients.Count > 0) return;
+                if (hostGame != null) return;
                 string host = arg.Trim();
+                if (clients.Count > 0 || menuGame.InGame)
+                {
+                    // the same host asked twice (at startup, the command line and a Steam invitation)
+                    if (clients.Count > 0 && !menuGame.InGame && host == joinedAddr) return;
+                    // this window only shows in the main menu: what is left of an earlier session is stale (a game sent
+                    // by the host would go to the in-game scripts, which do not run here, issue #13)
+                    EndSession(T("=== Nouvelle connexion : fin de la session précédente ===", "=== New connection: the previous session ends ==="));
+                }
+                joinedAddr = host;
                 int port = (int)portBox.Value;
                 int c = host.LastIndexOf(':');
                 if (c > 0 && int.TryParse(host.Substring(c + 1), out int p2)) { port = p2; host = host.Substring(0, c); }
@@ -786,19 +798,19 @@ namespace MPFever
             }
             else if (cmd == "cancel")
             {
-                clientCancelled = true;
-                foreach (var cl in clients.ToList()) cl.Dispose();
-                clients.Clear();
-                menuPhase = "idle"; menuText = ""; MenuStatus();
+                // the whole session state goes: a stale "in game" flag sent the next host game to the in-game scripts,
+                // which do not run in the main menu (issue #13)
+                if (resyncing) { Log.Warn(T("Annulation pendant une resynchronisation : session conservée.", "Cancel during a resynchronisation: session kept.")); return; }
+                EndSession(T("=== Annulé : fin de la session ===", "=== Cancelled: the session ends ==="));
             }
         }
 
         /// <summary>The player left the game for the main menu: connections closed, the session's state cleared, the files the
         /// game and MPFever.exe exchange emptied (the next game must not read the previous session's messages). The game
         /// keeps running: the MPFever window of its main menu can host or join again.</summary>
-        void EndSession()
+        void EndSession(string why = null)
         {
-            Log.W(T("=== Retour au menu principal : fin de la session ===", "=== Back to the main menu: the session ends ==="));
+            Log.W(why ?? T("=== Retour au menu principal : fin de la session ===", "=== Back to the main menu: the session ends ==="));
             sessionGen++;
             clientCancelled = true;
             foreach (var cl in clients.ToList()) try { cl.Dispose(); } catch { }
@@ -815,9 +827,11 @@ namespace MPFever
             lock (clocks) clocks.Clear();
             lock (hashes) hashes.Clear();
             lock (chatLog) { chatLog.Clear(); chatId = 0; }
+            lock (resyncParts) resyncParts.Clear();   // a host game half received in the session that ends
             hashN = 0; syncText = "—"; actsRelayed = actRefused = actFails = desyncs = 0;
             resyncing = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = "";
             joinPending = false;
+            joinedAddr = null;
             if (steamConnect != null) { steamConnect = null; SteamCtl("clear", null); }
             if (menuGame != null)
             {
@@ -1054,6 +1068,8 @@ namespace MPFever
             if (!games.Contains(game)) games.Add(game);
             Client current = null;
             clientCancelled = false;
+            // a reconnect thread of an earlier session must not wake up in this one (issue #13)
+            int gen = sessionGen;
             // the in-game MPFever window: the host's view of the session, and this game's own link to the host
             string myId = name, hostStatus = "";
             long lastChatId = 0;   // the host sends its chat history again on a reconnection
@@ -1105,20 +1121,20 @@ namespace MPFever
                     Log.Warn(F("[{0}] connexion à l'hôte perdue", "[{0}] connection to the host lost", name));
                     ClientStatus("lost", 0);
                     game.ToGame(Msg.Make("session", "MPFever", "{[\"started\"]=false,[\"speed\"]=0}"));
-                    if (!menuMode || clientCancelled) return;
+                    if (!menuMode || clientCancelled || gen != sessionGen) return;
                     // the connection dropped: try again for 5 minutes; back with the host, this game receives its
                     // game again like any player who joins
                     new Thread(() =>
                     {
                         var end = DateTime.UtcNow.AddMinutes(5);
-                        for (int attempt = 1; DateTime.UtcNow < end && !clientCancelled; attempt++)
+                        for (int attempt = 1; DateTime.UtcNow < end && !clientCancelled && gen == sessionGen; attempt++)
                         {
                             menuPhase = "connecting";
                             menuText = F("Connexion à l'hôte perdue : reconnexion (essai {0})...", "Connection to the host lost: reconnecting (attempt {0})...", attempt);
                             MenuStatus();
                             ClientStatus("lost", attempt);
                             Thread.Sleep(5000);
-                            if (clientCancelled) return;
+                            if (clientCancelled || gen != sessionGen) return;
                             var c = new Client();
                             try
                             {
@@ -1132,7 +1148,7 @@ namespace MPFever
                             }
                             catch (Exception e) { Log.Warn(T("Reconnexion : ", "Reconnecting: ") + e.Message); }
                         }
-                        if (!clientCancelled) { menuPhase = "error"; menuText = T("Connexion à l'hôte perdue (reconnexion impossible).", "Connection to the host lost (could not reconnect)."); MenuStatus(); ClientStatus("gone", 0); }
+                        if (!clientCancelled && gen == sessionGen) { menuPhase = "error"; menuText = T("Connexion à l'hôte perdue (reconnexion impossible).", "Connection to the host lost (could not reconnect)."); MenuStatus(); ClientStatus("gone", 0); }
                     }) { IsBackground = true, Name = "Reconnect" }.Start();
                 };
             };
@@ -1346,8 +1362,11 @@ namespace MPFever
             lock (clocks) times = clocks.Values.Select(c => c.T).Distinct().ToList();
             lock (players) n = players.Count;
             if (n < 1) { Log.Warn(T("Aucun jeu prêt.", "No game is ready.")); return; }
-            if (times.Count > 1) { Log.Warn(T("Les jeux ne sont pas au même temps (", "The games are not at the same time (") + string.Join(", ", times) + T(") : chargez exactement la même sauvegarde partout.", "): load exactly the same savegame everywhere.")); return; }
-            lock (sessionGate) { started = true; speed = 0; pauseAt = times.Count == 1 ? times[0] : (long?)null; }
+            // a game often runs a few steps after loading before it pauses (issue #4): up to 10 steps apart is the same
+            // savegame. The session pauses at the earliest time, as when the games overshoot a pause: the first check is
+            // taken at the latest, and the games behind catch up to it.
+            if (times.Count > 1 && times.Max() - times.Min() > 10 * Step) { Log.Warn(T("Les jeux ne sont pas au même temps (", "The games are not at the same time (") + string.Join(", ", times) + T(") : chargez exactement la même sauvegarde partout.", "): load exactly the same savegame everywhere.")); return; }
+            lock (sessionGate) { started = true; speed = 0; pauseAt = times.Count > 0 ? times.Min() : (long?)null; }
             Log.W(F("=== Partie démarrée avec {0} jeu(x) au temps {1} : vérification initiale... ===", "=== Game started with {0} game(s) at time {1}: initial check... ===", n, times.FirstOrDefault()));
             BroadcastSession();
             // every game just loaded the same savegame: a part already different now is a local measure
@@ -1392,6 +1411,7 @@ namespace MPFever
         void HostLoop(int gen)
         {
             double lastHash = Now, lastSession = Now, lastStatus = 0;
+            int actsAtHash = actsRelayed;
             while (gen == sessionGen)
             {
                 Thread.Sleep(250);
@@ -1407,8 +1427,18 @@ namespace MPFever
                 lock (clocks) clocks.TryGetValue(hostName, out hc);
 
                 if (Now - lastSession > 3) { lastSession = Now; BroadcastSession(); }   // late joiners and lost messages
-                bool paused; lock (sessionGate) paused = pauseAt.HasValue;
-                if (started && !paused && !detRunning && !resyncing && Now - lastHash > HashEverySeconds) { lastHash = Now; RequestHash(); }
+                bool paused; long? pausedAt; lock (sessionGate) { paused = pauseAt.HasValue; pausedAt = pauseAt; }
+                // paused: builds and actions still apply, so the games are checked when actions went through since the last
+                // check, once every game has stopped (issue #12: 9 minutes of builds in a pause went unchecked)
+                // (every game at the same time and no action for 5 s: a check taken while an action is still on its way to a
+                // game is a false difference, and its money would be corrected wrongly)
+                bool allStopped; lock (clocks) allStopped = clocks.Count > 0 && clocks.Values.Select(c => c.T).Distinct().Count() == 1;
+                bool pausedWork = paused && actsRelayed != actsAtHash && pausedAt.HasValue && MaxClock() >= pausedAt.Value
+                    && allStopped && Now - lastActRelayed > 5;
+                if (started && (!paused || pausedWork) && !detRunning && !resyncing && Now - lastHash > HashEverySeconds)
+                {
+                    lastHash = Now; actsAtHash = actsRelayed; RequestHash();
+                }
             }
         }
 
@@ -1476,6 +1506,7 @@ namespace MPFever
                             relay.Broadcast(m, from);
                         }
                         actsRelayed++;
+                        lastActRelayed = Now;
                         var t = LuaLit.Parse(m.Payload) as Dictionary<object, object>;
                         string fn = t != null && t.TryGetValue("fn", out var f) ? f.ToString() : "?";
                         string at = t != null && t.TryGetValue("at", out var a) ? LuaLit.Show(a) : "?";

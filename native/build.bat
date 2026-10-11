@@ -16,6 +16,8 @@ if not exist out mkdir out
 lib /nologo /def:kernel32.def /out:out\kernel32.lib /machine:x64 || exit /b 1
 cl /nologo /c /O2 /GS- /Zl /EHs-c- /GR- /std:c++17 mpfever_native.cpp /Fo:out\mpfever_native.obj || exit /b 1
 cl /nologo /c /O2 /GS- /Zl /EHs-c- /GR- /std:c++17 winhttp_proxy.cpp /Fo:out\winhttp_proxy.obj || exit /b 1
+rem __chkstk, which recent toolsets call and the CRT would give (the module links without it)
+ml64 /nologo /c /Fo out\chkstk.obj chkstk.asm || exit /b 1
 rem the module takes the name winhttp.dll: the game loads it by itself from its folder
-link /nologo /DLL /NODEFAULTLIB /ENTRY:DllMain /DEF:winhttp.def /OUT:out\winhttp.dll out\mpfever_native.obj out\winhttp_proxy.obj out\kernel32.lib || exit /b 1
+link /nologo /DLL /NODEFAULTLIB /ENTRY:DllMain /DEF:winhttp.def /OUT:out\winhttp.dll out\mpfever_native.obj out\winhttp_proxy.obj out\chkstk.obj out\kernel32.lib || exit /b 1
 echo BUILD OK
