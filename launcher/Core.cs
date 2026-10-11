@@ -469,6 +469,54 @@ namespace MPFever
             }
         }
 
+        long chatOutOff;
+
+        /// <summary>The messages written in the in-game chat since the last call (chat_out.txt, appended by the mod: one
+        /// "seq TAB text" line per message).</summary>
+        public List<string> ReadChatOut()
+        {
+            var res = new List<string>();
+            try
+            {
+                var f = Path.Combine(Dir, "chat_out.txt");
+                if (!File.Exists(f)) return res;
+                using (var fs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    if (fs.Length < chatOutOff) chatOutOff = 0;
+                    if (fs.Length == chatOutOff) return res;
+                    fs.Seek(chatOutOff, SeekOrigin.Begin);
+                    var buf = new byte[fs.Length - chatOutOff];
+                    int n = 0;
+                    while (n < buf.Length) { int r = fs.Read(buf, n, buf.Length - n); if (r <= 0) break; n += r; }
+                    int last = n > 0 ? Array.LastIndexOf(buf, (byte)'\n', n - 1) : -1;
+                    if (last < 0) return res;   // a line still being written
+                    chatOutOff += last + 1;
+                    foreach (var raw in Utf8.GetString(buf, 0, last + 1).Split('\n'))
+                    {
+                        var line = raw.TrimEnd('\r');
+                        int tab = line.IndexOf('\t');
+                        if (tab >= 0) line = line.Substring(tab + 1);
+                        if (line.Trim().Length > 0) res.Add(line);
+                    }
+                }
+            }
+            catch { }
+            return res;
+        }
+
+        /// <summary>A line of the in-game chat (chat.txt, read by the mod): id TAB unix time TAB kind (msg, join, left,
+        /// unsent) TAB player TAB text.</summary>
+        public void AppendChat(long id, long time, string kind, string name, string text)
+        {
+            string Clean(string s) => (s ?? "").Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
+            try
+            {
+                lock (writeGate)
+                    File.AppendAllText(Path.Combine(Dir, "chat.txt"), id + "\t" + time + "\t" + Clean(kind) + "\t" + Clean(name) + "\t" + Clean(text) + "\n", Utf8);
+            }
+            catch (Exception e) { Log.W("chat.txt: " + e.Message); }
+        }
+
         /// <summary>The last request of the main menu's MPFever window: seq, command, argument, player name (or null).</summary>
         public string[] ReadMenuRequest()
         {
