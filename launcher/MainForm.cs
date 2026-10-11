@@ -520,7 +520,7 @@ namespace MPFever
             if (gameLabel.Text != g) { gameLabel.Text = g; gameLabel.Width = g == "" ? 0 : TextRenderer.MeasureText(g, gameLabel.Font).Width + Theme.S(8); }
         }
 
-        string PlayerName() => string.IsNullOrWhiteSpace(nameBox.Text) ? "joueur" : nameBox.Text.Trim();
+        string PlayerName() => string.IsNullOrWhiteSpace(nameBox.Text) ? "Player" : nameBox.Text.Trim();
         double Now => clockWatch.Elapsed.TotalSeconds;
 
         void Guard(Action a)
@@ -713,7 +713,7 @@ namespace MPFever
         {
             name = new string((name ?? "").Trim().Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').ToArray());
             if (name == "") name = new string(Environment.UserName.Where(char.IsLetterOrDigit).ToArray());
-            if (name == "") name = "joueur";
+            if (name == "") name = "Player";
             Log.Dim(F("Menu : {0} {1} ({2})", "Menu: {0} {1} ({2})", cmd, arg, name));
             // the name typed in the MPFever window is kept for next time (the other requests do not send one)
             if (cmd == "host" || cmd == "join") SaveSetting("name", name);
@@ -1063,7 +1063,7 @@ namespace MPFever
 
         void StartLocalTest()
         {
-            StartHost("Hote", true);
+            StartHost("Host", true);
             Log.W(T("Lancement du second jeu dans 20 s...", "Starting the second game in 20 s..."));
             var t = new System.Windows.Forms.Timer { Interval = autotest ? 8000 : 20000 };
             t.Tick += (s, e) =>
@@ -1201,7 +1201,7 @@ namespace MPFever
                        (companyMode == "separate" ? ",[\"cstart\"]=" + StartMoney() : "") + "}";
         }
 
-        void BroadcastSession() => HostSend(Msg.Make("session", hostName ?? "hote", SessionPayload()));
+        void BroadcastSession() => HostSend(Msg.Make("session", hostName ?? "Host", SessionPayload()));
 
         void StartSession()
         {
@@ -1462,7 +1462,7 @@ namespace MPFever
                 bool changed = syncState != 1;
                 syncState = 1;
                 syncParts = "";
-                syncText = "SYNC ✔";
+                syncText = T("SYNCHRONE ✔", "IN SYNC ✔");
                 if (changed || n % 6 == 1) Log.Ok(F("Synchronisation n°{0} (temps {1}) : IDENTIQUE sur {2} jeux ({3} mesures)", "Sync check #{0} (time {1}): IDENTICAL on {2} games ({3} measures)", n, time, names.Count, keys.Count));
             }
             else if (diffKeys.Where(d => !ignoredParts.Contains(d) && !CorrectedParts.Contains(d)).All(DriftParts.Contains))
@@ -1573,7 +1573,7 @@ namespace MPFever
                 Thread.Sleep(2000);
                 Log.W(F("=== Resynchronisation n°{0} terminée en {1:0} s ===", "=== Resynchronisation #{0} done in {1:0} s ===", id, (DateTime.UtcNow - t0).TotalSeconds));
             }
-            catch (Exception e) { Log.W("Resynchronisation : " + e.Message); }
+            catch (Exception e) { Log.Err(T("Resynchronisation : ", "Resynchronisation: ") + e.Message); }
             finally
             {
                 lastResync = Now;
@@ -1624,15 +1624,15 @@ namespace MPFever
 
         void RunDeterminism()
         {
-            if (started) { Log.W("Test déterminisme : à lancer avant « Démarrer la partie »."); return; }
+            if (started) { Log.Warn(T("Test déterminisme : à lancer avant « Démarrer la partie ».", "Determinism test: run it before « Start the game ».")); return; }
             int[] schedule = { 0, 100, 500, 1500, 3000 };
             int expected;
             lock (players) expected = players.Count;
-            if (expected < 2) { Log.W($"Test déterminisme : il faut au moins 2 jeux prêts (actuellement {expected})."); return; }
+            if (expected < 2) { Log.Warn(F("Test déterminisme : il faut au moins 2 jeux prêts (actuellement {0}).", "Determinism test: at least 2 games must be ready (now {0}).", expected)); return; }
             detRunning = true;
             try
             {
-                Log.W($"=== Test déterminisme sur {expected} jeux ===");
+                Log.W(F("=== Test déterminisme sur {0} jeux ===", "=== Determinism test on {0} games ===", expected));
                 int total = 0;
                 for (int round = 0; round < schedule.Length; round++)
                 {
@@ -1647,7 +1647,7 @@ namespace MPFever
                         while (detHashes.Count < expected && DateTime.UtcNow < deadline) Monitor.Wait(detGate, 1000);
                         got = new Dictionary<string, Dictionary<object, object>>(detHashes);
                     }
-                    if (got.Count < expected) { Log.W($"Tour {round} : réponses manquantes ({got.Count}/{expected}), test arrêté."); return; }
+                    if (got.Count < expected) { Log.Err(F("Tour {0} : réponses manquantes ({1}/{2}), test arrêté.", "Round {0}: answers missing ({1}/{2}), test stopped.", round, got.Count, expected)); return; }
                     var names = got.Keys.OrderBy(k => k).ToList();
                     var keys = got.Values.Where(v => v != null).SelectMany(v => v.Keys.Select(k => k.ToString())).Distinct().OrderBy(k => k).ToList();
                     var diffs = new List<string>();
@@ -1656,14 +1656,14 @@ namespace MPFever
                         var vals = names.Select(n => got[n] != null && got[n].TryGetValue(k, out var v) ? LuaLit.Show(v) : "absent").ToList();
                         if (vals.Distinct().Count() > 1) diffs.Add($"{k}: " + string.Join(" | ", names.Select((n, i) => n + "=" + vals[i])));
                     }
-                    if (diffs.Count == 0) Log.W($"Tour {round} (+{steps} pas, total {total}) : IDENTIQUE sur {keys.Count} mesures");
+                    if (diffs.Count == 0) Log.Ok(F("Tour {0} (+{1} pas, total {2}) : IDENTIQUE sur {3} mesures", "Round {0} (+{1} steps, total {2}): IDENTICAL on {3} measures", round, steps, total, keys.Count));
                     else
                     {
-                        Log.W($"Tour {round} (+{steps} pas, total {total}) : {diffs.Count} DIFFÉRENCE(S)");
+                        Log.Err(F("Tour {0} (+{1} pas, total {2}) : {3} DIFFÉRENCE(S)", "Round {0} (+{1} steps, total {2}): {3} DIFFERENCE(S)", round, steps, total, diffs.Count));
                         foreach (var d in diffs) Log.W("    " + d);
                     }
                 }
-                Log.W("=== Fin du test déterminisme ===");
+                Log.W(T("=== Fin du test déterminisme ===", "=== End of the determinism test ==="));
             }
             finally { detRunning = false; }
         }

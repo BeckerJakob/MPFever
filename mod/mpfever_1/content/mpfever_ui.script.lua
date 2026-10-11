@@ -635,35 +635,52 @@ local function installSession(react, builtin)
 			text(C.Tf("%s joueur(s) dans la partie", "%s player(s) in the game", playerCount(st))),
 			text(T("Afficher pendant la partie  ›", "Show while playing  ›"), nil, "info"),
 		}
-		return builtin.Button {
-			meta = { class = "secondary" },
-			content = builtin.Component { layout = builtin.BoxLayout { orientation = V, children = lines } },
-			onClick = function() openSession(p.commonParams) end,
-		}
+		-- a recipe's result must be a layout (the game refuses a bare button here)
+		return builtin.BoxLayout { children = {
+			builtin.Button {
+				meta = { class = "secondary" },
+				content = builtin.Component { layout = builtin.BoxLayout { orientation = V, children = lines } },
+				onClick = function() openSession(p.commonParams) end,
+			},
+		} }
 	end)
 
 	-- the pause menu's main page is wrapped: drawn as usual, with the card floating at its right
-	local rr = rawget(_G, "_react")
-	if type(rr) ~= "table" or type(rr.recipeReplace) ~= "table" or type(rr.originalRecipeFn) ~= "table" then
+	-- (the game's UI state has no rawget, and maybe no debug library: every step is guarded)
+	local okR, rr = pcall(function() return _react end)
+	if not (okR and type(rr) == "table" and type(rr.recipeReplace) == "table" and type(rr.originalRecipeFn) == "table") then
 		log("session: the pause menu cannot be extended (no _react)")
 		return
 	end
-	local id = nil
-	-- the recipe's id from react.lua's own table of names (the only upvalue of GetRecipeName): no side effect on the game
-	if type(debug) == "table" and type(debug.getupvalue) == "function" and type(react.GetRecipeName) == "function" then
+	local id, how = nil, nil
+	-- 0. the id caught while the page registered (mpfever_pause.lua, loaded by the native module in front of pause_menu.tl)
+	local okP, pid = pcall(function() return package.loaded["mpfever_pause_id"] end)
+	if okP and pid ~= nil and rr.originalRecipeFn[pid] then id, how = pid, "native hook" end
+	-- 1. the recipe's id from react.lua's own table of names (the only upvalue of GetRecipeName): no side effect
+	local okD, dbg = pcall(function() return debug end)
+	if id then
+		-- found
+	elseif okD and type(dbg) == "table" and type(dbg.getupvalue) == "function" and type(react.GetRecipeName) == "function" then
 		for i = 1, 8 do
-			local okU, name, names = pcall(debug.getupvalue, react.GetRecipeName, i)
+			local okU, name, names = pcall(dbg.getupvalue, react.GetRecipeName, i)
 			if not okU or name == nil then break end
 			if type(names) == "table" then
 				for fn, n in pairs(names) do
 					if n == "PauseMainPage" then
 						local okI, rid = pcall(react.GetRecipeId, fn)
-						if okI and rid ~= nil and rr.originalRecipeFn[rid] then id = rid end
+						if okI and rid ~= nil and rr.originalRecipeFn[rid] then id, how = rid, "names table" end
 					end
 				end
 			end
 			if id then break end
 		end
+	else
+		log("session: no debug library in the UI state")
+	end
+	-- 2. the id the engine gives the name, only when it is the id of an existing recipe (ids given per name)
+	if not id then
+		local okM, rid = pcall(function() return api.gui.react.detail.makeRecipeId("PauseMainPage") end)
+		if okM and rid ~= nil and rr.originalRecipeFn[rid] then id, how = rid, "recipe name" end
 	end
 	if not id then
 		log("session: the pause menu's page was not found: MPFever's window cannot be opened in game")
@@ -679,7 +696,7 @@ local function installSession(react, builtin)
 			},
 		}
 	end
-	log("session: MPFever's card added to the pause menu")
+	log("session: MPFever's card added to the pause menu (page found by " .. tostring(how) .. ")")
 end
 
 -- results of our own actions, written by the game-script bridge after the simulation applied them

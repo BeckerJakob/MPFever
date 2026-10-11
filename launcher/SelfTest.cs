@@ -17,11 +17,11 @@ namespace MPFever
         {
             int port = 28191;
             var relay = new Relay();
-            var hostGame = new GameLink("Hote", "host");
+            var hostGame = new GameLink("Host", "host");
             var clientGame = new GameLink("Client", "client");
             relay.Received += (p, m) => hostGame.ToGame(m);
-            relay.Joined += p => relay.Send(p, Msg.Make("welcome", "Hote", "{[\"you\"]=\"" + p.Name + "\"}"));
-            hostGame.FromGame += (g, m) => { m.From = "Hote"; relay.Broadcast(m); };
+            relay.Joined += p => relay.Send(p, Msg.Make("welcome", "Host", "{[\"you\"]=\"" + p.Name + "\"}"));
+            hostGame.FromGame += (g, m) => { m.From = "Host"; relay.Broadcast(m); };
             relay.Start(port);
 
             var client = new Client();
