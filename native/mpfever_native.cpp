@@ -417,6 +417,9 @@ static volatile long g_mainTid = 0;        // the game's main thread (its interf
 static volatile i64 g_pickCount[8][3];     // per redirected reading: [0] on the interface's thread, [1] the simulation's, [2] another
 static volatile u64 g_gsWord[2];           // addresses of the local-player word of the two game states (seen in Replicate)
 static volatile long g_simTid = 0;         // the simulation thread (seen in its pre-iteration)
+static bool g_luaSeedFixed = false;           // Lua's string hash seed made constant (PatchLuaSeed)
+static bool g_entWatch = false;            // MPFEVER_ENTWATCH: entity additions/removals counted (EntFlush)
+static void EntFlush();
 // What the simulation thread reads as the player: the savegame's company, or, while a build is applied, the company in the build's
 // context (the engine checks that company's money, not the savegame's: a player could not build when the host was out of money)
 static volatile long g_simPlayer = 0;
@@ -810,6 +813,7 @@ extern "C" u64 PreIterDetour(void* a)
 {
     g_iter++;
     g_simTid = (long)GetCurrentThreadId();
+    if (g_entWatch) { static long it = 0; if (++it % 250 == 0) EntFlush(); }
     if (g_iter == 1) { Buf t; t.str("simulation thread ").dec(GetCurrentThreadId()).str(", interface thread ").dec(g_mainTid); LogLine(t); }
     ClearOthersIn(a ? *(u8**)((u8*)a + 8) : 0, true);
     if (a && *(u8**)((u8*)a + 8)) { g_slot = *(void**)((u8*)a + 8); ApplyLocalPlayer("iteration"); }
@@ -834,6 +838,29 @@ extern "C" u64 PreIterDetour(void* a)
 // applied in one and never in the other, that is actions the mod does not replicate.
 static u32 g_kcLoop[128], g_kcDir[128], g_kcSeen[128];
 static DWORD g_auditTick = 0;
+// Entities (diagnostic of the desyncs): the engine hands out the numbers of removed entities again, oldest first. Who adds and
+// removes entities in which engine: [engine slot][thread kind] (0 interface, 1 simulation, 2 other); engine slot 0 = the
+// simulation's engine (game state +0x18), 1 = any other. The first additions/removals off the simulation thread in the
+// simulation's engine are logged with their caller.
+static volatile long g_entAdd[2][3], g_entRem[2][3];
+static volatile long g_entOffLogged = 0;
+static long EntKind()
+{
+    long t = (long)GetCurrentThreadId();
+    return t == g_simTid ? 1 : (t == g_mainTid ? 0 : 2);
+}
+static void EntFlush()
+{
+    for (int e = 0; e < 2; e++) {
+        long a = g_entAdd[e][0] + g_entAdd[e][1] + g_entAdd[e][2], r = g_entRem[e][0] + g_entRem[e][1] + g_entRem[e][2];
+        if (a + r == 0) continue;
+        Buf l; l.str(e == 0 ? "entities of the simulation's engine" : "entities of other engines")
+            .str(": added interface/simulation/other ").dec(g_entAdd[e][0]).str("/").dec(g_entAdd[e][1]).str("/").dec(g_entAdd[e][2])
+            .str(", removed ").dec(g_entRem[e][0]).str("/").dec(g_entRem[e][1]).str("/").dec(g_entRem[e][2]);
+        LogLine(l);
+    }
+}
+
 static void AuditFlush(bool force)
 {
     DWORD now = GetTickCount();
@@ -854,6 +881,7 @@ static void AuditFlush(bool force)
         LogLine(l);
     }
     if (g_moneyFixed) { Buf l; l.str("money checks of the tools for this machine's company: ").dec(g_moneyFixed); LogLine(l); }
+    EntFlush();
 }
 
 // ---------------------------------------------------------------- terrain edits
@@ -2071,6 +2099,61 @@ extern "C" u64 MoneyCheckDetour(void* world, void* ctx, u32 player, i64 cost)
     return g_moneyOrig(world, ctx, player, cost);
 }
 
+static const u32 RVA_ADDENTITY = 0x2bb8940, RVA_REMOVEENTITY = 0x2bbc700;     // ecs::Engine::AddEntity / RemoveEntity (build 40420)
+static const u8 P_ADDENTITY[] = { 0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18 };
+static const u8 P_REMOVEENTITY[] = { 0x48, 0x89, 0x5C, 0x24, 0x10, 0x44, 0x88, 0x44, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54 };
+typedef int* (*AddEntityF)(void* engine, int* out);
+typedef void (*RemoveEntityF)(void* engine, int entity, u8 flag);
+static AddEntityF g_addEntOrig = 0;
+static RemoveEntityF g_remEntOrig = 0;
+
+// MPFEVER_ENTLOG: every addition/removal in order (entseq.txt in the session folder: "<iteration> <+|-><entity> <caller>")
+static bool g_entLog = false;
+static HANDLE g_entFile = INVALID_HANDLE_VALUE;
+static void EntSeq(char op, int entity, void* ret)
+{
+    if (g_entFile == INVALID_HANDLE_VALUE) return;
+    char o[2] = { op, 0 };
+    Buf l; l.dec((long)g_iter).str(" ").str(o).dec(entity).str(" ").hex((u64)((uptr)ret - g_base)).str("\r\n");
+    DWORD w; WriteFile(g_entFile, l.s, (DWORD)l.n, &w, 0);
+}
+
+static int EntEngine(void* engine)
+{
+    void* gs = g_slot;
+    return (gs && engine == *(void**)((u8*)gs + 0x18)) ? 0 : 1;
+}
+
+static void EntOff(const char* what, int entity, void* ret)
+{
+    if (g_entOffLogged >= 60) return;
+    g_entOffLogged++;
+    Buf l; l.str("entity ").str(what).str(" off the simulation thread in its engine: ").dec(entity).str(" thread ").dec(EntKind())
+        .str(" caller ").hex((u64)((uptr)ret - g_base));
+    LogLine(l);
+}
+
+extern "C" int* AddEntityDetour(void* engine, int* out)
+{
+    int* r = g_addEntOrig(engine, out);
+    int e = EntEngine(engine);
+    long k = EntKind();
+    _InterlockedIncrement(&g_entAdd[e][k]);
+    if (e == 0 && k != 1 && g_simTid) EntOff("added", r ? *r : -1, _ReturnAddress());
+    if (g_entLog && r) EntSeq('+', *r, _ReturnAddress());
+    return r;
+}
+
+extern "C" void RemoveEntityDetour(void* engine, int entity, u8 flag)
+{
+    int e = EntEngine(engine);
+    long k = EntKind();
+    _InterlockedIncrement(&g_entRem[e][k]);
+    if (e == 0 && k != 1 && g_simTid) EntOff("removed", entity, _ReturnAddress());
+    if (g_entLog) EntSeq('-', entity, _ReturnAddress());
+    g_remEntOrig(engine, entity, flag);
+}
+
 static void HookWordReads()
 {
     if (RVA_REPL != 0x255e60) return;
@@ -2232,7 +2315,19 @@ static DWORD WINAPI Init(void*)
         if (RVA_REPL) InstallDetour(RVA_REPL, P_REPL, sizeof(P_REPL), (void*)&ReplDetour, (void**)&g_replOrig);
     }
     HookWordReads();
+    { Buf b; b.str(g_luaSeedFixed ? "Lua string hash seed: fixed (same table order on every game)" : "Lua string hash seed: NOT fixed"); LogLine(b); }
     if (RVA_REPL == 0x255e60) InstallDetour(RVA_MONEYCHECK, P_MONEYCHECK, sizeof(P_MONEYCHECK), (void*)&MoneyCheckDetour, (void**)&g_moneyOrig);
+    if (RVA_REPL == 0x255e60 && GetEnvironmentVariableA("MPFEVER_ENTWATCH", 0, 0) > 0) {
+        InstallDetour(RVA_ADDENTITY, P_ADDENTITY, sizeof(P_ADDENTITY), (void*)&AddEntityDetour, (void**)&g_addEntOrig);
+        InstallDetour(RVA_REMOVEENTITY, P_REMOVEENTITY, sizeof(P_REMOVEENTITY), (void*)&RemoveEntityDetour, (void**)&g_remEntOrig);
+        g_entWatch = true;
+        if (GetEnvironmentVariableA("MPFEVER_ENTLOG", 0, 0) > 0) {
+            char path[400];
+            PathOf(path, "entseq.txt");
+            g_entFile = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+            g_entLog = g_entFile != INVALID_HANDLE_VALUE;
+        }
+    }
     { char v[4]; if (GetEnvironmentVariableA("MPFEVER_TIMING", v, 3) > 0) {
         QueryPerformanceFrequency(&g_qpf);
         if (g_qpf > 0) {
@@ -2432,6 +2527,28 @@ extern "C" int LuaLoadDetour(void* L, LuaReader reader, void* data, const char* 
     return g_luaLoadOrig(L, reader, data, chunkname, mode);
 }
 
+// Lua 5.2.2 (the game's) seeds the hash of its strings with the time and memory addresses (makeseed, lstate.c), for every
+// Lua state: the order in which pairs() walks a table with string keys then differs from one game to the other, and so
+// does every decision a game script or a construction script takes in such a loop (towns, industries, the lanes of a
+// new industry were numbered differently on two games). makeseed is made to return one constant (MPFEVER_LUASEED=0: not).
+static const u32 RVA_LUA_MAKESEED = 0x2fc8fe0;     // build 40420, only caller lua_newstate (g->seed = makeseed(L))
+static const u8 P_LUA_MAKESEED[] = { 0x40, 0x53, 0x48, 0x83, 0xEC, 0x50, 0x48, 0x8B, 0x05, 0x4B, 0x4A, 0xD2, 0x00, 0x48, 0x33, 0xC4,
+                                     0x48, 0x89, 0x44, 0x24, 0x48, 0x48, 0x8B, 0xD9, 0x33, 0xC9 };
+static void PatchLuaSeed(uptr base)
+{
+    char v[4] = {};
+    if (GetEnvironmentVariableA("MPFEVER_LUASEED", v, 3) > 0 && v[0] == '0') return;
+    u8* f = (u8*)(base + RVA_LUA_MAKESEED);
+    if (memcmp(f, P_LUA_MAKESEED, sizeof(P_LUA_MAKESEED)) != 0) return;
+    const u8 code[] = { 0xB8, 0x56, 0x46, 0x50, 0x4D, 0xC3 };    // mov eax, 'MPFV' ; ret
+    DWORD prot;
+    if (!VirtualProtect(f, sizeof(code), PAGE_EXECUTE_READWRITE, &prot)) return;
+    memcpy(f, code, sizeof(code));
+    VirtualProtect(f, sizeof(code), prot, &prot);
+    FlushInstructionCache(GetCurrentProcess(), f, sizeof(code));
+    g_luaSeedFixed = true;
+}
+
 extern "C" BOOL WINAPI DllMain(HMODULE inst, DWORD reason, void*)
 {
     if (reason == DLL_PROCESS_ATTACH) {
@@ -2445,6 +2562,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE inst, DWORD reason, void*)
             auto fh = (IMAGE_FILE_HEADER_*)((u8*)(g_base + dos->e_lfanew) + 4);
             SelectBuild(fh->TimeDateStamp);
             LimitThreads(); SetupSimPools(); PatchScriptPool((uptr)GetModuleHandleW(0));
+            PatchLuaSeed(g_base);
             u8* ll = FindUnique(g_base, P_LUA_LOAD, (int)sizeof(P_LUA_LOAD), g_knownLua);
             if (ll) { RVA_LUA_LOAD = (u32)((uptr)ll - g_base); InstallDetour(RVA_LUA_LOAD, P_LUA_LOAD, sizeof(P_LUA_LOAD), (void*)&LuaLoadDetour, (void**)&g_luaLoadOrig); }
         }

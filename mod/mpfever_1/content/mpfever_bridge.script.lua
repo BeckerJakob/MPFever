@@ -189,6 +189,19 @@ local function correctMoney(own, host, n, sendCommand, reg)
 	log("host authority: money corrected by " .. entry.amount .. " (checkpoint " .. tostring(n) .. ")")
 end
 
+-- The terrain edits applied, for the checks: a note per edit (its time and the checksum of its cells) reaches the simulation when
+-- the interface sends it, a little after the edit's time and not at the same moment on every game. A check at time T counts the
+-- edits older than T by more than a note can take to arrive (they are then known everywhere), folded into st.terrainSig.
+local TERRAIN_SIG_LAG = 150 * STEP
+local function terrainSigAt(st, now)
+	local sig, keep = st.terrainSig or 0, {}
+	for _, n in ipairs(st.terrainNotes or {}) do
+		if n.at <= now - TERRAIN_SIG_LAG then sig = (sig + n.v) % 4294967296 else keep[#keep + 1] = n end
+	end
+	st.terrainSig, st.terrainNotes = sig, keep
+	return sig
+end
+
 local hashShown = false
 local hashCostsShown = 0
 local function simHash(terrainSig, reg)
@@ -776,7 +789,7 @@ local function simApplyDue(state)
 				if a.kind == "hash" then
 					local c0 = os.clock()
 					local okA, auth = pcall(authValues, st.co)
-					st.hash = { n = a.n, parts = simHash(st.terrainSig, st.co), cost = os.clock() - c0, auth = okA and auth or nil }
+					st.hash = { n = a.n, parts = simHash(terrainSigAt(st, now), st.co), cost = os.clock() - c0, auth = okA and auth or nil }
 					st.authOwn = st.authOwn or {}
 					st.authOwn[#st.authOwn + 1] = { n = a.n, auth = okA and auth or nil }
 					while #st.authOwn > 10 do table.remove(st.authOwn, 1) end
@@ -1586,7 +1599,9 @@ local function handleEvent(userParams, state, src, id, name, param)
 			local c = st.co and CO.find(st.co, param.id)
 			if c then c.ent = param.ent; log("companies: company " .. c.id .. " is player entity " .. tostring(param.ent) .. " here") end
 		elseif name == "terrain_note" then
-			st.terrainSig = ((st.terrainSig or 0) + (tonumber(param.v) or 0)) % 4294967296
+			-- (counted by the checks from the edit's time on, see terrainSigAt)
+			st.terrainNotes = st.terrainNotes or {}
+			st.terrainNotes[#st.terrainNotes + 1] = { at = tonumber(param.at) or 0, v = tonumber(param.v) or 0 }
 		elseif name == "replaying" then
 			st.replay = { at = gameTime(), n = ((st.replay and st.replay.at == gameTime()) and st.replay.n or 0) + 1 }
 		elseif name == "auth" then
@@ -1702,6 +1717,47 @@ local function queueLocal(a)
 	end
 end
 
+-- A terrain tool applies its edit at once on the game of the player who uses it (the native module cannot hold it: the tool
+-- crashed), at that game's time; a game already past that time made it late, the towns (whose reputation an edit changes) then
+-- drifted apart. So while a player has a terrain tool in hand, that game LEADS: the others stay behind it by more than what a
+-- game may overshoot a stop point, and get every edit before its time. It lasts a while after the tool was last seen or an edit
+-- last made (the menu says when a terrain tool is picked, not when it is put away). Level 2 for a tool picked or used in the last
+-- seconds, 1 for one picked a while ago: the higher level leads; two players at the same level: normal barrier between them.
+local TERRAIN_LEAD_SECONDS = 60
+local TERRAIN_ACTIVE_SECONDS = 10
+local function terrainLead(why)
+	local first = not G.terrainLeadUntil or os.clock() >= G.terrainLeadUntil
+	G.terrainLeadUntil = os.clock() + TERRAIN_LEAD_SECONDS
+	G.terrainActiveUntil = os.clock() + TERRAIN_ACTIVE_SECONDS
+	if first then log("terrain tool in hand (" .. tostring(why) .. "): the other games stay behind this one") end
+end
+
+-- 0: no terrain tool in hand, 1: picked a while ago, 2: picked or used in the last seconds
+local function leadLevel()
+	local now = os.clock()
+	if not G.terrainLeadUntil or now >= G.terrainLeadUntil then return 0 end
+	if G.terrainActiveUntil and now < G.terrainActiveUntil then return 2 end
+	return 1
+end
+
+-- the steps a game may run past a stop point before its interface stops it (see the stamp distance)
+local function overshootReserve()
+	return 2 * math.max(1, math.min(4, G.session.speed or 1)) + 1
+end
+
+-- how far behind a leader the others stay: their overshoot, then as much again to stop exactly at an edit's time
+local function terrainLeadSteps()
+	return 2 * (overshootReserve() + 1)
+end
+
+-- another player leads this game (terrain tool in hand, game running)
+local function otherLeads()
+	if G.session.pauseAt ~= nil then return false end
+	local mine = leadLevel()
+	for _, pc in pairs(G.peers) do if (pc.tl or 0) > mine then return true end end
+	return false
+end
+
 -- the speed this game may run at: session speed, never past the slowest other player (barrier), stop points
 G.pstat = { frames = 0, barrier = 0, hold = 0 }
 local function pacing()
@@ -1714,13 +1770,23 @@ local function pacing()
 	if catchUp then stopAt = G.holdAt
 	elseif G.holdAt and (stopAt == nil or G.holdAt < stopAt) then stopAt = G.holdAt end
 	local barrier = nil
+	local mine = leadLevel()
 	for _, pc in pairs(G.peers) do
 		-- window (see G.ahead): a game that overshoots this limit by its reserve is still before the time stamped on
 		-- the peer's next action
 		local limit = pc.t + (G.window or 3) * STEP
+		local theirs = pc.tl or 0
+		if s.pauseAt == nil and theirs > mine then
+			-- that player has a terrain tool in hand: stay behind it, overshoot included, with room to stop before its edits
+			limit = pc.t - terrainLeadSteps() * STEP
+		elseif s.pauseAt == nil and mine > theirs then
+			-- this game leads: the others keep that distance behind it
+			limit = pc.t + ((G.window or 3) + terrainLeadSteps()) * STEP
+		end
 		if barrier == nil or limit < barrier then barrier = limit end
 	end
 	if barrier and (stopAt == nil or barrier < stopAt) then stopAt = barrier end
+	G.lastBarrier = barrier
 	local want = s.speed
 	if s.pauseAt == nil and G.holdAt then want = math.max(1, want) end
 	if catchUp then want = 1 end
@@ -1739,7 +1805,11 @@ local function pacing()
 		-- near a stop point, running at a speed would overshoot it (N steps per frame, a speed change takes a frame):
 		-- the game pauses and the engine performs exactly the steps left
 		-- (only for real stop points: the barrier keeps a reserve for the overshoot and moves all the time)
-		if O.steps and stopAt ~= barrier and stopAt - now <= 2 * math.max(1, want) * STEP then
+		-- (the zone a stop point is approached from, see nativeHoldAt: a game stopped inside it never runs at speed again; nor
+		-- towards the barrier when an action waits just past it, which the overshoot would reach)
+		local zone = (overshootReserve() + 1) * STEP
+		local holdNear = G.holdAt ~= nil and G.holdAt - now <= zone
+		if O.steps and (stopAt ~= barrier or holdNear) and stopAt - now <= zone then
 			G.wantSteps = math.floor((stopAt - now) / STEP)
 			return slowed(0)
 		end
@@ -1769,7 +1839,14 @@ H.session = function(from, p)
 end
 
 H.peerclock = function(from, p)
-	if p.name and p.name ~= G.me then G.peers[p.name] = { t = p.t, ah = p.ah } end
+	if p.name and p.name ~= G.me then
+		local was = G.peers[p.name] and G.peers[p.name].tl or 0
+		local tl = tonumber(p.tl) or 0
+		G.peers[p.name] = { t = p.t, ah = p.ah, tl = tl > 0 and tl or nil }
+		if (tl > 0) ~= (was > 0) then
+			log(tostring(p.name) .. (tl > 0 and " has a terrain tool in hand: the game that used it last leads" or " put the terrain tool away"))
+		end
+	end
 end
 
 H.peerleft = function(from, p)
@@ -2667,8 +2744,10 @@ end
 local JOIN_GATHER = 120
 -- The engine has really stopped: its speed is 0 AND its clock has not moved for a while (the speed component reads 0 while the
 -- simulation thread still finishes the steps it had started)
+-- (in real time: the interface sees the simulation's clock only at the 200 ms handshake, so a clock still for a few frames
+-- may still be running; asking for exact steps then adds them to the steps it is still making)
 G.simStill = function()
-	return gameSpeed() == 0 and G.frames - (G.clockMovedAt or 0) >= 12
+	return gameSpeed() == 0 and G.frames - (G.clockMovedAt or 0) >= 12 and os.clock() - (G.clockMovedClock or 0) >= 0.45
 end
 
 local function nativeHoldAt()
@@ -2677,7 +2756,8 @@ local function nativeHoldAt()
 	-- A game running at speed passes a stop point by what it simulates before the speed change reaches the engine (up to a few
 	-- steps at x4): a build would then land a step late here. So the game first stops a little BEFORE the build's time, then
 	-- the engine performs exactly the steps left (exact once stopped, see pacing).
-	local early = 2 * math.max(1, math.min(4, G.session.speed or 1))
+	-- (as far before it as a running game may overshoot a stop point: then it never passes the build's time)
+	local early = overshootReserve() + 1
 	local stopped = G.simStill()
 	local function approach(at)
 		local e = at - early * STEP
@@ -2762,7 +2842,8 @@ local function pollNativeEvents()
 	for _, line in ipairs(readLines("native_events.log", "natOff")) do
 		local tid, tx0, ty0, tw, th, tlen, tfnv, textra = line:match("^terrain (%d+) (%-?%d+) (%-?%d+) (%d+) (%d+) (%d+) (%x+) (%d+)")
 		if tid then
-			G.terrainBlobs[#G.terrainBlobs + 1] = { id = tonumber(tid), x0 = tonumber(tx0), y0 = tonumber(ty0), w = tonumber(tw),
+			terrainLead("edit")
+			G.terrainBlobs[#G.terrainBlobs + 1] ={ id = tonumber(tid), x0 = tonumber(tx0), y0 = tonumber(ty0), w = tonumber(tw),
 				h = tonumber(th), len = tonumber(tlen), fnv = tfnv, extra = tonumber(textra), frame = G.frames }
 			while #G.terrainBlobs > 12 do table.remove(G.terrainBlobs, 1) end
 		end
@@ -2929,7 +3010,7 @@ local function sendTerrainCarrier(busy)
 	busy.phase = "inject"
 	busy.frame = G.frames
 	toSim("replaying", {})
-	toSim("terrain_note", { v = tonumber(tostring(t.fnv):sub(-8), 16) or 0 })
+	toSim("terrain_note", { v = tonumber(tostring(t.fnv):sub(-8), 16) or 0, at = a.at })
 	local hx, hy = (t.x0 + math.floor(t.w / 2)) * 4 + 2, (t.y0 + math.floor(t.h / 2)) * 4 + 2
 	local h0 = nil
 	pcall(function() h0 = api.engine.terrain.getBaseHeightAt(api.type.Vec2f.new(hx, hy)) end)
@@ -2952,7 +3033,10 @@ local function pumpTerrain()
 	local st = G.terrainIn[busy.id]
 	local age = G.frames - busy.frame
 	if busy.phase == "load" then
-		if st == "ready" then sendTerrainCarrier(busy)
+		-- (a later frame than the replay's start: the edit is paid by the company of the player who made it, as there)
+		if st == "ready" then
+			local okc, errc = pcall(withActor, PL(busy.a), sendTerrainCarrier, busy)
+			if not okc then terrainFail(busy.a, "carrier failed: " .. tostring(errc)) end
 		elseif st == "failed" then terrainFail(busy.a, "the native module could not read the cells")
 		elseif age > 180 then terrainFail(busy.a, "the native module did not answer (" .. tostring(st) .. ")") end
 	else
@@ -3158,6 +3242,142 @@ H.resync_load = function(from, p)
 	app.loadGame(id, false)
 end
 
+-- Census (diagnostic, MPFEVER_CENSUS set): every component of every entity, written as text (census_<tag>.txt in the
+-- session folder): "TYPE <tab> entity <tab> hash <tab> text". Two games' files compared entity by entity show every value
+-- that differs between them (tools/census_diff.py).
+local CENSUS_TYPES = { "AIRCRAFT", "ANIMAL", "ASSET_GROUP", "BASE_EDGE", "BASE_EDGE_STREET", "BASE_NODE", "BASE_PARALLEL_STRIP",
+	"CUSTOM_STATE", "EMISSION_EMITTER", "FIELD", "GAME_TIME", "GAME_SPEED", "NAME", "LINE", "LOG_BOOK",
+	"MOVE_PATH", "MOVE_PATH_AIRCRAFT", "STATION", "STATION_GROUP", "SIM_PERSON", "SIM_PERSON_AT_TERMINAL",
+	"SIM_PERSON_AT_VEHICLE", "SIM_CARGO", "SIM_ENTITY_AT_BUILDING", "SIM_ENTITY_AT_VEHICLE", "SIM_ENTITY_AT_TERMINAL",
+	"SIM_ENTITY_IDLE", "SIM_ENTITY_MOVING", "SIGNAL_LIST", "TOWN", "INDUSTRY", "STOCK_LIST", "TOWN_BUILDING", "TRANSPORT_VEHICLE",
+	"TRAIN", "CARRIAGE", "CARRIAGE_LIST", "VEHICLE_DEPOT", "COLOR", "CONSTRUCTION", "SUBCONSTRUCTION",
+	"PERSON_CAPACITY", "PLAYER_OWNED", "ACCOUNT", "GAME_SCRIPT", "WAREHOUSE", "TRANSPORT_NETWORK", "MAINTENANCE_COST",
+	"RAILROAD_CROSSING", "PLAYER", "WORLD", "BRIDGE", "BASE_NODE_CONFIG", "LAND_VEHICLE", "BASE_NODE_TRAFFIC_LIGHT", "EDGE_OBJECT",
+	"EMISSION_GRID", "SHIP" }
+-- (left out: what only the renderer uses - MODEL_INSTANCE_LIST, MODEL_PERSON, BOUNDING_VOLUME - and the terrain, compared by
+-- its own signature)
+
+local function census(tag)
+	local c0 = os.clock()
+	local f = C.IO.open(C.DIR .. BS .. "census_" .. tostring(tag) .. ".txt", "wb")
+	if not f then return end
+	local total, only = 0, os.getenv("MPFEVER_CENSUS")
+	-- the entities to look at: those the engine lists per component (not every type can be listed), the street graph,
+	-- the lines, the edges' objects, the players and the world
+	local found, universe, useen = {}, {}, {}
+	local function add(e) if type(e) == "number" and e >= 0 and not useen[e] then useen[e] = true; universe[#universe + 1] = e end end
+	for _, name in ipairs(CENSUS_TYPES) do
+		local list = {}
+		pcall(function() api.engine.forEachEntityWithComponent(function(e) list[#list + 1] = e end, api.type.ComponentType[name]) end)
+		found[name] = list
+		-- (the trees and the emitters - over 100 000 - hold nothing else)
+		if name ~= "ASSET_GROUP" and name ~= "EMISSION_EMITTER" then for _, e in ipairs(list) do add(e) end end
+	end
+	-- the entity groups a type can be on (asking an entity for a component it has not is slow: only plausible ones are asked)
+	local G_ = { edges = R.allEdges(), nodes = R.allNodes(), lines = R.entitiesWith("LINE"), objs = {}, players = {}, world = {},
+		vehicles = found.TRANSPORT_VEHICLE or {}, persons = found.SIM_PERSON or {}, cons = {} }
+	for _, e in ipairs(G_.edges) do
+		add(e)
+		pcall(function()
+			local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+			for _, o in ipairs(be and be.objects or {}) do add(o[1]); G_.objs[#G_.objs + 1] = o[1] end
+		end)
+	end
+	for _, n in ipairs(G_.nodes) do add(n) end
+	for _, l in ipairs(G_.lines) do add(l) end
+	pcall(function() local w = api.engine.util.getWorld(); add(w); G_.world[1] = w end)
+	local pseen = {}
+	local function addPlayer(p) if type(p) == "number" and p >= 0 and not pseen[p] then pseen[p] = true; add(p); G_.players[#G_.players + 1] = p end end
+	pcall(function() addPlayer(api.engine.util.getPlayer()) end)
+	for _, e in ipairs(found.PLAYER_OWNED or {}) do pcall(function() addPlayer(api.engine.getComponent(e, api.type.ComponentType.PLAYER_OWNED).player) end) end
+	for _, k in ipairs({ "CONSTRUCTION", "TOWN_BUILDING", "INDUSTRY", "STATION", "STATION_GROUP", "VEHICLE_DEPOT", "TOWN" }) do
+		for _, e in ipairs(found[k] or {}) do G_.cons[#G_.cons + 1] = e end
+	end
+	table.sort(universe)
+	local WHERE = {
+		BASE_EDGE = { "edges" }, BASE_EDGE_STREET = { "edges" }, BRIDGE = { "edges" }, BASE_PARALLEL_STRIP = { "edges" }, SIGNAL_LIST = { "edges" },
+		BASE_NODE = { "nodes" }, BASE_NODE_CONFIG = { "nodes" }, BASE_NODE_TRAFFIC_LIGHT = { "nodes" }, RAILROAD_CROSSING = { "nodes" },
+		TRANSPORT_NETWORK = { "edges", "nodes", "cons", "objs" }, LINE = { "lines" }, EDGE_OBJECT = { "objs" },
+		NAME = { "lines", "vehicles", "cons", "players", "persons", "objs" }, COLOR = { "lines", "vehicles", "cons", "players" },
+		LOG_BOOK = { "lines", "vehicles", "cons", "players", "persons" }, MOVE_PATH = { "vehicles", "persons" }, LAND_VEHICLE = { "vehicles", "persons" },
+		MOVE_PATH_AIRCRAFT = { "vehicles" }, AIRCRAFT = { "vehicles" }, SHIP = { "vehicles" }, TRAIN = { "vehicles" }, CARRIAGE_LIST = { "vehicles" },
+		SIM_PERSON_AT_TERMINAL = { "persons" }, SIM_PERSON_AT_VEHICLE = { "persons" }, SIM_ENTITY_AT_BUILDING = { "persons" },
+		SIM_ENTITY_AT_VEHICLE = { "persons" }, SIM_ENTITY_AT_TERMINAL = { "persons" }, SIM_ENTITY_IDLE = { "persons" }, SIM_ENTITY_MOVING = { "persons" },
+		SIM_CARGO = { "persons" }, STOCK_LIST = { "cons" }, PERSON_CAPACITY = { "cons" }, SUBCONSTRUCTION = { "cons" }, CUSTOM_STATE = { "cons" },
+		FIELD = { "cons" }, WAREHOUSE = { "cons" }, MAINTENANCE_COST = { "cons", "vehicles", "edges" }, ACCOUNT = { "players", "cons", "lines", "vehicles" },
+		PLAYER = { "players" }, WORLD = { "world" }, GAME_TIME = { "world" }, GAME_SPEED = { "world" }, EMISSION_GRID = { "world" }, GAME_SCRIPT = { "world" },
+	}
+	SIM.censusKnown = SIM.censusKnown or {}
+	for _, name in ipairs(CENSUS_TYPES) do
+		if only == "1" or only == "all" or only:find(name, 1, true) then
+			local tType = os.clock()
+			local ct = api.type.ComponentType[name]
+			local list = found[name]
+			if #list == 0 then
+				local seen = {}
+				local function try(e)
+					if seen[e] then return end
+					seen[e] = true
+					local okc, comp = pcall(api.engine.getComponent, e, ct)
+					if okc and comp ~= nil then list[#list + 1] = e end
+				end
+				local where = WHERE[name]
+				if where then
+					for _, g in ipairs(where) do for _, e in ipairs(G_[g] or {}) do try(e) end end
+				else
+					-- no known group: every entity the first time, then the entities that had it and the new ones
+					local known = SIM.censusKnown[name]
+					if not known then
+						for _, e in ipairs(universe) do try(e) end
+					else
+						for e in pairs(known.has) do try(e) end
+						for _, e in ipairs(universe) do if not known.scanned[e] then try(e) end end
+					end
+					local has, scanned = {}, {}
+					for _, e in ipairs(list) do has[e] = true end
+					for _, e in ipairs(universe) do scanned[e] = true end
+					SIM.censusKnown[name] = { has = has, scanned = scanned }
+				end
+			end
+			table.sort(list)
+			local n = 0
+			for _, e in ipairs(list) do
+				local okc, comp = pcall(api.engine.getComponent, e, ct)
+				local txt
+				if okc and name == "TRANSPORT_NETWORK" then
+					-- (its full text takes a quarter of a second: the lanes' connections and current speeds only)
+					local okt, t = pcall(function()
+						local parts = { "nodes = " .. #comp.nodes, "edges = " .. #comp.edges }
+						for i = 1, #comp.edges do
+							local ed = comp.edges[i]
+							local c = ed.conns
+							parts[#parts + 1] = string.format("e%d = %d.%d-%d.%d %.6g", i, c[1].entity, c[1].index, c[2].entity, c[2].index, ed.curSpeed)
+						end
+						return table.concat(parts, ", ")
+					end)
+					txt = okt and t or ("ERR " .. tostring(t))
+				else
+					txt = okc and C.dump(comp) or ("ERR " .. tostring(comp))
+				end
+				txt = txt:gsub("[%c]", " ")
+				f:write(name, "\t", tostring(e), "\t", tostring(C.hashStr(0, txt)), "\t", (#txt > 2000 and name ~= "GAME_TIME") and txt:sub(1, 2000) or txt, "\n")
+				n = n + 1
+			end
+			f:write("#COUNT\t", name, "\t", tostring(n), "\t", string.format("%.1f", os.clock() - tType), "\n")
+			total = total + n
+		end
+	end
+	f:close()
+	log(string.format("census %s: %d components of %d entities in %.1f s", tostring(tag), total, #universe, os.clock() - c0))
+end
+
+H.census_now = function(from, p)
+	if os.getenv("MPFEVER_CENSUS") then
+		local ok, err = pcall(census, tostring(p.tag) .. "_t" .. tostring(gameTime()))
+		if not ok then log("census failed: " .. tostring(err)) end
+	end
+end
+
 H.det_run = function(from, p)
 	local round, steps = p.round, p.steps or 0
 	setSpeed(0)
@@ -3171,6 +3391,10 @@ H.det_run = function(from, p)
 			local parts = simHash(nil, G.co)
 			parts.reached = (t >= target)
 			send("det_hash", { round = round, steps = steps, parts = parts })
+			-- (MPFEVER_CENSUS_FROM=n: no census before round n)
+			if os.getenv("MPFEVER_CENSUS") and round >= (tonumber(os.getenv("MPFEVER_CENSUS_FROM") or "0") or 0) then
+				pcall(census, "r" .. tostring(round) .. "_t" .. tostring(t))
+			end
 		else
 			G.waits[#G.waits + 1] = { at = G.frames + 1, fn = poll }
 		end
@@ -3193,6 +3417,8 @@ local function stampHeld()
 			queueLocal(a)
 		elseif p and (kind == "speed_req" or kind == "act_fail" or kind == "save_done") then
 			send(kind, p)
+		elseif p and kind == "terrain_tool" then
+			terrainLead("tool " .. tostring(p.tool))
 		end
 	end
 end
@@ -3274,7 +3500,7 @@ local function shipTerrain(o)
 	local a = { fn = "terrainEdit", args = { x0 = d.x0, y0 = d.y0, w = d.w, h = d.h, fnv = b.fnv, blob = txt }, at = o.at, origin = G.me,
 		oseq = G.oseq, uid = G.me .. ":" .. G.oseq, native = true, paused = o.paused, co = G.myCo }
 	send("act", a)
-	toSim("terrain_note", { v = tonumber(b.fnv:sub(-8), 16) or 0 })
+	toSim("terrain_note", { v = tonumber(b.fnv:sub(-8), 16) or 0, at = o.at })
 	G.waits[#G.waits + 1] = { at = G.frames + 60, fn = function()
 		log("terrain edit " .. a.uid .. ": ground here now sum " .. tostring(G.terrainSum(d.x0, d.y0, d.w, d.h)))
 	end }
@@ -4312,7 +4538,13 @@ H.terrainsoak = function(from, p)
 			G.waits[#G.waits + 1] = { at = G.frames + gap, fn = nextEdit }
 		end
 	end
-	nextEdit()
+	-- as a player picking a terrain tool in the menu (MPFEVER_TERRAIN_LEAD=0: not, the first edits may then come late elsewhere)
+	if os.getenv("MPFEVER_TERRAIN_LEAD") ~= "0" then
+		terrainLead("autotest")
+		G.waits[#G.waits + 1] = { at = G.frames + 300, fn = nextEdit }
+	else
+		nextEdit()
+	end
 end
 
 -- Diagnostic (with MPFEVER_PAYLOAD_DUMP=1 in the DLL): empty world-build commands that differ by one flag of the Context, so
@@ -6624,7 +6856,7 @@ local function guiUpdate(userParams, state, guiState)
 
 	do
 		local okT, tNow = pcall(gameTime)
-		if okT and tNow ~= G.clockSeen then G.clockSeen = tNow; G.clockMovedAt = G.frames end
+		if okT and tNow ~= G.clockSeen then G.clockSeen = tNow; G.clockMovedAt = G.frames; G.clockMovedClock = os.clock() end
 	end
 	local okh, st = pcall(function() return state:get() end)
 	if not (okh and type(st) == "table") then st = {} end
@@ -6666,9 +6898,12 @@ local function guiUpdate(userParams, state, guiState)
 			setSpeed(sp)
 			-- exact steps up to the stop point (once the engine is stopped, one request at a time)
 			local now = gameTime()
-			if G.stepTarget and (now >= G.stepTarget or G.frames - G.stepSince > 120) then G.stepTarget = nil end
+			-- (the engine may take seconds for many steps, in batches: a request is given up only when the clock stopped moving,
+			-- else a second one would add its steps to what is left of the first and pass the stop point)
+			if G.stepTarget and (now >= G.stepTarget or (G.frames - G.stepSince > 120 and G.frames - (G.clockMovedAt or 0) > 120)) then G.stepTarget = nil end
 			if sp == 0 and G.wantSteps and G.wantSteps > 0 and not G.stepTarget and G.simStill() then
 				G.stepTarget, G.stepSince = now + G.wantSteps * STEP, G.frames
+				if os.getenv("MPFEVER_STEPLOG") then log("STEPS " .. G.wantSteps .. " from t=" .. now .. " to " .. G.stepTarget .. " (hold " .. tostring(G.holdAt) .. ", barrier " .. tostring(G.lastBarrier) .. ", pause " .. tostring(G.session.pauseAt) .. ") [frame " .. G.frames .. "]") end
 				O.sendCommand(O.steps(G.wantSteps))
 			end
 		end
@@ -6679,11 +6914,16 @@ local function guiUpdate(userParams, state, guiState)
 		G.window = spd + 2
 		if G.lastSpd ~= spd then G.lastSpd = spd; G.consumed = {} end
 		G.ahead = adaptAhead(G.window + (2 * spd + 1) + 1)
+		-- (another player leads with a terrain tool: it may be that much further ahead of this game)
+		if otherLeads() then G.ahead = G.ahead + terrainLeadSteps() end
 		local okt, t = pcall(gameTime)
-		if okt and (t ~= G.lastClock or G.frames % 30 == 0) then
+		local tl = leadLevel()
+		if tl == 0 then tl = nil end
+		if okt and (t ~= G.lastClock or G.frames % 30 == 0 or tl ~= G.lastTl) then
 			G.lastClock = t
+			G.lastTl = tl
 			G.stampFloor = math.max(G.stampFloor, t + G.ahead * STEP)
-			send("clock", { t = t, sp = gameSpeed(), ah = G.ahead })
+			send("clock", { t = t, sp = gameSpeed(), ah = G.ahead, tl = tl })
 		end
 	end
 

@@ -42,7 +42,7 @@ namespace MPFever
 
     sealed class MainForm : Form
     {
-        public const string Version = "0.3.4-experimental";
+        public const string Version = "0.3.5-experimental";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -99,7 +99,8 @@ namespace MPFever
         GameLink hostGame;
         bool running;
         Action<GameLink, Msg> hostFromGame, clientFromGame;   // the session's handlers on the game's messages (removed at its end)
-        int sessionGen;                                      // a new session: the threads of the previous one stop
+        int sessionGen;
+        int censusN;                                         // autotest: census taken so far                                      // a new session: the threads of the previous one stop
 
         // ---- host session state
         readonly object sendGate = new object();   // every host broadcast goes through this lock: same order for everybody
@@ -140,15 +141,18 @@ namespace MPFever
         static readonly HashSet<string> CorrectedParts = new HashSet<string> { "money" };
         // game state that is never a local measure, even when it differs right after a reload (a company a game missed must be seen)
         static readonly HashSet<string> NeverLocalParts = new HashSet<string> { "companies", "money", "owners", "loans", "edges", "constructions", "lines" };
-        // slow drift of the engine's own simulation (passengers boarding, vehicle positions, the town statistics that
-        // follow): not caused by a missed action; reloaded only when it lasts, so that players are not interrupted
-        // every two minutes
+        // the simulation's own state (passengers boarding, vehicle positions, the towns and what follows them): it used to drift
+        // by itself (the game's Lua walked its tables in a different order on every PC, fixed in 0.3.4), so it was only reloaded
+        // when it lasted. The games now stay identical: a difference there comes from an action applied differently and must be
+        // corrected soon (a game that goes on with other towns can crash at the next build the others make).
         static readonly HashSet<string> DriftParts = new HashSet<string> { "vehicles", "onboard", "persons", "stocks",
             "script:towns", "script:towncargo", "script:celebrations", "script:progression", "script:industries",
             // (not the engine's drift: lane connections, crosswalks and traffic lights of the road nodes. New and little
             // proven as a check, so it only reloads when it lasts)
             "nodeConfigs" };
-        const double DriftResyncSeconds = 300;
+        const double DriftResyncSeconds = 30;
+        // the crosswalk order of a few road nodes differs between games by itself (no effect seen): reloaded only when it lasts
+        const double NodeConfigsResyncSeconds = 300;
         double driftSince = -1;
         double lastNotStartedLog = -1e9;
 
@@ -890,6 +894,19 @@ namespace MPFever
                 foreach (var scenario in scenarios)
                 foreach (var role in new[] { "host", "client" })
                 {
+                    if (scenario == "census")
+                    {
+                        // every game, paused at the same time, writes its census (MPFEVER_CENSUS): compared afterwards
+                        if (role == "host")
+                        {
+                            Pause("autotest"); Thread.Sleep(8000);
+                            HostSend(Msg.Make("census_now", hostName, "{[\"tag\"]=\"s" + (++censusN) + "\"}"));
+                            AutoLine("census s" + censusN);
+                            Thread.Sleep(150000);
+                            SetSpeed(1, "autotest");
+                        }
+                        continue;
+                    }
                     if (scenario == "resync")
                     {
                         // every game reloads the host's savegame (as when a player joins): the companies must come back as they were
@@ -1440,7 +1457,10 @@ namespace MPFever
                             lock (clocks) clocks[m.From] = new PlayerClock { T = (long)td, Sp = sp, At = Now };
                             // every other game uses it as a barrier: none may run past the slowest player
                             int ah = t.TryGetValue("ah", out var av) && av is double ad ? (int)ad : 3;
-                            var pc = Msg.Make("peerclock", hostName, "{[\"name\"]=" + LuaLit.Quote(m.From) + ",[\"t\"]=" + (long)td + ",[\"ah\"]=" + ah + "}");
+                            // tl: that player has a terrain tool in hand (1, 2 when used in the last seconds), the others stay behind its game
+                            int tl = t.TryGetValue("tl", out var lv) && lv is double ld ? (int)ld : 0;
+                            var pc = Msg.Make("peerclock", hostName, "{[\"name\"]=" + LuaLit.Quote(m.From) + ",[\"t\"]=" + (long)td + ",[\"ah\"]=" + ah
+                                + (tl > 0 ? ",[\"tl\"]=" + tl : "") + "}");
                             lock (sendGate)
                             {
                                 if (from != null) hostGame?.ToGame(pc);
@@ -1633,7 +1653,8 @@ namespace MPFever
                 // simulation drift only: reload once it has lasted DriftResyncSeconds
                 diffStreak = 0; lastDiffKeys = "";
                 if (driftSince < 0) driftSince = Now;
-                if (Now - driftSince < DriftResyncSeconds || Now - lastResync < ResyncCooldownSeconds) return;
+                double wait = keys.All(x => x == "nodeConfigs") ? NodeConfigsResyncSeconds : DriftResyncSeconds;
+                if (Now - driftSince < wait || Now - lastResync < ResyncCooldownSeconds) return;
                 driftSince = -1;
                 int others; lock (players) others = players.Count(p => p != hostName);
                 if (others == 0) return;
@@ -1756,6 +1777,9 @@ namespace MPFever
         {
             if (started) { Log.Warn(T("Test déterminisme : à lancer avant « Démarrer la partie ».", "Determinism test: run it before « Start the game ».")); return; }
             int[] schedule = { 0, 100, 500, 1500, 3000 };
+            // MPFEVER_DET_SCHEDULE=0,300,300,...: the steps of each round (diagnostic: find the first step where the games differ)
+            var ds = Environment.GetEnvironmentVariable("MPFEVER_DET_SCHEDULE");
+            if (!string.IsNullOrEmpty(ds)) schedule = ds.Split(',').Select(x => int.Parse(x.Trim())).ToArray();
             int expected;
             lock (players) expected = players.Count;
             if (expected < 2) { Log.Warn(F("Test déterminisme : il faut au moins 2 jeux prêts (actuellement {0}).", "Determinism test: at least 2 games must be ready (now {0}).", expected)); return; }
@@ -1768,9 +1792,11 @@ namespace MPFever
                 {
                     int steps = schedule[round];
                     lock (detGate) { detRound = round; detHashes = new Dictionary<string, Dictionary<object, object>>(); }
+                    // MPFEVER_DET_PAUSE=s: the games stay paused that long before each round (does real time change the simulation?)
+                    if (int.TryParse(Environment.GetEnvironmentVariable("MPFEVER_DET_PAUSE") ?? "", out int detPause) && detPause > 0 && round > 0) Thread.Sleep(detPause * 1000);
                     HostSend(Msg.Make("det_run", hostName, "{[\"round\"]=" + round + ",[\"steps\"]=" + steps + "}"));
                     total += steps;
-                    var deadline = DateTime.UtcNow.AddSeconds(300);
+                    var deadline = DateTime.UtcNow.AddSeconds(Environment.GetEnvironmentVariable("MPFEVER_CENSUS") != null ? 1800 : 300);
                     Dictionary<string, Dictionary<object, object>> got;
                     lock (detGate)
                     {
@@ -1794,6 +1820,7 @@ namespace MPFever
                     }
                 }
                 Log.W(T("=== Fin du test déterminisme ===", "=== End of the determinism test ==="));
+                if (Environment.GetEnvironmentVariable("MPFEVER_CENSUS") != null) Thread.Sleep(150000);   // the last census is still being written
             }
             finally { detRunning = false; }
         }

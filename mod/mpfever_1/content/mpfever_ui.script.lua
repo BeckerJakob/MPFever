@@ -352,6 +352,37 @@ local function installStopFees()
 	log("companies: the line windows show the fee of the other companies' stations")
 end
 
+-- The terrain tools apply their edit at once on this game (the native module cannot hold them, see the bridge): while one is in
+-- the player's hand, the other games stay a few steps behind this one, so that an edit always reaches them before its time. The
+-- construction menu makes the tool's action with construction_react_util.getActionParams: a terrain tool there means one is in
+-- hand (said at most once a second; the bridge keeps the lead a while after the last word or edit).
+local function installTerrainWatch()
+	if U.terrainWatch then return end
+	U.terrainWatch = true
+	local ok, cu = pcall(ug_require, "/gui/construction/construction_react_util.tl")
+	if not (ok and type(cu) == "table" and type(cu.getActionParams) == "function") then
+		log("terrain tools: not watched (" .. tostring(cu):sub(1, 120) .. ")")
+		return
+	end
+	if cu.__mpfTerrain then return end
+	cu.__mpfTerrain = true
+	local orig = cu.getActionParams
+	cu.getActionParams = function(definition, ...)
+		pcall(function()
+			local a = definition and definition.action
+			if type(a) == "string" and a:find("ACTION_TERRAIN_MODIFIER_", 1, true) == 1 then
+				local now = os.clock()
+				if not U.terrainSaidAt or now - U.terrainSaidAt > 1 then
+					U.terrainSaidAt = now
+					sendLine("terrain_tool", { tool = a })
+				end
+			end
+		end)
+		return orig(definition, ...)
+	end
+	log("terrain tools: watched (the other games stay behind this one while a terrain tool is in hand)")
+end
+
 -- The line tool lets a company pick only its own stations (entity_util.isOwnedByPlayerOrNotOwned): a station another company
 -- shares (every player's station is shared at the smallest fee unless its company stops sharing it) can be picked too. The fee
 -- is booked by the game-script bridge at every stop.
@@ -816,6 +847,8 @@ local function installSession(react, builtin)
 	local ICON_PLAYERS = "::/gui/statistics/icons/symbol_person_multiple.tga"
 	local ICON_SYNC = "::/gui/menu/icons/symbol_arrows_refresh.tga"
 	local ICON_PERSON = "::/gui/entity_window/icons/symbol_person.tga"
+	-- the game has no chat icon: MPFever brings its own (48 x 48 grey levels, like the game's icons)
+	local ICON_CHAT = "mpfever_1::/mpfever_chat.tga"
 	local function row(children) return builtin.BoxLayout { orientation = H, children = children } end
 	local function section(path, title) return row { icon(path, 26), text("  " .. title, "font-scale-title-4") } end
 	local function muted(t) return builtin.TextView { meta = { class = "font-scale-body", styleSheet = style { color = color("NeutralLight") } }, text = t } end
@@ -867,8 +900,6 @@ local function installSession(react, builtin)
 	end)
 
 	-- ------------------------------------------------ the chat window and the short notice of new messages
-	-- the game has no chat icon: MPFever brings its own (48 x 48 grey levels, like the game's icons)
-	local ICON_CHAT = "mpfever_1::/mpfever_chat.tga"
 	local function hhmm(t)
 		local ok, s = pcall(os.date, "%H:%M", t)
 		return ok and s or ""
@@ -1318,6 +1349,10 @@ local function tick(pendingState)
 	end)
 	pcall(pollBindings)
 	pcall(pollCompanies)
+	if not U.terrainWatch then
+		local okt, errt = pcall(installTerrainWatch)
+		if not okt then U.terrainWatch = true; log("terrain tools: not watched: " .. tostring(errt)) end
+	end
 	pcall(pollShares)
 	if U.coMap and not U.shareSelectInstalled then
 		local oks, errs = pcall(installShareSelect)
