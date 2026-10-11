@@ -940,22 +940,27 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 	local st = m.proposal
 	if type(st) ~= "table" then error("no street part") end
 	local P = api.type.Proposal.new()
-	local conList = {}
-	local ce = conv.toAdd[1]
-	-- the engine's conversion numbers the construction's nodes in its own proposal: they are this build's (see C.frozenNodesOf)
-	local fz, how = C.frozenNodesOf(m, 1)
-	if fz and not opts.keepFrozen then
-		local okf, ef = pcall(function()
-			local l = {}
-			for k, v in ipairs(fz) do l[k] = v end
-			ce.frozenNodes = l
-			local sb = m.toAdd[1] and m.toAdd[1].segmentsBefore
-			ce.segmentsBefore = type(sb) == "number" and sb or 0
-		end)
-		C.frozenHow = okf and how or ("not written: " .. tostring(ef):sub(1, 80))
+	-- (conv nil: a street build alone, e.g. a road cutting a street that carries stops, which only a native proposal moves)
+	local fz = nil
+	if conv then
+		local conList = {}
+		local ce = conv.toAdd[1]
+		-- the engine's conversion numbers the construction's nodes in its own proposal: they are this build's (see C.frozenNodesOf)
+		local how
+		fz, how = C.frozenNodesOf(m, 1)
+		if fz and not opts.keepFrozen then
+			local okf, ef = pcall(function()
+				local l = {}
+				for k, v in ipairs(fz) do l[k] = v end
+				ce.frozenNodes = l
+				local sb = m.toAdd[1] and m.toAdd[1].segmentsBefore
+				ce.segmentsBefore = type(sb) == "number" and sb or 0
+			end)
+			C.frozenHow = okf and how or ("not written: " .. tostring(ef):sub(1, 80))
+		end
+		conList[1] = ce
+		P.toAdd = conList
 	end
-	conList[1] = ce
-	P.toAdd = conList
 	local sp = P.proposal
 	local nodes, edges = {}, {}
 	local objIds = C.existingObjectIds(st)

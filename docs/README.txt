@@ -82,8 +82,7 @@ KNOWN LIMITATIONS
   companies; the company actions of the Company window (market campaigns, greening, industry
   prospecting) only work for the host's company for now (the other players' requests are
   ignored); there is no money transfer between companies yet. Depots cannot be shared. The map
-  shows the routes of your own company's lines only. A road built across a street that carries
-  bus stops may make the host's game reload for everybody (about 20 seconds).
+  shows the routes of your own company's lines only.
 - Each build waits about 1 to 2 seconds before it appears: the games apply every
   construction at the same game time, which needs a safety margin.
 - When a road upgrade moves several town buildings, the town may place one extra

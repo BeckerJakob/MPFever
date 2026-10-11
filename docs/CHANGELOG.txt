@@ -7,8 +7,9 @@ MPFever - Changelog
     crosswalks), so the junctions differed; and a road that cuts a street carrying stops was rebuilt in a way that left the
     stops on the removed piece of street (the game then crashed computing their catchment area). Stops are now rebuilt with
     their junction settings (checked on the savegame of the report: the same junctions as on the player's game), and a build
-    cutting a street with stops is no longer rebuilt that way: if it cannot be reproduced exactly, the host's game is reloaded
-    for everybody instead.
+    cutting a street with stops is now rebuilt as the game's own tools make it (the stops move to the new pieces of street).
+    Checked with the road of the report: rebuilt on the other game with the same pieces of street, the stops kept. If the
+    other game still cannot reproduce such a build, the host's game is reloaded for everybody instead of a crash.
   - FIX (session): the first click on "Host" ended the session at once (the client could never join, the host had to click
     again), and after that the multiplayer window no longer closed by itself. The window now ends a session only when it is
     opened from the main menu after leaving a game.

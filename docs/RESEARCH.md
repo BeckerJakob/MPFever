@@ -119,7 +119,7 @@ A client crashed (access violation in `ecs::CatchmentAreaSystem::EndModification
   - With them, the engine asserts while adding a component the stop already has (`Find(components, compTypeIndex) == components.end()`).
   - A rebuilt native proposal is refused (`lc.segment0 not found`) or, given the node configurations, hangs the game.
 
-  So such a build is now never replayed by script: it is reported as not reproduced and the host's game is reloaded for everybody (`C.movesObjects`).
+  The fix is to rebuild it exactly as a construction placed against a street is rebuilt (`replayNativeStreet`). The removed segments and nodes come from the engine's own removal proposal (`makeSegmentsRemoveProposal`), not from the capture. The tool's node configurations and id maps are added on top (`C.rebuildNativeWithConstruction` with no construction). Checked with the client's road of a later report: the same number of new segments, all the stops kept. If even that is refused, the build is reported as not reproduced and the host's game is reloaded; the script forms are never tried (`C.movesObjects`). Reloading was the first fix, but every such road a player built then vanished.
 
 ### Line routes on the map (found 2026-10-11, fix to be confirmed in a real game)
 

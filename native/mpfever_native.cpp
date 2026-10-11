@@ -2057,7 +2057,7 @@ static u8* AllocNear(u64 size)
 
 static int RuleOf(u32 rva)
 {
-    char v[600];
+    static char v[2048];
     DWORD n = GetEnvironmentVariableA("MPFEVER_SITERULES", v, sizeof(v) - 1);    // diagnostic: "rva:rule,rva:rule" (hex rva)
     if (n > 0 && n < sizeof(v)) {
         v[n] = 0;

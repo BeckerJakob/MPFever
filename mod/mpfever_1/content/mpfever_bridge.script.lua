@@ -2492,6 +2492,70 @@ local function replayNativeConstruction(a)
 	return true
 end
 
+-- A street build that cuts a segment carrying stops or signals: the native proposal moves them to the new segments (a script
+-- proposal strands them). Rebuilt as for a construction against a street, without the construction: the removed segments and
+-- nodes as the engine's own removal proposal makes them, the tool's node configurations and id maps (C.rebuildNativeWithConstruction).
+local function replayNativeStreet(a)
+	local cArgs = C.deser(C.ser(a.args))
+	local miss = R.translateIn(cArgs, G.bind)
+	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: unresolved " .. table.concat(miss, ",")) replayFailed(a, "unresolved references") return end
+	local m = cArgs[1]
+	local rmIds = {}
+	for _, sg in ipairs(m.proposal.removedSegments or {}) do if type(sg.entity) == "number" and sg.entity >= 0 then rmIds[#rmIds + 1] = sg.entity end end
+	local okr, rm = pcall(function() return api.engine.util.proposal.makeSegmentsRemoveProposal(rmIds) end)
+	if not okr or not rm then log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: removal proposal " .. shortErr(rm)) replayFailed(a, "removal proposal") return end
+	local nSeg, nNodes = -1, -1
+	pcall(function() nSeg = #rm.proposal.removedSegments end)
+	pcall(function() nNodes = #rm.proposal.removedNodes end)
+	local capNodes = #(m.proposal.removedNodes or {})
+	if nSeg ~= #rmIds or nNodes < 0 then
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: the engine's removal (" .. nSeg .. " segments) differs from the tool's (" .. #rmIds .. ")")
+		replayFailed(a, "removal differs")
+		return
+	end
+	local toolNodes = nNodes ~= capNodes
+	local ctx = api.type.Context.new()
+	ctx.checkTerrainAlignment = true
+	ctx.cleanupStreetGraph = false
+	ctx.gatherBuildings = true
+	ctx.gatherFields = true
+	ctx.player = api.engine.util.getPlayer()
+	local okk, cmd, label = false, nil, nil
+	for _, variant in ipairs({ {}, { noConfigs = true }, { noConfigs = true, noMaps = true } }) do
+		C.errors = {}
+		variant.toolNodes = toolNodes
+		local okp, P = pcall(C.rebuildNativeWithConstruction, m, nil, rm, variant)
+		label = (variant.noMaps and "without node configurations and id maps") or (variant.noConfigs and "without node configurations") or "complete"
+		if okp and P then
+			okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true) end)
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native street (" .. label .. "): " .. ((okk and cmd) and "command made" or shortErr(cmd))
+				.. (#C.errors > 0 and (" [" .. table.concat(C.errors, " ; "):sub(1, 200) .. "]") or ""))
+		else
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native street (" .. label .. "): not rebuilt (" .. shortErr(P) .. ")")
+		end
+		if okk and cmd then break end
+	end
+	if not okk or not cmd then replayFailed(a, "native street command") return end
+	local edgesBefore = #R.allEdges()
+	toSim("replaying", {})
+	replaySend(cmd, function(res, success)
+		if not success then
+			local why = ""
+			pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: refused " .. why .. " (desync)")
+			logRefusal(a, res)
+			replayFailed(a, "native street refused " .. why)
+			return
+		end
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " native street BUILT (" .. label .. ")")
+		local expected = #(m.proposal.addedSegments or {}) - #(m.proposal.removedSegments or {})
+		G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
+			local got = #R.allEdges() - edgesBefore
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " edges here " .. got .. ", originator " .. expected .. (got == expected and "" or " SEGMENT COUNT DIFFERS"))
+		end }
+	end)
+end
+
 function replayTwoStep(a)
 	local m0 = a.args[1]
 	if type(m0) ~= "table" or #(m0.toAdd or {}) == 0 or type(m0.proposal) ~= "table" then return false end
@@ -2653,6 +2717,10 @@ local function replayNative(a, formIndex)
 			return engineReplay(a, "removal of " .. table.concat(removal, ","), function()
 				return api.engine.util.proposal.makeSegmentsRemoveProposal(removal)
 			end)
+		end
+		if C.movesObjects(stp) and #(a.args[1].toAdd or {}) == 0 and #(a.args[1].toRemove or {}) == 0 then
+			log("NATIVE REPLAY " .. tostring(a.uid) .. ": the build cuts a segment with stops or signals: native street proposal")
+			return replayNativeStreet(a)
 		end
 		if C.movesObjects(stp) then
 			a.objectForms = true
@@ -4208,6 +4276,39 @@ local function runNewRoad(p)
 		tries = tries + 1
 		if tries > 6 then return autoFinish() end
 		local n, info, pn, a = matrixPlace(k)
+		if p.attach then
+			-- (scenario attach) from the end of the newest road built in the game (an edge a company owns)
+			local ends, edgeOf = deadEnds()
+			local owned = {}
+			for _, e in ipairs(ends) do
+				local po = nil
+				pcall(function() po = api.engine.getComponent(edgeOf[e].e, api.type.ComponentType.PLAYER_OWNED) end)
+				if po and po.player and po.player >= 0 then owned[#owned + 1] = { n = e, owner = po.player } end
+			end
+			-- this game's company's roads first (MPFEVER_ATTACH=other: the other companies' first), the newest first
+			local me = api.engine.util.getPlayer()
+			local mineFirst = os.getenv("MPFEVER_ATTACH") ~= "other"
+			table.sort(owned, function(x, y)
+				local xm, ym = (x.owner == me) == mineFirst, (y.owner == me) == mineFirst
+				if xm ~= ym then return xm end
+				return x.n > y.n
+			end)
+			local pick = owned[tries]
+			-- (MPFEVER_ATTACH_NODE=n: that dead end, whoever owns it)
+			local forced = tonumber(os.getenv("MPFEVER_ATTACH_NODE") or "")
+			if forced and tries == 1 and edgeOf[forced] then pick = { n = forced, owner = -1 } end
+			if not pick then log("AUTOTEST attach: no road built in the game to attach to"); return autoFinish() end
+			n, info = pick.n, edgeOf[pick.n]
+			pn = nodePosition(n)
+			local po = nodePosition(info.other)
+			local dx, dy = pn.x - po.x, pn.y - po.y
+			local len = math.sqrt(dx * dx + dy * dy)
+			-- (sideways, so that the new piece makes a junction rather than continuing the road)
+			a = { x = pn.x - dy / len * 40, y = pn.y + dx / len * 40 }
+			if os.getenv("MPFEVER_ATTACH_DIR") == "straight" then a = { x = pn.x + dx / len * 40, y = pn.y + dy / len * 40 } end
+			a.z = groundZ(a.x, a.y, pn.z)
+			log("AUTOTEST attach to node " .. n .. " of edge " .. info.e .. " owned by " .. pick.owner .. " (this game plays " .. tostring(api.engine.util.getPlayer()) .. ")")
+		end
 		local o = { tlanes = true, template = true, roadType = true, street = true, owner = true, positions = true, sharedIds = true,
 			tmpl = { roadTemplate = info.c.roadTemplate, roadStyle = info.c.roadStyle, roadType = info.c.roadType } }
 		if p.stop then
@@ -4231,6 +4332,14 @@ local function runNewRoad(p)
 			ctx.gatherBuildings = true
 			ctx.gatherFields = true
 			ctx.player = api.engine.util.getPlayer()
+			if p.attach then
+				-- what the engine says of it before building (what a tool shows while the player aims)
+				pcall(function()
+					local pd = api.engine.util.proposal.makeProposalData(sp, ctx)
+					log("AUTOTEST attach preview: critical " .. tostring(pd.errorState.critical) .. " messages " .. C.ser(C.marshal(pd.errorState.messages))
+						.. " warnings " .. C.ser(C.marshal(pd.errorState.warnings)))
+				end)
+			end
 			deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), function(res, success)
 				local why = ""
 				if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
@@ -4620,6 +4729,18 @@ H.newroadstop = function(from, p)
 	if not ok then
 		log("AUTOTEST new road with stop failed: " .. tostring(err))
 		AUTO.results[#AUTO.results + 1] = "error " .. tostring(err)
+		autoFinish()
+	end
+end
+
+-- a road built from the end of a road built in the game (separate companies: one's own, then another company's)
+H.attach = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	p.attach = true
+	local ok, err = pcall(runNewRoad, p)
+	if not ok then
+		log("AUTOTEST attach failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "attach error " .. tostring(err)
 		autoFinish()
 	end
 end

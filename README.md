@@ -36,7 +36,7 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 
 - **Terrain edits land at the same step on every game.** A terrain tool cannot be delayed on the game of the player who uses it, so a game slightly ahead used to apply the edit a few steps late. An edit changes the reputation of the nearest town, so the towns drifted apart and a later demolition could crash a game. While a player has a terrain tool in hand, the other games now stay just behind that player's game.
 - **Actions arriving near a wait point are no longer one step late at x4.**
-- **No more crash when a road is built across a street with another player's bus stops.** Stops are rebuilt with their junction settings, and a build that cuts a street carrying stops is never rebuilt in a way that strands them.
+- **No more crash when a road is built across a street with another player's bus stops.** Stops are rebuilt with their junction settings, and a road that cuts a street carrying stops is rebuilt as the game's own tool makes it (the stops move to the new pieces of street).
 - **Hosting works at the first click** (the multiplayer window ended the session it had just started), and the window closes again when the game loads.
 - **Separate companies:** the routes drawn on the map are the player's own lines.
 - **Separate companies:** a terrain edit is paid by the company of the player who made it, on every game.
