@@ -27,9 +27,18 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
   - for the host, Steam invites.
 
   It stays open while playing.
+- **In-game chat**, from a card in the pause menu. New messages show for a few seconds at the left of the screen.
 - **Host authority.** The games compare their state every 10 seconds. Money is corrected at once. A lasting difference reloads the host's game for everybody (about 20 seconds).
 - **Joining and reconnecting.** Joining a session already running works. A lost connection reconnects by itself for 5 minutes.
 - **In the game's 13 languages.** The launcher and the in-game windows follow the language of Transport Fever 3.
+
+## What's new in 0.3.5
+
+- **Terrain edits land at the same step on every game.** A terrain tool cannot be delayed on the game of the player who uses it, so a game slightly ahead used to apply the edit a few steps late. An edit changes the reputation of the nearest town, so the towns drifted apart and a later demolition could crash a game. While a player has a terrain tool in hand, the other games now stay just behind that player's game.
+- **Actions arriving near a wait point are no longer one step late at x4.**
+- **Separate companies:** a terrain edit is paid by the company of the player who made it, on every game.
+- **A simulation difference now reloads the host's game after 30 seconds** instead of 5 minutes, since the games no longer drift by themselves.
+- **In-game chat** (thanks to SlikerDev).
 
 ## What's new in 0.3.4
 
@@ -97,7 +106,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Experimental (0.3.4). Supported game builds:
+Experimental (0.3.5). Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.
@@ -119,6 +128,7 @@ Testing and reporting problems with your logs helps just as much: thank you!
   - the redesigned launcher window and its icon;
   - the translation of MPFever into the 13 languages of the game (the launcher follows the game's language);
   - the in-game MPFever window (pause-menu card, players, sync state, Steam invites);
+  - the in-game chat;
   - the fee list of the station windows.
 
 Thanks to everyone who tests MPFever and reports problems in the [issues](https://github.com/dkdknight/MPFever/issues): every report with logs helped find a bug.

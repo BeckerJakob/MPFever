@@ -2,7 +2,7 @@
 
 [b]Build your transport empire together.[/b] MPFever adds multiplayer to Transport Fever 3. You and your friends play the same world, each in your own game, over the internet or a local network. You can share one company or each run your own.
 
-[b]⚠ Experimental version (0.3.4).[/b] It works, but expect bugs, short pauses and the occasional crash. Back up your savegames, and please send feedback: it decides what comes next.
+[b]⚠ Experimental version (0.3.5).[/b] It works, but expect bugs, short pauses and the occasional crash. Back up your savegames, and please send feedback: it decides what comes next.
 
 [size=4][b]Features[/b][/size]
 [list]
@@ -11,8 +11,8 @@
 [*][b]Games that stay identical.[/b] Since 0.3.4 the main cause of desyncs is fixed: the game's own scripts now take their decisions in the same order on every PC.
 [*][b]Host authority.[/b] Every 10 seconds the games compare their state: money, loans, company progress, contracts, towns and industries; cargo in buildings and vehicles; vehicles and roads. Money is corrected automatically. Any other lasting difference triggers an [b]automatic resync[/b]: a short pause, the host's game is sent to everyone, all games reload it, and play resumes (about 20 s).
 [*][b]Easy start.[/b] Host any savegame from the multiplayer button of the main menu. Friends join by IP address or through a Steam invitation, even in a game already running. The host's game is sent to them automatically.
-[*][b]MPFever window in the game.[/b] Open it from the pause menu to see the players and their connection, whether the games are in sync and, for the host, a button to invite Steam friends.
-[*][b]Built into the game.[/b] Nothing is added to the game screen. MPFever only adds a button in the main menu and a card in the pause menu.
+[*][b]Chat and MPFever window in the game.[/b] Write to the other players from the pause menu's Chat card. The MPFever window, also from the pause menu, shows the players and their connection, whether the games are in sync and, for the host, a button to invite Steam friends.
+[*][b]Built into the game.[/b] Nothing is added to the game screen. MPFever only adds a button in the main menu and two cards in the pause menu.
 [*][b]In the 13 languages of the game.[/b] The launcher and the in-game windows follow the language of Transport Fever 3. The language can also be chosen in the launcher.
 [/list]
 
@@ -50,7 +50,7 @@ The mod does nothing in normal solo games. It only activates when the game is st
 [size=4][b]Credits[/b][/size]
 [list]
 [*][b]dkdknight[/b] – author and maintainer.
-[*][b]SlikerDev[/b] – the launcher's design, MPFever in the 13 languages of the game, and the in-game MPFever window.
+[*][b]SlikerDev[/b] – the launcher's design, MPFever in the 13 languages of the game, the in-game MPFever window and the chat.
 [*]Thanks to every tester who reported a problem with their logs.
 [/list]
 

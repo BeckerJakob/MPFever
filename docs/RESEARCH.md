@@ -4,7 +4,7 @@ This file records what we learned about Transport Fever 3 while building MPFever
 
 Game build studied: **40420** (Steam). Addresses are RVAs of `TransportFever3.exe` for that build. They change with every game update, so `native/mpfever_native.cpp` checks the bytes before patching anything.
 
-Last update: 2026-10-11 (MPFever 0.3.4).
+Last update: 2026-10-11 (MPFever 0.3.5).
 
 ---
 
@@ -99,6 +99,16 @@ This is exactly the "towns grow differently" report (issue #7).
 - **The interface reading game data.** Heavy reads by the census did not change the simulation once the seed was fixed.
 - **Money.** Already corrected by the host, and not a cause of divergence.
 
+### Terrain edits and timing (found 2026-10-11, fixed in 0.3.5)
+
+A real game showed the towns drifting right after a client's terrain edit, then a client crash when the host demolished a street bus terminal.
+
+- **The crash** is an engine assertion in `ecs::TransportNetworkSystem::EntityToBeRemoved`, `AreAllNodesEmpty` (0xb6fd30). Decompiled, it does not check vehicles: every node of the removed entity's transport network must have no port left, i.e. no other entity may still be connected to it. With different towns, something of the client's town was still connected to the terminal; the host's removal plan did not include it.
+- **The drift.** The terrain tool (`UI::TerrainModifier`) cannot be held like the other tools: it reads back the handle of its command, which a held command leaves empty (that crashed in 0.2.8). So the edit is applied at once at its author's game time, and another game that is already a few steps further applies it late (2 steps in the report). Every terrain edit lowers the reputation of the nearest town, so the towns took that change at different steps.
+- **Fix.** The construction menu builds a terrain tool's action through `construction_react_util.getActionParams`; MPFever watches it in the interface. While a player has a terrain tool in hand (or made an edit in the last minute), that game leads: the others stay behind it by twice the overshoot reserve, and get every edit before its time. If two players use one, the more recent user leads.
+- **Exact stops, two older imprecisions found on the way.** Approaching an action's time, a game could run on at speed when the action waited just past the barrier. It also asked for its exact steps while the simulation was still running: the interface sees the simulation clock only at the 200 ms handshake, so a clock still for 12 frames proves nothing. Both are fixed: exact steps whenever an action is near, and a stopped simulation means 0.45 s of real time without its clock moving.
+- **Checked.** Twelve edits in a row by the host and by the client at x4 all land at the same step on the other game; every check is identical.
+
 ---
 
 ## 4. Tools built for this research
@@ -169,6 +179,8 @@ Done:
 - [x] **Main desync cause found and fixed: the Lua string hash seed** (0.3.4)
 - [x] Full-state census and entity watch, to find any future divergence quickly (0.3.4)
 - [x] In-game MPFever window: players, link and sync state, opened from the pause menu (0.3.4, thanks to SlikerDev)
+- [x] Terrain edits at the same step everywhere (terrain tool lead), exact stops at x4 (0.3.5)
+- [x] In-game chat (0.3.5, thanks to SlikerDev)
 
 Next:
 
@@ -179,3 +191,4 @@ Next:
 - [ ] A lighter continuous check: hash only what can drift (entity count and order, money, town and industry summaries) instead of the 32 parts
 - [ ] Contracts, company growth and achievements per company
 - [ ] Ground paint
+- [ ] Separate companies: the route of the client's lines is not drawn on its map (under investigation)

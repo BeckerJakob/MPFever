@@ -2,7 +2,7 @@
 
 **Build your transport empire together.** MPFever adds multiplayer to Transport Fever 3. You and your friends play the same world, each in your own game, over the internet or a local network. You can share one company or each run your own.
 
-> ⚠️ **Experimental version (0.3.4).** It works, but expect bugs, short pauses and the occasional crash. Back up your savegames, and please send feedback: it decides what comes next.
+> ⚠️ **Experimental version (0.3.5).** It works, but expect bugs, short pauses and the occasional crash. Back up your savegames, and please send feedback: it decides what comes next.
 
 ## Features
 
@@ -28,11 +28,11 @@
 
   Money is corrected automatically. Any other lasting difference triggers an **automatic resync**: a short pause, the host's game is sent to everyone, all games reload it, and play resumes (about 20 s).
 - **Easy start.** Host any savegame from the multiplayer button of the main menu. Friends join by IP address or through a Steam invitation, even in a game already running. The host's game is sent to them automatically.
-- **MPFever window in the game.** Open it from the pause menu to see:
+- **Chat and MPFever window in the game.** Write to the other players from the pause menu's Chat card. The MPFever window, also from the pause menu, shows:
   - the players and their connection;
   - whether the games are in sync;
   - for the host, a button to invite Steam friends.
-- **Built into the game.** Nothing is added to the game screen. MPFever only adds a button in the main menu and a card in the pause menu.
+- **Built into the game.** Nothing is added to the game screen. MPFever only adds a button in the main menu and two cards in the pause menu.
 - **In the 13 languages of the game.** The launcher and the in-game windows follow the language of Transport Fever 3. The language can also be chosen in the launcher.
 
 ## Known limitations
@@ -71,7 +71,7 @@ The mod does nothing in normal solo games. It only activates when the game is st
 ## Credits
 
 - **dkdknight** – author and maintainer.
-- **SlikerDev** – the launcher's design, MPFever in the 13 languages of the game, and the in-game MPFever window.
+- **SlikerDev** – the launcher's design, MPFever in the 13 languages of the game, the in-game MPFever window and the chat.
 - Thanks to every tester who reported a problem with their logs.
 
 ## Feedback and bug reports

@@ -1,6 +1,26 @@
 MPFever - Changelog
 ===================
 
+0.3.5-experimental - terrain edits in step, in-game chat
+  - FIX (crash, desync): a terrain edit (raise, lower, flatten...) cannot be held like the other builds, so it is made at
+    once on the game of the player who makes it; a game already a little further in time made it a few steps late. An edit
+    changes the reputation of the nearest town, so the towns then drifted apart, and a client crashed when the host
+    demolished a station afterwards (the engine still found something of the client's own town connected to it). Now, while
+    a player has a terrain tool in hand, the other games stay a little behind that player's game and make every edit at
+    exactly its time. Checked: 12 edits in a row by the host and by the client at x4, all at the same step, no difference.
+  - FIX (desync): an action arriving close to a moment where a game had to wait for the other players could still be
+    applied one step late at x4 (the game ran on at speed, or asked the engine for its exact steps while it was still
+    running). Exact steps are now used whenever an action is near, and only once the simulation really stopped.
+  - FIX (separate companies): a terrain edit was paid on the other games by THEIR player's company (corrected afterwards by
+    the host's money check): it is now paid by the company of the player who made it, as on that player's game.
+  - The state check no longer reports a terrain difference while an edit is still on its way to the other games.
+  - A difference in the simulation (towns, vehicles, passengers...) now reloads the host's game after 30 seconds instead of
+    5 minutes: the games no longer drift by themselves since 0.3.4, so such a difference comes from an action applied
+    differently, and playing on with other towns can crash a game.
+  - NEW (thanks to SlikerDev): chat in the game. A "Chat" card in the pause menu (and a button in the MPFever window) opens
+    the chat window; new messages show for a few seconds at the left of the screen; players who join get the last 50
+    messages. Messages go through MPFever.exe, never through the simulation.
+
 0.3.4-experimental - no more crash on resynchronisation, companies stay in sync, shared stations usable
   - FIX (desync, the main cause): the game's Lua (5.2.2) seeds the hash of its strings with the clock and memory
     addresses, differently on every PC: the game's own scripts (towns, industries, the scripts of the constructions)
