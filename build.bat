@@ -24,7 +24,8 @@ mkdir "%DIST%" || exit /b 1
 copy /y launcher\bin\Release\MPFever.exe "%DIST%\" >nul || exit /b 1
 copy /y launcher\bin\Release\MPFever.exe.config "%DIST%\" >nul || exit /b 1
 copy /y native\out\winhttp.dll "%DIST%\" >nul || exit /b 1
-for %%f in (README INSTALL ROADMAP CHANGELOG) do copy /y docs\%%f.txt "%DIST%\" >nul || exit /b 1
+for %%f in (README INSTALL SERVER ROADMAP CHANGELOG) do copy /y docs\%%f.txt "%DIST%\" >nul || exit /b 1
+copy /y launcher\start-server.bat "%DIST%\" >nul || exit /b 1
 xcopy /e /i /q /y mod\mpfever_1 "%DIST%\mod\mpfever_1" >nul || exit /b 1
 if exist "release\MPFever-%VERSION%.zip" del "release\MPFever-%VERSION%.zip"
 rem standard zip entries (forward slashes), unlike Compress-Archive of Windows PowerShell 5

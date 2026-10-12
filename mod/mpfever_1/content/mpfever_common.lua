@@ -17,6 +17,8 @@ end
 C.DIR = os.getenv("MPFEVER_DIR")
 C.NAME = os.getenv("MPFEVER_NAME") or "player"
 C.ROLE = os.getenv("MPFEVER_ROLE") or "solo"
+-- the game of a dedicated server (MPFever.exe --server): it hosts the world and plays no company of its own
+C.SERVER = os.getenv("MPFEVER_SERVER") == "1"
 C.ACTIVE = C.DIR ~= nil and C.DIR ~= "" and C.IO ~= nil
 
 -- Texts: French and English are written in the code as T("français", "English"); the other languages come from

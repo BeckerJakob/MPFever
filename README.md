@@ -7,9 +7,11 @@ Experimental multiplayer for Transport Fever 3. Several players play the same wo
 
 The game starts from `MPFever.exe`. A multiplayer button in the main menu lets you open a lobby with one of your savegames or join a host by IP address. The players gather in the lobby, then the host starts the game and every game loads it at the same time; the host's game is received automatically. Joining a game already running works too, and Steam invitations are supported.
 
+A world can also run on a **dedicated server** (`MPFever.exe --server`): a PC of its own runs the world, nobody plays on it, and the players join it as they join a host. See [SERVER](docs/SERVER.txt).
+
 Enjoying MPFever? You can support its development on [Ko-fi](https://ko-fi.com/H2H717LY5N).
 
-Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL](docs/INSTALL.txt), [ROADMAP](docs/ROADMAP.txt) and [CHANGELOG](docs/CHANGELOG.txt). What we learned about the engine, the causes of desyncs and what must be synchronised in each mode is in [RESEARCH](docs/RESEARCH.md).
+Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL](docs/INSTALL.txt), [SERVER](docs/SERVER.txt), [ROADMAP](docs/ROADMAP.txt) and [CHANGELOG](docs/CHANGELOG.txt). What we learned about the engine, the causes of desyncs and what must be synchronised in each mode is in [RESEARCH](docs/RESEARCH.md).
 
 ## Features
 
@@ -30,7 +32,27 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 - **In-game chat**, from a card in the pause menu. New messages show for a few seconds at the left of the screen.
 - **Host authority.** The games compare their state every 10 seconds. Money is corrected at once. A lasting difference reloads the host's game for everybody (about 20 seconds).
 - **Joining and reconnecting.** Joining a session already running works. A lost connection reconnects by itself for 5 minutes.
+- **Dedicated server** (in development, `MPFever.exe --server`), in the spirit of the Minecraft, Satisfactory and Factorio servers:
+  - the world runs on a PC of its own, without the PC of a player, and waits while nobody is connected;
+  - settings in `mpfever_server.properties`: world, port, password, players at most, company mode, message of the day;
+  - autosave with backups, restart of the game after a crash or a freeze, players reconnected by themselves;
+  - a console in the server window: `status`, `say`, `save`, `pause`, `speed`, `kick`, `resync`, `restart`, `stop`.
 - **In the game's 13 languages.** The launcher and the in-game windows follow the language of Transport Fever 3.
+
+## In development: dedicated server
+
+`MPFever.exe --server` (or `start-server.bat`) turns a PC into a dedicated server for one world. Transport Fever 3 has no server program of its own, so the server is the full game, started and driven by MPFever: it loads the world from `mpfever_server.properties`, hosts it like a player hosts a savegame, and nobody plays on it.
+
+- **The world without the host's PC.** Players join the server's address from the MPFever window, with a password when the server has one. A player with another MPFever version is refused with a message saying which one the server runs.
+- **Like the servers of Minecraft, Satisfactory and Factorio:**
+  - the world pauses while nobody is connected (`pause-when-empty`) and resumes when a player is in;
+  - autosave every 10 minutes under the world's name, with copies in `server\backups`;
+  - the game is started again after a crash or a freeze (watchdog), and the players' MPFever reconnects by itself;
+  - a console under the log of the server window (`help` lists the commands), a message of the day, a kick.
+- **Separate companies:** the server plays no company. The savegame's own company goes to the player named by `owner=`, else to nobody.
+- **The in-game MPFever window** names the dedicated server above the players.
+
+Set-up, settings and commands: [SERVER](docs/SERVER.txt).
 
 ## What's new in 0.3.10
 
@@ -123,7 +145,7 @@ The full list since 0.2.10 is in the [CHANGELOG](docs/CHANGELOG.txt).
 
 | Part | Folder | Role |
 |---|---|---|
-| Launcher | `launcher/` (C#, .NET Framework 4.8, WinForms) | Hosts or joins a session over TCP and starts the game. It installs the mod and the native module, relays player actions and the session status, compares the games' state and runs resynchronisations from the host's savegame. |
+| Launcher | `launcher/` (C#, .NET Framework 4.8, WinForms) | Hosts or joins a session over TCP and starts the game. It installs the mod and the native module, relays player actions and the session status, compares the games' state and runs resynchronisations from the host's savegame. With `--server` it runs a dedicated server (`Server.cs`): it hosts one world by itself, saves it, restarts the game when needed and has a console. |
 | Game mod | `mod/mpfever_1/` (Lua) | Game script and UI hook. It captures player actions and replays them in every game at the same game time (barrier lockstep). It computes state checksums, corrects money, manages the companies and shared stations, and saves or loads for resynchronisation. It draws the multiplayer page of the main menu and the in-game MPFever window. It does nothing unless the game was started by the launcher. |
 | Native module | `native/` (freestanding C++, no CRT) | Built as `winhttp.dll` and placed in the game folder, where the game loads it itself (the game imports `WINHTTP.dll`). Every WinHTTP call is passed unchanged to the system library. With an MPFever session only, it does three things: it holds construction commands so they run at the same step in every game, it copies terrain edits, and it splits the "local player" between the simulation and the interface. It also fixes the Lua hash seed. It stays inert on any unknown game build. |
 | Tests | `tests/` (Python + lupa) | Language file check (`test_lang.py`), and two simulated games running the real Lua bridge (`test_lockstep.py`). |
@@ -162,6 +184,8 @@ python tests\test_lockstep.py
 ```
 
 `test_lockstep.py` has not been updated for the companies module (0.3.x) yet and currently stops at start-up.
+
+`MPFever.exe --selftest` checks the relay and the client without the game: messages between two simulated games, and the dedicated server's settings file and who it lets in (password, version, players at most, kick).
 
 The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, with scenarios chosen by environment variables. See [RESEARCH](docs/RESEARCH.md) for the determinism test and the census.
 

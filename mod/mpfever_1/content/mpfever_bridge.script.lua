@@ -787,6 +787,8 @@ local function coApply(st, a)
 		pcall(function() api.cmd.sendCommand(api.cmd.makeEntitySetColorCmd(st.co.canon, api.type.Vec3f.new(r, g, b))) end)
 		log("companies: registry created, the savegame's company is player entity " .. tostring(st.co.canon))
 	end
+	-- (a dedicated server names the player who gets the savegame's company)
+	if type(p.owner) == "string" then st.co.owner = p.owner end
 	local c, isNew = CO.join(st.co, tostring(p.key), tostring(p.name), p.host == true, p.cname, p.sid)
 	log("companies: player '" .. tostring(p.key) .. "' plays company " .. c.id .. (isNew and " (new)" or " (known)"))
 	installSimPlayer(st)
@@ -1986,7 +1988,7 @@ end
 H.chat = function(from, p) log("chat " .. tostring(from) .. ": " .. tostring(p.text)) end
 
 H.session = function(from, p)
-	if p.cmode ~= nil then G.cmode = p.cmode; G.coStart = p.cstart end
+	if p.cmode ~= nil then G.cmode = p.cmode; G.coStart = p.cstart; G.coOwner = p.owner end
 	G.session.started = p.started == true
 	G.session.speed = p.speed or 0
 	-- the tutorial: its missions are validated by each game's own interface, so they diverge (a unique building the client
@@ -7969,8 +7971,16 @@ local function coMyName()
 	return n
 end
 
--- this player's Steam account (steam_id.txt, written by the native module once Steam is up), nil while unknown
+-- this player's key in the registry: its name in lower case; empty for a dedicated server, which plays no company of its own
+local function coMyKey()
+	if C.SERVER then return "" end
+	return coMyName():lower()
+end
+
+-- this player's Steam account (steam_id.txt, written by the native module once Steam is up), nil while unknown (and never
+-- used for a dedicated server: its account owns no company)
 local function coMySid()
+	if C.SERVER then return nil end
 	if G.mySid == nil and G.frames - (G.sidTried or -1000) > 120 then
 		G.sidTried = G.frames
 		pcall(function()
@@ -8057,7 +8067,8 @@ local function coGui(st)
 		local sid = coMySid()
 		local a = { fn = "mpfCoJoin", origin = G.me, oseq = G.oseq, uid = G.me .. ":" .. G.oseq,
 			at = paused and pausedStamp(now) or stampFor(now), paused = paused or nil,
-			args = { key = name:lower(), name = name, host = (C.ROLE == "host"), mode = "separate", start = G.coStart, sid = sid,
+			args = { key = coMyKey(), name = name, host = (C.ROLE == "host"), mode = "separate", start = G.coStart, sid = sid,
+				owner = C.SERVER and (G.coOwner or "") or nil,
 				cname = C.Tf("Entreprise %s", "%s Company", name) } }
 		a.native = true
 		send("act", a)
@@ -8068,7 +8079,7 @@ local function coGui(st)
 	-- which company is this game's: its interface and tools act as that company from now on
 	local reg = st.co
 	if reg then
-		local c = CO.match(reg, coMyName():lower(), coMySid(), C.ROLE == "host")
+		local c = CO.match(reg, coMyKey(), coMySid(), C.ROLE == "host")
 		-- the other companies' player entities (the native module empties their money popups, see ClearOthers)
 		local others = {}
 		for _, o in ipairs(reg.list) do if o.ent and c and o.ent ~= c.ent then others[#others + 1] = o.ent end end

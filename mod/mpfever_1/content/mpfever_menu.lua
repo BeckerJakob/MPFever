@@ -4,7 +4,8 @@
 -- the UI's recipe replacement table: the page is drawn as usual, with a « Multiplayer » button on top of it, which opens
 -- the MPFever window (host one of the player's savegames, or join a host by its address).
 -- Link with MPFever.exe: two small files in the session folder (MPFEVER_DIR).
---   menu_req.txt   written here: seq TAB command TAB argument TAB player name   (host / join / cancel)
+--   menu_req.txt   written here: seq TAB command TAB argument TAB player name TAB option   (host / join / cancel; the option
+--                  is the company mode of a host, the password of a dedicated server for a join)
 --   menu_state.txt written by MPFever.exe: key=value lines (phase, text, progress, load, name, addr, players)
 -- No backslash characters on purpose.
 
@@ -183,6 +184,7 @@ local function setup()
 		local name = react.useState(st0.name or "")
 		local companies = react.useState("shared")     -- hosting: everybody plays one company, or each player has its own
 		local addr = react.useState(st0.addr or "")
+		local password = react.useState("")            -- joining: the password of a dedicated server (none: empty)
 		local state = react.useState(st0)
 		-- (the host's savegame, once received, is loaded by the application script mpfever_auto.lua)
 		react.onStepTimer(function()
@@ -272,9 +274,21 @@ local function setup()
 				},
 			})
 			rows[#rows + 1] = gap()
+			rows[#rows + 1] = box(H, {
+				text(T("Mot de passe : ", "Password: ")),
+				builtin.TextInputField{
+					meta = { class = "font-scale-title-4" },
+					placeholderText = T("seulement si le serveur en a un", "only if the server has one"),
+					value = password:old(),
+					onTyping = function(v) password:set(v) end,
+				},
+			})
+			rows[#rows + 1] = gap()
 			rows[#rows + 1] = button(T("Rejoindre", "Join"), function()
 				if addr:old() == "" then return end
-				request("join", addr:old(), name:old())
+				-- (one line of the request file: no tab or line break in the password)
+				local pw = tostring(password:old() or ""):gsub("[%c]", "")
+				request("join", addr:old(), name:old(), pw)
 			end, addr:old() ~= "" and not busy, "font-scale-title-3", WIDTH)
 		end
 		rows[#rows + 1] = gap()

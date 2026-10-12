@@ -632,7 +632,8 @@ local PLAYER_STATES = {
 	left = function() return T("a quitté la partie", "left the game"), "negative" end,
 }
 
--- a player's line: name, (you), host, its state; and the colour class
+-- a player's line: name, (you), host, its state; and the colour class (a dedicated server is not one of the players: it
+-- is named above them)
 local function playerLine(pl, me)
 	local text = pl.name
 	if pl.id == me then text = text .. T(" (vous)", " (you)") end
@@ -641,10 +642,10 @@ local function playerLine(pl, me)
 	return text .. "  ·  " .. state, cls
 end
 
--- the players still in the session (those who left are listed too, for a while)
+-- the players still in the session (those who left are listed too, for a while; a dedicated server is not counted)
 local function playerCount(st)
 	local n = 0
-	for _, pl in ipairs(st and st.players or {}) do if pl.state ~= "left" then n = n + 1 end end
+	for _, pl in ipairs(st and st.players or {}) do if pl.state ~= "left" and pl.role ~= "server" then n = n + 1 end end
 	return n
 end
 
@@ -657,6 +658,9 @@ local function linkLine(st)
 		return T("Connexion à l'hôte perdue…", "Connection to the host lost…"), "error"
 	elseif st.conn == "gone" then
 		return T("Connexion à l'hôte perdue (reconnexion impossible).", "Connection to the host lost (could not reconnect)."), "error"
+	elseif st.conn == "denied" then
+		-- (the host refused this player: why, in this player's language, written by MPFever.exe)
+		return (st.denied and st.denied ~= "") and st.denied or T("Connexion refusée par l'hôte.", "Connection refused by the host."), "error"
 	elseif statusStale(st) then
 		return T("Pas de nouvelles de MPFever.exe depuis quelques secondes.", "No news from MPFever.exe for a few seconds."), "warning"
 	end
@@ -891,7 +895,10 @@ local function installSession(react, builtin)
 		local st = useStatus(react)
 		local rows = {}
 		if st and st.host then
-			rows[#rows + 1] = muted(C.Tf("Hôte : %s", "Host: %s", st.host) .. "  ·  "
+			-- (a dedicated server: its name as its settings write it)
+			local hostText = st.server == "1" and C.Tf("Serveur dédié : %s", "Dedicated server: %s", (st.title and st.title ~= "") and st.title or st.host)
+				or C.Tf("Hôte : %s", "Host: %s", st.host)
+			rows[#rows + 1] = muted(hostText .. "  ·  "
 				.. (st.mode == "separate" and T("Une entreprise par joueur", "One company per player") or T("Une entreprise pour tous", "One company for everybody")))
 		end
 		local link, linkCls = linkLine(st)
@@ -905,8 +912,10 @@ local function installSession(react, builtin)
 		rows[#rows + 1] = text(" ")
 		rows[#rows + 1] = section(ICON_PLAYERS, T("Joueurs", "Players") .. "  (" .. playerCount(st) .. ")")
 		for _, pl in ipairs(st and st.players or {}) do
-			local line, cls = playerLine(pl, st.me)
-			rows[#rows + 1] = row { icon(ICON_PERSON, 22), text("  " .. line, nil, cls) }
+			if pl.role ~= "server" then
+				local line, cls = playerLine(pl, st.me)
+				rows[#rows + 1] = row { icon(ICON_PERSON, 22), text("  " .. line, nil, cls) }
+			end
 		end
 		if st and st.invite == "1" and st.me and st.players then
 			local host = false
