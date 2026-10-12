@@ -160,8 +160,10 @@ end
 
 -- ------------------------------------------------------------------ marshalling of native objects
 
+local mfailHook
 local function members(o)
 	local ok, m = pcall(function() return o.__members end)
+	if not ok and mfailHook then mfailHook(o, ".__members", m) end
 	if ok and m ~= nil then return m end
 	local mt = getmetatable(o)
 	if type(mt) == "table" then
@@ -171,6 +173,29 @@ local function members(o)
 	return nil
 end
 C.members = members
+
+-- MPFEVER_MARSHALLOG: every failed access while marshalling, with the object's name (marshal_fail.txt): each one costs a
+-- crash dump written by the game and about 0.1 s (issue #21)
+local MLOG = os.getenv("MPFEVER_MARSHALLOG")
+local function mfail(v, what, err)
+	if not MLOG then return end
+	pcall(function()
+		local f = C.IO.open(C.DIR .. string.char(92) .. "marshal_fail.txt", "ab")
+		f:write(tostring(v), "\t", what, "\t", tostring(err):sub(1, 120), "\n")
+		f:close()
+	end)
+end
+mfailHook = mfail
+
+-- Every failed read of an engine object costs a crash dump written by the game and about 0.1 s, even inside pcall (issue #21:
+-- the members of a Vec3f include its functions, distance, lerp, dot... 11 failed reads per colour of a vehicle part). The
+-- vectors and matrices are read directly, and the members that cannot be read on an object are remembered per type.
+local badMembers = {}
+local isMatrix = {}   -- type name -> whether its objects are read as 1..16 (probed once per type)
+local function typeName(v)
+	local ok, s = pcall(tostring, v)
+	return ok and type(s) == "string" and s:match("^([%w_%.]+): ") or nil
+end
 
 local function marshal(v, depth)
 	depth = depth or 0
@@ -185,8 +210,28 @@ local function marshal(v, depth)
 		return r
 	end
 	if t == "userdata" then
-		-- matrix first: Mat4f exposes no members but is indexable by 1..16
-		local okm, m16 = pcall(function() return v[16] end)
+		local tn = typeName(v)
+		if tn == "Vec3f" or tn == "Vec2f" or tn == "Vec4f" then
+			local r = { __vec = true }
+			local ok = pcall(function()
+				r.x, r.y = v.x, v.y
+				if tn ~= "Vec2f" then r.z = v.z end
+				if tn == "Vec4f" then r.w = v.w end
+			end)
+			if ok then return r end
+		end
+		if tn == "Mat4f" then
+			local r = { __mat = true }
+			if pcall(function() for i = 1, 16 do r[i] = v[i] end end) then return r end
+		end
+		-- matrix first: Mat4f exposes no members but is indexable by 1..16 (probed once per type: that read
+		-- failed on every object of the other types)
+		local okm, m16 = true, nil
+		if not tn or isMatrix[tn] ~= false then
+			okm, m16 = pcall(function() return v[16] end)
+			if tn then isMatrix[tn] = okm and type(m16) == "number" end
+		end
+		if not okm then mfail(v, "[16]", m16) end
 		if okm and type(m16) == "number" then
 			local r = { __mat = true }
 			for i = 1, 16 do r[i] = v[i] end
@@ -196,23 +241,34 @@ local function marshal(v, depth)
 		if m ~= nil and #m > 0 then
 			local r = { __ud = true }
 			local ok = pcall(function()
+				local bad = tn and badMembers[tn]
 				for i = 1, #m do
 					local k = m[i]
-					local okk, x = pcall(function() return v[k] end)
+					local okk, x = false, nil
+					if not (bad and bad[k]) then
+						okk, x = pcall(function() return v[k] end)
+						if not okk then
+							mfail(v, "." .. tostring(k), x)
+							if tn then badMembers[tn] = badMembers[tn] or {}; badMembers[tn][k] = true; bad = badMembers[tn] end
+						end
+					end
 					if okk and type(x) ~= "function" then r[k] = marshal(x, depth + 1) end
 				end
 			end)
 			if ok then return r end
 		end
 		local okx, x = pcall(function() return v.x end)
+		if not okx then mfail(v, ".x", x) end
 		if okx and type(x) == "number" then
 			local r = { __vec = true, x = x }
 			pcall(function() r.y = v.y end)
 			pcall(function() r.z = v.z end)
-			pcall(function() r.w = v.w end)
+			local okw, ew = pcall(function() r.w = v.w end)
+			if not okw then mfail(v, ".w", ew) end
 			return r
 		end
 		local okl, n = pcall(function() return #v end)
+		if not okl then mfail(v, "#", n) end
 		if okl and type(n) == "number" then
 			local r = {}
 			local ok0, v0 = pcall(function() return v[0] end)
@@ -753,6 +809,32 @@ function C.rebuildProposal(m, opts)
 				C.errors[#C.errors + 1] = "segment " .. i .. ": no lanes for template " .. tostring(tmpl)
 			end
 		end
+		local EXP = opts.exp or ""
+		-- the stops added on new segments: each segment lists its new objects as placeholders (-400000000 - k, k the rank
+		-- of the stop in edgeObjectsToAdd, then its side), as the stop replay does; without them the factory fails (a road
+		-- joined to a street with stops: the tool takes the stops away and places them again on the new pieces)
+		do
+			local srcEdges = st.edgesToAdd or st.addedSegments or {}
+			local k = 0
+			for _, o in ipairs((EXP:find("noph") or EXP:find("noeo,")) and {} or st.edgeObjectsToAdd or {}) do
+				if type(o) == "table" and o.model then
+					for i, src in ipairs(srcEdges) do
+						if type(src) == "table" and src.entity == o.segmentEntity and edges[i] then
+							local okp, errp = pcall(function()
+								local c = edges[i].comp
+								local list = {}
+								for j = 1, #c.objects do list[#list + 1] = { c.objects[j][1], c.objects[j][2] } end
+								list[#list + 1] = { -400000000 - k, (o.category == 2) and 2 or (o.left and 0 or 1) }
+								c.objects = list
+								edges[i].comp = c
+							end)
+							if not okp then C.errors[#C.errors + 1] = "stop placeholder " .. (k + 1) .. ": " .. tostring(errp):sub(1, 100) end
+						end
+					end
+					k = k + 1
+				end
+			end
+		end
 		ssp.nodesToAdd = nodes
 		ssp.edgesToAdd = edges
 		ssp.nodesToRemove = entityList(st.nodesToRemove or st.removedNodes)
@@ -803,17 +885,29 @@ function C.rebuildProposal(m, opts)
 			local idMap = C.existingObjectIds(st)
 			local rmObjs = {}
 			for _, id in ipairs(entityList(st.edgeObjectsToRemove)) do rmObjs[#rmObjs + 1] = idMap[id] or id end
-			ssp.edgeObjectsToRemove = rmObjs
+			if not EXP:find("noeor") then ssp.edgeObjectsToRemove = rmObjs end
+			if EXP ~= "" then C.errors[#C.errors + 1] = "stops removed {" .. table.concat(rmObjs, ",") .. "} (captured {" .. table.concat(entityList(st.edgeObjectsToRemove), ",") .. "})" end
 		end
 		local objs = {}
-		for i, o in ipairs(st.edgeObjectsToAdd or {}) do
+		local seenSided = {}
+		for i, o in ipairs(EXP:find("noeo,") and {} or st.edgeObjectsToAdd or {}) do
+			if EXP:find("oneside") and type(o) == "table" then
+				local key = tostring(o.model) .. "@" .. tostring(o.segmentEntity) .. "@" .. string.format("%.3f", tonumber(o.param) or 0)
+				if seenSided[key] then o = nil else seenSided[key] = true end
+			end
 			if type(o) == "table" and o.model then
 				local eo = C.newOf("StreetEdgeObject")
-				eo.edgeEntity = o.segmentEntity
+				-- the new segment it goes on, by its rank in edgesToAdd (-1, -2...): the native id (-10...) made the factory fail
+				local seIdx = nil
+				for j, src in ipairs(st.edgesToAdd or st.addedSegments or {}) do
+					if type(src) == "table" and src.entity == o.segmentEntity then seIdx = -j end
+				end
+				eo.edgeEntity = seIdx or o.segmentEntity
 				eo.param = o.param or 0.5
 				eo.oneWay = o.oneWay == true
 				eo.left = o.left == true
-				eo.model = o.model
+				-- (without "::/": with it the factory fails or hangs, as for the stop replay)
+				eo.model = tostring(o.model):gsub("^::/", "")
 				local pl = o.playerEntity
 				if type(pl) ~= "number" or pl < 0 then pl = api.engine.util.getPlayer() end
 				eo.playerEntity = pl

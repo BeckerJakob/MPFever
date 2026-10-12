@@ -32,6 +32,26 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 - **Joining and reconnecting.** Joining a session already running works. A lost connection reconnects by itself for 5 minutes.
 - **In the game's 13 languages.** The launcher and the in-game windows follow the language of Transport Fever 3.
 
+## What's new in 0.3.7
+
+More fixes from the GitHub issues and from our own tests (thanks again to Steelworm), and IPv6 from SlikerDev:
+
+- **No more crash when a street station is bulldozed:** the other games remove the station together with its entrance street (#15).
+- **Rail signals keep the track as it is:** a signal in a tunnel no longer digs the tunnel out on the other games, and a signal no longer causes a reload (#16).
+- **Builds and timing:**
+  - a build made during a reload is dropped on every game, and the chat says so (#17);
+  - builds are no longer released early after several reloads (#18);
+  - quick successive edits of a station are replayed in order (#19);
+  - a bulldozer is replayed with the bulldozer's own settings (#20).
+- **A road joined to a street with bus stops** is now built on the other games too.
+- **Separate companies:** a client's own line routes are drawn on the map.
+- **Line manager:** copying vehicles no longer freezes the game for a second per vehicle part (#21), and "Send To Line" works fully again (#22).
+- **Sessions:**
+  - going back to the main menu ends the session;
+  - a player joining right as the session starts gets the host's game.
+- **The tutorial is not supported in multiplayer:** the chat warns when such a game is hosted.
+- **IPv6** (thanks to SlikerDev): the host also accepts players over IPv6, which helps hosts without a public IPv4 address (DS-Lite).
+
 ## What's new in 0.3.6
 
 Fixes from the GitHub issues (thanks to Steelworm and Shog-SC for their detailed analyses):

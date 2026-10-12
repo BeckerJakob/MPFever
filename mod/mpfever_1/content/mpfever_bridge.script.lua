@@ -539,6 +539,11 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 		if oks then
 			result.success = true
 			local data = {}
+			-- the line manager's callback reads the vehicle and the line of an assignment ("Send To Line": with an empty
+			-- result it failed, and the window's follow-up never ran, issue #22); the references are this game's ids here
+			if a.fn == "makeVehicleSetLineCmd" and type(a.args) == "table" then
+				data.vehicleEntity, data.lineEntity, data.stopIndex = a.args[1], a.args[2], a.args[3]
+			end
 			if beforeSet then
 				local created = nil
 				local okl, after = pcall(list)
@@ -1859,22 +1864,26 @@ H.session = function(from, p)
 	if G.session.started and C.ROLE == "host" and not G.tutorialChecked then
 		G.tutorialChecked = true
 		pcall(function()
-			local found = false
-			local function scan(v, d)
-				if found or d > 12 then return end
+			local found, where = false, {}
+			local function scan(v, d, path)
+				if d > 12 then return end
 				if type(v) == "string" then
-					if v:lower():find("tutorial", 1, true) then found = true end
+					if v:lower():find("tutorial", 1, true) and #where < 6 then where[#where + 1] = path .. "=" .. v:sub(1, 60) end
 				elseif type(v) == "table" then
 					for k, x in pairs(v) do
-						if type(k) == "string" and k:lower():find("tutorial", 1, true) then found = true return end
-						scan(x, d + 1)
+						if type(k) == "string" and k:lower():find("tutorial", 1, true) and #where < 6 then where[#where + 1] = path .. "." .. k .. "=" .. tostring(x):sub(1, 40) end
+						scan(x, d + 1, path .. "." .. tostring(k))
 					end
 				end
 			end
 			local e = api.engine.system.gameScriptSystem.getEntityForGameScript(GAME_SCRIPTS.mission)
 			local c = e and e >= 0 and api.engine.getComponent(e, api.type.ComponentType.GAME_SCRIPT)
-			if c then scan(c.state, 0) end
-			log("tutorial in this game: " .. tostring(found))
+			if c then
+				scan(c.state, 0, "mission")
+				-- (the mission script's own flag; finished, it is no longer in the way)
+				found = type(c.state) == "table" and c.state.isTutorialActive == true and c.state.isComplete ~= true
+			end
+			log("tutorial in this game: " .. tostring(found) .. " (mentions: " .. table.concat(where, " ; "):sub(1, 300) .. ")")
 			if found then send("notice", { what = "tutorial" }) end
 		end)
 	end
@@ -2795,7 +2804,23 @@ local function replayNative(a, formIndex)
 			-- a road joined to a street with stops: the tool removes the stops and places them again on the new pieces of street
 			-- (edgeObjectsToRemove / edgeObjectsToAdd). Rebuilt by the script forms below, which do both; before, it was
 			-- given up here and the road existed on its builder's game only (C:12 in the 0.3.6 tests).
-			log("NATIVE REPLAY " .. tostring(a.uid) .. ": stops placed again on a street build (" .. tostring(plan) .. "): rebuilt forms")
+			-- (a script proposal cannot place them in the same build: refused "Construction impossible", and without their
+			-- placeholders the engine asserts): the street build is rebuilt without them, then each new segment that carries
+			-- stops gets them back as a stop build (replayStop), which is what the tool's build amounts to
+			local groups = {}
+			for _, o in ipairs(stp.edgeObjectsToAdd or {}) do
+				for j, src in ipairs(stp.addedSegments or {}) do
+					if type(src) == "table" and src.entity == o.segmentEntity then
+						groups[j] = groups[j] or { seg = src, objs = {} }
+						groups[j].objs[#groups[j].objs + 1] = o
+					end
+				end
+			end
+			a.stopsAfter = {}
+			for _, g in pairs(groups) do a.stopsAfter[#a.stopsAfter + 1] = g end
+			a.noStops = true
+			log("NATIVE REPLAY " .. tostring(a.uid) .. ": stops placed again on a street build (" .. tostring(plan) .. "): the street first, then "
+				.. #(stp.edgeObjectsToAdd or {}) .. " stop(s) on " .. #a.stopsAfter .. " new segment(s)")
 		end
 		-- a construction with its street connection: not replayable as one rebuilt proposal (see replayTwoStep)
 		if hasConstructionSegments(a.args[1]) then
@@ -2820,6 +2845,31 @@ local function replayNative(a, formIndex)
 	local form = (a.objectForms and OBJECT_FORMS or REPLAY_FORMS)[formIndex]
 	if not form then
 		if not a.objectForms and replayTwoStep(a) then return end
+		-- (diagnostic, MPFEVER_EXP set: which part of the proposal the factory refuses; only commands are made, nothing is sent)
+		if os.getenv("MPFEVER_EXP") then
+			local exps = { "noph", "noeor", "oneside", "oneside,noph", "noeo," }
+			local function try(k)
+				local ex = exps[k]
+				if not ex then return end
+				local mx = C.deser(C.ser(a.args))
+				R.translateIn(mx, G.bind)
+				local okr, args, n = pcall(C.rebuildArgs, a.fn, mx, { seed = 7919, variant = "minimal", ctx = (ex == "plain") and "plain" or "terrainNoCleanup", raw = true, exp = ex })
+				local okc, cmd = false, args
+				if okr then okc, cmd = pcall(function() return api.cmd[a.fn](table.unpack(args, 1, n)) end) end
+				if #(C.errors or {}) > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " experiment '" .. ex .. "' notes: " .. table.concat(C.errors, " ; "):sub(1, 300)) end
+				if not (okr and okc and cmd) then
+					log("NATIVE REPLAY " .. tostring(a.uid) .. " experiment '" .. ex .. "': factory " .. shortErr(cmd))
+					return try(k + 1)
+				end
+				replaySend(cmd, function(res, success)
+					log("NATIVE REPLAY " .. tostring(a.uid) .. " experiment '" .. ex .. "': " .. (success and "BUILT" or "refused"))
+					if success then return end
+					logRefusal(a, res)
+					G.waits[#G.waits + 1] = { at = G.frames + 2, fn = function() try(k + 1) end }
+				end)
+			end
+			try(1)
+		end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. ": every form refused (desync)")
 		replayFailed(a, "every form refused")
 		return
@@ -2833,7 +2883,7 @@ local function replayNative(a, formIndex)
 	end
 	if form.ie ~= nil then margs[3] = form.ie end
 	if form.pi ~= nil then margs[4] = form.pi end
-	local okr, args, n = pcall(C.rebuildArgs, a.fn, margs, { seed = 7919, variant = form.v, ctx = form.ctx, raw = form.raw, rm = form.rm })
+	local okr, args, n = pcall(C.rebuildArgs, a.fn, margs, { seed = 7919, variant = form.v, ctx = form.ctx, raw = form.raw, rm = form.rm, exp = a.noStops and "noeo," or nil })
 	local label = form.v .. (form.raw and "/raw" or "") .. "/" .. form.ctx .. (form.ie and "/ie" or "") .. (form.pi == false and "/pi0" or "")
 		.. (form.rm and ("/rm-" .. form.rm) or "")
 	if not okr then
@@ -2890,6 +2940,46 @@ local function replayNative(a, formIndex)
 					log("NATIVE REPLAY " .. tostring(a.uid) .. " SEGMENT COUNT DIFFERS: originator " .. expected .. ", here " .. got)
 				end
 			end }
+			-- the stops the tool placed again on the new segments (see the stop branch above): one stop build per segment,
+			-- found here by the positions of its ends
+			if a.stopsAfter and #a.stopsAfter > 0 then
+				local groups = a.stopsAfter
+				a.stopsAfter = nil
+				local function near(p, q)
+					return type(p) == "table" and type(q) == "table" and type(q.x) == "number"
+						and math.abs(p.x - q.x) < 0.5 and math.abs(p.y - q.y) < 0.5 and math.abs(p.z - q.z) < 0.5
+				end
+				local function place(k)
+					local g = groups[k]
+					if not g then return end
+					local c = g.seg.comp or {}
+					local found, reversed = nil, false
+					for _, e in ipairs(R.allEdges()) do
+						local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+						if be then
+							local a0, a1 = sNodePos(be.node0), sNodePos(be.node1)
+							if near(a0, c.position0) and near(a1, c.position1) then found = e break end
+							if near(a0, c.position1) and near(a1, c.position0) then found, reversed = e, true break end
+						end
+					end
+					if not found then
+						log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: their new segment is not here")
+						replayFailed(a, "stops' segment not found")
+						return
+					end
+					local objs = {}
+					for _, o in ipairs(g.objs) do
+						local x = C.deser(C.ser(o))
+						-- (this game's segment runs the other way round: the place along it and the side are the opposite ones)
+						if reversed then x.param = 1 - (tonumber(x.param) or 0.5); x.left = not x.left end
+						objs[#objs + 1] = x
+					end
+					log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: " .. #objs .. " placed again on segment " .. found .. (reversed and " (reversed)" or ""))
+					replayStop(a, { E = found, seg = g.seg, objs = objs, removeIdx = {}, nodeConfigs = {}, segType = g.seg.type or 0 })
+					G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function() place(k + 1) end }
+				end
+				G.waits[#G.waits + 1] = { at = G.frames + 3, fn = function() place(1) end }
+			end
 		else
 			local why = ""
 			pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
@@ -5343,7 +5433,7 @@ local function runReplayFile(p)
 			end
 			local ok, err = pcall(replayNative, a, 1)
 			if not ok then line = line .. ", replay error " .. tostring(err) end
-			G.waits[#G.waits + 1] = { at = G.frames + 120, fn = function()
+			G.waits[#G.waits + 1] = { at = G.frames + (os.getenv("MPFEVER_EXP") and 900 or 120), fn = function()
 				line = line .. ", after " .. #R.allEdges()
 				local deco, tram, dist5, track0, tunnels = 0, 0, 0, 0, 0
 				pcall(function()

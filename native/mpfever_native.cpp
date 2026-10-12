@@ -628,6 +628,7 @@ static u32 RVA_SWAP = 0x9d2d20;      // CommandList::Swap
 extern "C" void* LinesDetour(void* out, void* a2, void* a3, void* a4, void* a5, u32 player, void* a7, void* a8)
 {
     u32 canon = (u32)g_canon, mine = (u32)g_localPlayer;
+    { static volatile long seen = 0; if (_InterlockedIncrement(&seen) <= 2) { Buf b; b.str("line viewer: lines of company ").dec(player).str(" asked"); LogLine(b); } }
     if (canon && mine && canon != mine && player == canon) {
         player = mine;
         if (_InterlockedIncrement(&g_linesShown) <= 3) { Buf b; b.str("line routes: the viewer asks for company ").dec(canon).str(", shown for ").dec(mine); LogLine(b); }

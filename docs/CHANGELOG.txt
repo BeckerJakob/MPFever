@@ -1,6 +1,44 @@
 MPFever - Changelog
 ===================
 
+0.3.7-experimental - crashes on bulldozed stations, signals in tunnels, line routes of the client
+  - FIX (crash, issue #15): bulldozing a street station crashed the other player's game. The other game removed the
+    station's entrance street but not the station, which stayed connected to a removed node. The station is now removed
+    with it, as on the player's game.
+  - FIX (issue #16): a rail signal placed on a track rebuilt the track on the other game as normal track at ground level
+    (a tunnel was dug out, a bridge became a track on the ground) and without its distance: the games differed and the
+    host's game was reloaded. The segment now keeps its kind, its distance and its decorations. A stop or signal the other
+    game refuses now reloads the host's game at once instead of being only written in the log.
+  - FIX (issue #17): a build made while the host's game is reloaded for everybody (after its save, before every game has
+    loaded) was kept by the other games and lost by its builder. Such a build is now dropped everywhere, and the chat says
+    so, so that it can be built again.
+  - FIX (issue #18): after several reloads, the native module took the two states of the game for new games (its table of
+    known states was full and always replaced the same entry), dropped a held build, and from then on released every build
+    at once: the other games built them late. The table is now used in turn, and builds are released by their number
+    instead of a count.
+  - FIX (issue #19): several quick edits of one station (modules added one after the other) were replayed before the
+    previous one was built, and refused. A replay now waits for the previous one.
+  - FIX (issue #20): a bulldozer replayed on the other games used other settings than the bulldozer (terrain alignment,
+    buildings gathered) and could cost money there. Builds now carry the settings of the tool that made them.
+  - FIX (issue #21): copying vehicles froze the game about 1 s per vehicle part and wrote 11 crash dumps each: reading the
+    colour of a part tried the functions of its type one by one, and every failed read made the game write a dump. The
+    vectors and matrices are now read directly, and a member that cannot be read is never tried again.
+  - FIX (issue #22): "Send To Line" in the line manager: the result now carries the vehicle and the line, so that the
+    window's follow-up runs (the vehicle leaves the list).
+  - FIX (separate companies): a client's own line routes were not drawn on the map (they flashed and vanished): the map's
+    line viewers are made while the game loads, before MPFever knows the client's company, and kept the savegame's.
+  - FIX: a road joined to a street with stops was not built on the other game (the stops it moves were taken for a stop
+    build): it is now rebuilt with its stops.
+  - FIX (session): a player joining right when a session started never got the host's game (the start of the session
+    cancelled the reload made for the player). A speed asked during a reload is now ignored.
+  - FIX (session): going back to the game's main menu ends the session, even without opening the MPFever window (a new
+    game started from the menu ran in the old session).
+  - The tutorial is not supported in multiplayer (its missions are validated on each game separately, and a unique
+    building made by one player blocks the other's task): the chat now says so when such a game is hosted.
+  - NEW (thanks to SlikerDev, #11): IPv6. The host also accepts players over IPv6 and Steam invitations carry its IPv6
+    address: a host behind DS-Lite (no public IPv4) is reached when the joining player has IPv6 too. The chat reader of a
+    client starts once it is connected.
+
 0.3.6-experimental - fixes from the GitHub issues
   - FIX (issue #12, builds lost while paused, then a crash): while the game time stood still (a paused session, e.g. in the
     tutorial), every replayed action (vehicle purchase, line, name...) was counted as a build to come back, so the
