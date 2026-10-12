@@ -1,6 +1,18 @@
 MPFever - Changelog
 ===================
 
+0.3.8-experimental - speed buttons, large station edits, double slip switches
+  - FIX (issue #24): the game's speed buttons kept showing the speed this player chose last: the other player's changes
+    were applied but not shown. The interface waited for an answer to its speed request that MPFever never gave, and
+    stopped following the game's speed. The request is answered, and the buttons show the session's speed (not the
+    engine's, which the lockstep holds at pause between steps).
+  - FIX (issue #25): editing a large station made the other games very slow, for seconds per module. Each part of the
+    station whose number differs on the other game was searched by reading every node or segment of the map, once per
+    reference. The map is now indexed once per action and each part is looked up once: the same results, about 500 times
+    fewer reads.
+  - FIX (issue #26): a double slip switch set in the node window had no effect in a session. The replay dropped the node
+    configuration, which is the whole build of that window. A build that only changes node configurations now keeps them.
+
 0.3.7-experimental - crashes on bulldozed stations, signals in tunnels, line routes of the client
   - FIX (crash, issue #15): bulldozing a street station crashed the other player's game. The other game removed the
     station's entrance street but not the station, which stayed connected to a removed node. The station is now removed

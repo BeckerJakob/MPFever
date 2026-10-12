@@ -238,8 +238,57 @@ local function resolveCon(r)
 	return nil
 end
 
+-- A node or segment whose id does not match is looked up by position. Scanning the whole street graph for each one made a
+-- large station edit take seconds on the other games (issue #25): within one translation pass (R.translateIn, synchronous,
+-- so the graph cannot change) the nodes are put once into a grid of 1 m cells, and the segments are found through the
+-- nodes at their ends. The result is the same as the full scan's: the nearest within 1 m, the lowest id on a tie.
+local function nodeGrid()
+	local pass = R.pass
+	if not pass then return nil end
+	if not pass.grid then
+		local grid, map = {}, streetMap()
+		for n, _ in pairs(map) do
+			local p = nodePos(n)
+			if p then
+				local key = math.floor(p.x) .. ":" .. math.floor(p.y)
+				local cell = grid[key]
+				if not cell then cell = {}; grid[key] = cell end
+				cell[#cell + 1] = { n = n, p = p }
+			end
+		end
+		pass.grid, pass.map = grid, map
+	end
+	return pass.grid, pass.map
+end
+
+-- the nodes less than 1 m from p, with their distance (nil without a pass)
+local function nodesNear(p)
+	local grid = nodeGrid()
+	if not grid or not p then return nil end
+	local out, cx, cy = {}, math.floor(p.x), math.floor(p.y)
+	for dx = -1, 1 do
+		for dy = -1, 1 do
+			for _, it in ipairs(grid[(cx + dx) .. ":" .. (cy + dy)] or {}) do
+				local d = dist(it.p, p)
+				if d < 1 then out[#out + 1] = { n = it.n, d = d } end
+			end
+		end
+	end
+	return out
+end
+
+local function better(e, d, best, bestD)
+	return d < bestD or (d == bestD and best ~= nil and e < best)
+end
+
 local function resolveNode(r)
 	if dist(nodePos(r.id), r.p) < 0.5 then return r.id end
+	local near = nodesNear(r.p)
+	if near then
+		local best, bestD = nil, math.huge
+		for _, it in ipairs(near) do if better(it.n, it.d, best, bestD) then best, bestD = it.n, it.d end end
+		return best
+	end
 	local e, d = nearestWith("BASE_NODE", function(x) return dist(nodePos(x), r.p) end)
 	if e and d < 1 then return e end
 	return nil
@@ -254,6 +303,25 @@ local function resolveEdge(r)
 	end
 	local s = score(r.id)
 	if s and s < 0.5 then return r.id end
+	-- (a segment scoring under 1 m has an end less than 1 m from p0)
+	local near = nodesNear(r.p0)
+	if near then
+		local _, map = nodeGrid()
+		local best, bestD, seen = nil, math.huge, {}
+		for _, it in ipairs(near) do
+			local segs, n = map[it.n], 0
+			pcall(function() n = #segs end)
+			for i = 1, n do
+				local x = segs[i]
+				if type(x) == "number" and not seen[x] then
+					seen[x] = true
+					local d = score(x)
+					if d and d < 1 and better(x, d, best, bestD) then best, bestD = x, d end
+				end
+			end
+		end
+		return best
+	end
 	local e, d = nearestWith("BASE_EDGE", score)
 	if e and d < 1 then return e end
 	return nil
@@ -544,12 +612,29 @@ end
 -- resolve every reference found in marshalled arguments (every game); returns the list of what is missing
 function R.translateIn(margs, bind)
 	local missing = {}
+	-- (one pass: the street graph is indexed at the first miss, and a reference met again is not looked up again)
+	local outer = R.pass
+	R.pass = outer or { memo = {} }
+	local memo = R.pass.memo
+	local function lookup(v)
+		if v.k ~= "node" and v.k ~= "edge" then return resolve(v, bind) end
+		if v.key and bind and bind[v.key] then return bind[v.key] end
+		local p, p0, p1 = v.p or {}, v.p0 or {}, v.p1 or {}
+		local mk = v.k .. ":" .. tostring(v.id) .. ":" .. tostring(p.x) .. "," .. tostring(p.y) .. "," .. tostring(p.z) .. ":"
+			.. tostring(p0.x) .. "," .. tostring(p0.y) .. "," .. tostring(p0.z) .. ":" .. tostring(p1.x) .. "," .. tostring(p1.y) .. "," .. tostring(p1.z)
+		local hit = memo[mk]
+		if hit == nil then
+			hit = { e = resolve(v, bind) }
+			memo[mk] = hit
+		end
+		return hit.e
+	end
 	local function walk(t, depth)
 		if depth > 12 then return end
 		for k, v in pairs(t) do
 			if type(v) == "table" then
 				if v.__ref then
-					local e = resolve(v, bind)
+					local e = lookup(v)
 					if e == nil then
 						missing[#missing + 1] = tostring(v.k) .. "#" .. tostring(v.id) .. (v.key and ("/" .. v.key) or "")
 						t[k] = -999999999
@@ -562,7 +647,9 @@ function R.translateIn(margs, bind)
 			end
 		end
 	end
-	walk(margs, 0)
+	local okw, errw = pcall(walk, margs, 0)
+	R.pass = outer
+	if not okw then error(errw, 0) end
 	return missing
 end
 

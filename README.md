@@ -32,6 +32,14 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 - **Joining and reconnecting.** Joining a session already running works. A lost connection reconnects by itself for 5 minutes.
 - **In the game's 13 languages.** The launcher and the in-game windows follow the language of Transport Fever 3.
 
+## What's new in 0.3.8
+
+Three fixes from the GitHub issues (thanks to Zippo1578 and Steelworm):
+
+- **The speed buttons show the session's speed** when another player changes it (#24).
+- **Editing a large station no longer slows the other games down** for seconds per module (#25).
+- **Double slip switches** can be set in a session (#26).
+
 ## What's new in 0.3.7
 
 More fixes from the GitHub issues and from our own tests (thanks again to Steelworm), and IPv6 from SlikerDev:
@@ -140,7 +148,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Experimental (0.3.7). Supported game builds:
+Experimental (0.3.8). Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.

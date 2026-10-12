@@ -34,7 +34,9 @@ local function gameTime()
 end
 
 local function gameSpeed()
+	-- (the engine's own speed, not the session's speed the interface shows on the speed buttons, see the UI hook)
 	local gs = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_SPEED)
+	if type(gs) == "table" and gs.mpfRealSpeedup ~= nil then return gs.mpfRealSpeedup end
 	return gs and gs.speedup or 0
 end
 
@@ -5851,6 +5853,61 @@ local function uiRequest(fn, margs)
 	R.translateOut(fn, margs, G.rev)
 	AUTO.reqId = (AUTO.reqId or 0) + 1
 	C.appendFile(C.DIR .. BS .. "ui.log", C.line("act_req", { tok = "auto-" .. C.ROLE, id = AUTO.reqId, fn = fn, args = margs }))
+end
+
+-- Double slip scenario (issue #26): the node window's build, which holds nothing but a node configuration, sent through the
+-- same request path; then every game must have the switch
+H.dslip = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	local ok, err = pcall(function()
+		AUTO.running = true
+		AUTO.results = {}
+		AUTO.points = {}
+		-- a track node with 4 track segments (a crossing), the host and the client each take another one
+		local map = api.engine.system.streetSystem.getNode2SegmentMap()
+		-- (else a track switch: the flag is a field of the node's configuration either way)
+		local cands, switches = {}, {}
+		for n, segs in pairs(map) do
+			local k, tracks = 0, 0
+			pcall(function() k = #segs end)
+			if k >= 3 then
+				for i = 1, k do
+					-- (a track segment: no street component)
+					if not api.engine.getComponent(segs[i], api.type.ComponentType.BASE_EDGE_STREET) then tracks = tracks + 1 end
+				end
+				if tracks == 4 and k == 4 then cands[#cands + 1] = n elseif tracks == k then switches[#switches + 1] = n end
+			end
+		end
+		if #cands == 0 then cands = switches end
+		table.sort(cands)
+		local node = cands[(C.ROLE == "host") and 1 or 2] or cands[1]
+		if not node then AUTO.results[#AUTO.results + 1] = "dslip: no track crossing"; return autoFinish() end
+		local function flag()
+			local v = "none"
+			pcall(function()
+				local nc = api.engine.getComponent(node, api.type.ComponentType.BASE_NODE_CONFIG)
+				if nc then v = tostring(nc.doubleSlipSwitch) end
+			end)
+			return v
+		end
+		local before = flag()
+		local cfg = { entity = node, comp = { doubleSlipSwitch = true, laneConnections = {}, crosswalks = {}, trafficLightPreference = 1,
+			trafficLightConfig = { trafficLightType = -1, states = {} }, userModifiedTrafficLightStates = false } }
+		local proposal = { streetProposal = { nodeConfigsToAdd = { cfg }, nodeConfigsToRemove = (before ~= "none") and { node } or nil } }
+		uiRequest("makeWorldBuildProposalCmd", { n = 4, [1] = proposal, [3] = false, [4] = true })
+		log("AUTOTEST dslip on node " .. node .. " (" .. #cands .. " crossings), switch before " .. before)
+		G.waits[#G.waits + 1] = { at = G.frames + 400, fn = function()
+			local line = "dslip node " .. node .. ": switch " .. before .. " -> " .. flag()
+			log("AUTOTEST " .. line)
+			AUTO.results[#AUTO.results + 1] = line
+			autoFinish()
+		end }
+	end)
+	if not ok then
+		log("AUTOTEST dslip failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "dslip error " .. tostring(err)
+		autoFinish()
+	end
 end
 
 -- Loan scenario: the player takes the first loan on offer, through the same request path as the loan window

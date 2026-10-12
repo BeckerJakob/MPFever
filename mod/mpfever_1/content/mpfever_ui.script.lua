@@ -86,6 +86,8 @@ local function install()
 				U.lastSpeedReq, U.lastSpeedAt = tag.args[1], now
 				sendLine("speed_req", { speed = tag.args[1] })
 			end
+			-- (the speed buttons wait for this answer before they follow the game's speed again, issue #24)
+			if cb then pcall(cb, nil, true, {}) end
 			return
 		end
 		local okm, margs = pcall(function()
@@ -119,6 +121,26 @@ local function install()
 			end
 		end
 	end
+	-- the game's speed buttons (GameSpeedHelper in gui/main/game.tl) show the engine's speed, which the lockstep holds at 0
+	-- between steps: they are shown the session's speed instead (mp_status.txt), or for 2 s the speed this player asked for
+	local okSp, errSp = pcall(function()
+		local origGet = api.engine.getComponent
+		local speedType = api.type.ComponentType.GAME_SPEED
+		api.engine.getComponent = function(e, ct, ...)
+			local c = origGet(e, ct, ...)
+			if ct == speedType and c ~= nil then
+				local sp = U.shownSpeed()
+				-- (mpfRealSpeedup: the engine's own speed, which the lockstep reads, see gameSpeed in the bridge)
+				if sp ~= nil and U.shownLogged ~= sp then
+					U.shownLogged = sp
+					log("speed buttons: session speed " .. tostring(sp) .. " shown (engine " .. tostring(c.speedup) .. ")")
+				end
+				if sp ~= nil then return setmetatable({ speedup = sp, mpfRealSpeedup = c.speedup }, { __index = function(_, key) return c[key] end }) end
+			end
+			return c
+		end
+	end)
+	if not okSp then log("speed buttons: not redirected: " .. tostring(errSp)) end
 	local k = {}
 	for t, _ in pairs(kinds) do k[#k + 1] = t end
 	log("UI interception installed on " .. wrapped .. " factories (types: " .. table.concat(k, ",") .. ")" .. (#missing > 0 and (", missing: " .. table.concat(missing, ",")) or ""))
@@ -566,6 +588,16 @@ local function pollStatus()
 	end
 	U.status = st
 	U.statusVersion = (U.statusVersion or 0) + 1
+end
+
+-- the speed the game's speed buttons show during a session (nil: the engine's own): the speed this player just asked
+-- for, else the session's (0 while paused)
+U.shownSpeed = function()
+	local st = U.status
+	local t = st and tonumber(st.t)
+	if not st or st.started ~= "1" or t == nil or os.time() - t > 6 then return nil end
+	if U.lastSpeedReq ~= nil and os.clock() - (U.lastSpeedAt or -10) < 2 then return U.lastSpeedReq end
+	return tonumber(st.speed)
 end
 
 -- the status is older than a few seconds: MPFever.exe no longer writes it

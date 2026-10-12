@@ -1,4 +1,4 @@
-MPFever 0.3.7-experimental - Installation and first game
+MPFever 0.3.8-experimental - Installation and first game
 ========================================================
 
 REQUIREMENTS (every player)

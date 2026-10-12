@@ -875,8 +875,12 @@ function C.rebuildProposal(m, opts)
 			end
 			if #keep > 0 then ssp.nodeConfigsToRemove = keep end
 		end)
-		-- and the configurations it added (lane connections, crosswalks, traffic lights), with the native ids
-		if opts.raw and #(st.nodeConfigsToAdd or {}) > 0 then
+		-- and the configurations it added (lane connections, crosswalks, traffic lights), with the native ids: for the raw
+		-- forms, and for a build that only changes configurations (a node window's double slip switch, issue #26), where
+		-- they are the whole build
+		local onlyConfigs = #nodes == 0 and #edges == 0 and #entityList(st.nodesToRemove or st.removedNodes) == 0
+			and #entityList(st.edgesToRemove or st.removedSegments) == 0
+		if (opts.raw or onlyConfigs) and #(st.nodeConfigsToAdd or {}) > 0 then
 			local okc, errc = pcall(function() ssp.nodeConfigsToAdd = C.nodeConfigs(st.nodeConfigsToAdd) end)
 			if not okc then C.errors[#C.errors + 1] = "node configs: " .. tostring(errc):sub(1, 120) end
 		end
