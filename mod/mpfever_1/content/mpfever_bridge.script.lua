@@ -92,9 +92,12 @@ local function countsHash(counts)
 	return n .. "/" .. total .. "/" .. acc
 end
 
--- diagnostic (MPFEVER_SDUMP set): every value of the game script states, one "path = value" per line, sorted, so
--- that two games' files at the same game time can be compared line by line
-local SDUMP = os.getenv("MPFEVER_SDUMP")
+-- diagnostic: every value of the game script states, one "path = value" per line, sorted, so that two games' files at
+-- the same game time can be compared line by line. Kept for the last 12 checks (sdump_ring_<n>.txt, the game time on the
+-- first line), so that a drift of script:towns... reported by a player comes with both games' states (MPFEVER_SDUMP=0:
+-- off; =1: the first 40 checks, each in its own file)
+local SDUMP = os.getenv("MPFEVER_SDUMP") ~= "0"
+local SDUMP_ALL = os.getenv("MPFEVER_SDUMP") == "1"
 local sdumps = 0
 local function flatten(v, path, out, d)
 	if type(v) == "table" and d < 16 then
@@ -105,7 +108,7 @@ local function flatten(v, path, out, d)
 end
 
 local function extendedParts(parts)
-	local dump = SDUMP and sdumps < 40 and {}
+	local dump = SDUMP and (not SDUMP_ALL or sdumps < 40) and {}
 	for name, res in pairs(GAME_SCRIPTS) do
 		local ok, v = pcall(function()
 			local e = api.engine.system.gameScriptSystem.getEntityForGameScript(res)
@@ -121,8 +124,9 @@ local function extendedParts(parts)
 		sdumps = sdumps + 1
 		table.sort(dump)
 		pcall(function()
-			local f = C.IO.open(C.DIR .. BS .. "sdump_" .. string.format("%012d", gameTime()) .. ".txt", "wb")
-			f:write(table.concat(dump, NL), NL)
+			local name = SDUMP_ALL and ("sdump_" .. string.format("%012d", gameTime()) .. ".txt") or ("sdump_ring_" .. (sdumps % 12) .. ".txt")
+			local f = C.IO.open(C.DIR .. BS .. name, "wb")
+			f:write("t = " .. tostring(gameTime()), NL, table.concat(dump, NL), NL)
 			f:close()
 		end)
 	end
@@ -1247,6 +1251,33 @@ local function captureNativeBuild(state, param)
 	local st = state:get() or {}
 	R.CO = st.co
 	local now = gameTime()
+	-- diagnostic: what the game's town script takes from every player build (town reputation, see town_util.getProposalStats)
+	-- and what it costs, on the builder's game and on the replaying ones alike: a replay that differs here makes the towns
+	-- (script:towns) and the money drift apart
+	pcall(function()
+		local proposal, data, pi = param[1], param[2], param[4]
+		if pi == false then return end
+		local function impact(fn)
+			local a, r, n = 0, 0, 0
+			local okI, t = pcall(fn, data)
+			if okI and type(t) == "table" then
+				for _, v in pairs(t) do a = a + (v[1] or 0); r = r + (v[2] or 0); n = n + 1 end
+			end
+			return string.format("%.3f/%.3f/%d", a, r, n)
+		end
+		local tb, rem = 0, 0
+		pcall(function()
+			for i = 1, proposal.toRemove_native:size() do
+				rem = rem + 1
+				local c = api.engine.getComponent(proposal.toRemove_native:at(i), api.type.ComponentType.CONSTRUCTION)
+				if c then tb = tb + #c.townBuildings end
+			end
+		end)
+		local costs = "?"
+		pcall(function() costs = tostring(data.costs) end)
+		log("build stats t=" .. now .. ": costs " .. costs .. ", terrain alignment " .. impact(api.engine.util.town.getTerrainAlignmentImpact)
+			.. ", auto removal " .. impact(api.engine.util.town.getAutoRemovalEntityImpact) .. ", removed " .. rem .. " (town buildings " .. tb .. ")")
+	end)
 	if st.replay and st.replay.at == now and st.replay.n > 0 then
 		st.replay.n = st.replay.n - 1     -- our own replay of a shipped action
 		state:set(st)
