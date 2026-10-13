@@ -345,6 +345,9 @@ C.CTOR = {
 	StationTerminal = { "api.type.StationTerminal" },
 	Context = { "api.type.Context" },
 	StreetEdgeObject = { "api.type.SimpleStreetProposal.EdgeObject" },
+	Waypoint = { "api.type.Waypoint" },
+	EdgePos = { "api.type.EdgePos" },
+	EdgeId = { "api.type.EdgeId" },
 }
 
 -- fields needing a specific type; false = derived by the engine, never copied; absent = copied generically
@@ -357,8 +360,38 @@ local SCHEMA = {
 	TransportVehiclePart = { part = "VehiclePart" },
 	VehiclePart = { compartment2loadConfig = { list = "LoadConfig" }, color = "Vec3f" },
 	Line = { stops = { list = "LineStop" } },
-	LineStop = { alternativeTerminals = { list = "StationTerminal" }, stopConfig = "StopConfig", waypoints = false },
+	-- (the waypoints are set by the player, issue #27: before, they were taken for engine data and dropped)
+	LineStop = { alternativeTerminals = { list = "StationTerminal" }, stopConfig = "StopConfig", waypoints = { list = "Waypoint" } },
+	Waypoint = { edgePos = "EdgePos", pos = "Vec3f", __p0 = false },
+	EdgePos = { edgeId = "EdgeId" },
 }
+
+-- A line stop's waypoints as this game takes them: a waypoint whose track is not here is dropped alone (its optional
+-- reference resolved to -999999999, see R.translateIn), and one on a track that runs the other way round here takes the
+-- opposite place along it
+local function waypointsHere(m)
+	local list = {}
+	for _, wp in ipairs(m.waypoints or {}) do
+		local eid = type(wp) == "table" and type(wp.edgePos) == "table" and wp.edgePos.edgeId or nil
+		local e = type(eid) == "table" and eid.entity or nil
+		if e == -999999999 then
+			C.errors[#C.errors + 1] = "waypoint dropped: its track is not on this game"
+		else
+			if type(e) == "number" and e >= 0 and type(wp.__p0) == "table" and type(wp.edgePos.param) == "number" then
+				pcall(function()
+					local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+					local n0 = api.engine.getComponent(be.node0, api.type.ComponentType.BASE_NODE).position
+					local n1 = api.engine.getComponent(be.node1, api.type.ComponentType.BASE_NODE).position
+					local function d(p) return math.abs(p.x - wp.__p0.x) + math.abs(p.y - wp.__p0.y) end
+					if d(n0) > 1 and d(n1) < 1 then wp.edgePos.param = 1 - wp.edgePos.param end
+				end)
+			end
+			list[#list + 1] = wp
+		end
+	end
+	m.waypoints = list
+	return m
+end
 
 C.errors = {}
 
@@ -429,6 +462,7 @@ rebuild = function(tname, m, where)
 	where = where or tname
 	if type(m) ~= "table" then return m end
 	if tname == "Vec3f" or tname == "Mat4f" or isVec(m) or m.__mat then return plain(m) end
+	if tname == "LineStop" and type(m.waypoints) == "table" then m = waypointsHere(m) end
 	local obj = C.newOf(tname)
 	return fill(obj, m, tname, where)
 end
@@ -1127,6 +1161,15 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 			end
 		end)
 		if not ok2 then C.errors[#C.errors + 1] = "removedNodes: " .. tostring(e2):sub(1, 100) end
+		-- the stops and signals the tool removed (it re-creates them on a new segment, placed afterwards here, see
+		-- placeStopsAfter in the bridge): this game's ids, found by their rank on the removed segments. Only the tool's
+		-- list: the removal proposal's own would also remove the objects the build moves to its new segments (issue #28)
+		local rmObjs = {}
+		for _, id in ipairs(entityList(st.edgeObjectsToRemove)) do rmObjs[#rmObjs + 1] = objIds[id] or id end
+		if #rmObjs > 0 then
+			local oko, eo = pcall(function() sp.edgeObjectsToRemove = rmObjs end)
+			if not oko then C.errors[#C.errors + 1] = "edgeObjectsToRemove: " .. tostring(eo):sub(1, 100) end
+		end
 	end
 	-- the node configurations (lane connections...) the tool removed: only those this game has (removing one that does not
 	-- exist is an engine assertion), and those it added, with the native ids

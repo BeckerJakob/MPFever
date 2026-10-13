@@ -117,7 +117,7 @@ local function menuLoad()
 	local done = fd and fd:read("*a") or ""
 	if fd then fd:close() end
 	lastLoadSeq = seq
-	if done == seq then return end
+	if done == seq then log("load " .. seq .. " of '" .. name .. "' already done: not loaded again") return end
 	fd = IO.open(DIR .. BS .. "menu_loaded.txt", "wb")
 	if fd then fd:write(seq) fd:close() end
 	local fl = IO.open(DIR .. BS .. "resync_pending.txt", "wb")

@@ -520,7 +520,23 @@ function R.translateOut(fn, margs, rev)
 		local line = margs[fn == "makeLineCreateCmd" and 4 or 2]
 		if type(line) == "table" then
 			for _, stop in ipairs(line.stops or {}) do
-				if type(stop) == "table" then stop.stationGroup = ref("sg", stop.stationGroup) end
+				if type(stop) == "table" then
+					stop.stationGroup = ref("sg", stop.stationGroup)
+					-- the waypoints after the stop (issue #27): their track, as a reference that may be missing on another
+					-- game (the waypoint alone is then dropped), with the position of its first end (a track found the other
+					-- way round there takes the opposite place along it)
+					for _, wp in ipairs(stop.waypoints or {}) do
+						local eid = type(wp) == "table" and type(wp.edgePos) == "table" and type(wp.edgePos.edgeId) == "table" and wp.edgePos.edgeId or nil
+						local e = eid and eid.entity
+						local be = (type(e) == "number" and e >= 0) and comp(e, "BASE_EDGE") or nil
+						if be then
+							wp.__p0 = nodePos(be.node0)
+							local r = ref("edge", e)
+							if type(r) == "table" then r.opt = true end
+							eid.entity = r
+						end
+					end
+				end
 			end
 		end
 	end
@@ -635,7 +651,10 @@ function R.translateIn(margs, bind)
 			if type(v) == "table" then
 				if v.__ref then
 					local e = lookup(v)
-					if e == nil then
+					if e == nil and v.opt then
+						-- (an optional reference: what holds it is dropped alone, see C.rebuild)
+						t[k] = -999999999
+					elseif e == nil then
 						missing[#missing + 1] = tostring(v.k) .. "#" .. tostring(v.id) .. (v.key and ("/" .. v.key) or "")
 						t[k] = -999999999
 					else
@@ -772,8 +791,21 @@ function R.contentHash(hashStr, dumpFn)
 		local t = { nameOf(e) }
 		for i = 1, #c.stops do
 			local st = c.stops[i]
+			-- (the waypoints after the stop: how many, and where along their track; the tracks' ids differ between games)
+			local wps = ""
+			pcall(function()
+				local w = {}
+				for j = 1, #st.waypoints do
+					local wp = st.waypoints[j]
+					local prm = 0
+					pcall(function() prm = wp.edgePos.param end)
+					w[#w + 1] = string.format("%.2f", prm)
+				end
+				wps = table.concat(w, ";")
+			end)
 			t[#t + 1] = nameOf(st.stationGroup) .. "," .. tostring(st.terminal) .. "," .. tostring(st.loadMode) .. ","
 				.. string.format("%.0f/%.0f/%.0f", st.minWaitingTime or 0, st.maxWaitingTime or 0, st.maxAdditionalWaitingTime or 0)
+				.. "," .. wps
 		end
 		return table.concat(t, "|")
 	end) end)

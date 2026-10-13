@@ -2593,6 +2593,49 @@ end
 -- A street build that cuts a segment carrying stops or signals: the native proposal moves them to the new segments (a script
 -- proposal strands them). Rebuilt as for a construction against a street, without the construction: the removed segments and
 -- nodes as the engine's own removal proposal makes them, the tool's node configurations and id maps (C.rebuildNativeWithConstruction).
+-- The stops and signals the tool removed and placed again on the build's new segments (a.stopsAfter, see the stop branch
+-- of replayNative): once the street build is applied, one stop build per new segment, found here by the positions of its
+-- ends. Used after the script forms and after the native street proposal (issue #28).
+G.placeStopsAfter = function(a)
+	if not (a.stopsAfter and #a.stopsAfter > 0) then return end
+	local groups = a.stopsAfter
+	a.stopsAfter = nil
+	local function near(p, q)
+		return type(p) == "table" and type(q) == "table" and type(q.x) == "number"
+			and math.abs(p.x - q.x) < 0.5 and math.abs(p.y - q.y) < 0.5 and math.abs(p.z - q.z) < 0.5
+	end
+	local function place(k)
+		local g = groups[k]
+		if not g then return end
+		local c = g.seg.comp or {}
+		local found, reversed = nil, false
+		for _, e in ipairs(R.allEdges()) do
+			local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+			if be then
+				local a0, a1 = sNodePos(be.node0), sNodePos(be.node1)
+				if near(a0, c.position0) and near(a1, c.position1) then found = e break end
+				if near(a0, c.position1) and near(a1, c.position0) then found, reversed = e, true break end
+			end
+		end
+		if not found then
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: their new segment is not here")
+			replayFailed(a, "stops' segment not found")
+			return
+		end
+		local objs = {}
+		for _, o in ipairs(g.objs) do
+			local x = C.deser(C.ser(o))
+			-- (this game's segment runs the other way round: the place along it and the side are the opposite ones)
+			if reversed then x.param = 1 - (tonumber(x.param) or 0.5); x.left = not x.left end
+			objs[#objs + 1] = x
+		end
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: " .. #objs .. " placed again on segment " .. found .. (reversed and " (reversed)" or ""))
+		replayStop(a, { E = found, seg = g.seg, objs = objs, removeIdx = {}, nodeConfigs = {}, segType = g.seg.type or 0 })
+		G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function() place(k + 1) end }
+	end
+	G.waits[#G.waits + 1] = { at = G.frames + 3, fn = function() place(1) end }
+end
+
 local function replayNativeStreet(a)
 	local cArgs = C.deser(C.ser(a.args))
 	local miss = R.translateIn(cArgs, G.bind)
@@ -2646,6 +2689,8 @@ local function replayNativeStreet(a)
 			return
 		end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " native street BUILT (" .. label .. ")")
+		-- the stops and signals the tool re-created on the new segments (issue #28)
+		G.placeStopsAfter(a)
 		local expected = #(m.proposal.addedSegments or {}) - #(m.proposal.removedSegments or {})
 		G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
 			local got = #R.allEdges() - edgesBefore
@@ -2942,46 +2987,8 @@ local function replayNative(a, formIndex)
 					log("NATIVE REPLAY " .. tostring(a.uid) .. " SEGMENT COUNT DIFFERS: originator " .. expected .. ", here " .. got)
 				end
 			end }
-			-- the stops the tool placed again on the new segments (see the stop branch above): one stop build per segment,
-			-- found here by the positions of its ends
-			if a.stopsAfter and #a.stopsAfter > 0 then
-				local groups = a.stopsAfter
-				a.stopsAfter = nil
-				local function near(p, q)
-					return type(p) == "table" and type(q) == "table" and type(q.x) == "number"
-						and math.abs(p.x - q.x) < 0.5 and math.abs(p.y - q.y) < 0.5 and math.abs(p.z - q.z) < 0.5
-				end
-				local function place(k)
-					local g = groups[k]
-					if not g then return end
-					local c = g.seg.comp or {}
-					local found, reversed = nil, false
-					for _, e in ipairs(R.allEdges()) do
-						local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
-						if be then
-							local a0, a1 = sNodePos(be.node0), sNodePos(be.node1)
-							if near(a0, c.position0) and near(a1, c.position1) then found = e break end
-							if near(a0, c.position1) and near(a1, c.position0) then found, reversed = e, true break end
-						end
-					end
-					if not found then
-						log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: their new segment is not here")
-						replayFailed(a, "stops' segment not found")
-						return
-					end
-					local objs = {}
-					for _, o in ipairs(g.objs) do
-						local x = C.deser(C.ser(o))
-						-- (this game's segment runs the other way round: the place along it and the side are the opposite ones)
-						if reversed then x.param = 1 - (tonumber(x.param) or 0.5); x.left = not x.left end
-						objs[#objs + 1] = x
-					end
-					log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: " .. #objs .. " placed again on segment " .. found .. (reversed and " (reversed)" or ""))
-					replayStop(a, { E = found, seg = g.seg, objs = objs, removeIdx = {}, nodeConfigs = {}, segType = g.seg.type or 0 })
-					G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function() place(k + 1) end }
-				end
-				G.waits[#G.waits + 1] = { at = G.frames + 3, fn = function() place(1) end }
-			end
+			-- the stops the tool placed again on the new segments (see the stop branch above)
+			G.placeStopsAfter(a)
 		else
 			local why = ""
 			pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
@@ -6462,6 +6469,82 @@ H.assettest = function(from, p)
 		end)
 	end)
 	if not okM then say("mod construction: " .. shortErr(errM)) autoFinish() end
+end
+
+-- Waypoint scenario (issue #27): a waypoint added after the first stop of a train line, on a track its train drives on,
+-- through the line window's command; then every game must have it
+H.waypoint = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	local ok, err = pcall(function()
+		AUTO.running = true
+		AUTO.results = {}
+		AUTO.points = {}
+		-- a train on a line, and a track segment of its path (a waypoint is a place on a lane: the path's edge ids are such places)
+		local pick = nil
+		for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+			local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+			local mp = api.engine.getComponent(v, api.type.ComponentType.MOVE_PATH)
+			if tv and mp and type(tv.line) == "number" and tv.line >= 0 then
+				if not AUTO.mpShown then
+					AUTO.mpShown = true
+					pcall(function() log("AUTOTEST waypoint: a vehicle's path " .. C.ser(C.marshal(mp.path)):sub(1, 700)) end)
+				end
+				local okp, errp = pcall(function()
+					local edges = mp.path.edges
+					AUTO.wpSeen = (AUTO.wpSeen or 0) + 1
+					for i = math.max(1, math.floor(#edges / 2)), #edges do
+						local eid = edges[i].edgeId
+						local e = eid.entity
+						local isEdge = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) ~= nil
+						local isStreet = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) ~= nil
+						AUTO.wpEdges = (AUTO.wpEdges or 0) + (isEdge and 1 or 0)
+						AUTO.wpStreets = (AUTO.wpStreets or 0) + (isStreet and 1 or 0)
+						if isEdge and not isStreet then
+							pick = pick or { line = tv.line, e = e, index = eid.index, veh = v }
+							break
+						end
+						-- (else a street: the same kind of place on a lane, for a save without trains)
+						if isEdge and not AUTO.wpStreet and os.getenv("MPFEVER_WP_STREET") then AUTO.wpStreet = { line = tv.line, e = e, index = eid.index, veh = v } end
+					end
+				end)
+				if not okp and not AUTO.mpErr then AUTO.mpErr = true; log("AUTOTEST waypoint: path not read: " .. tostring(errp)) end
+			end
+			if pick and (C.ROLE == "host" or pick.veh ~= v) then break end
+		end
+		pick = pick or AUTO.wpStreet
+		AUTO.wpStreet = nil
+		if not pick then
+			AUTO.results[#AUTO.results + 1] = "waypoint: no train on a track (vehicles on lines " .. tostring(AUTO.wpSeen) .. ", path edges that are segments "
+				.. tostring(AUTO.wpEdges) .. ", streets " .. tostring(AUTO.wpStreets) .. ")"
+			return autoFinish()
+		end
+		local function count()
+			local n = 0
+			pcall(function()
+				local lc = api.engine.getComponent(pick.line, api.type.ComponentType.LINE)
+				for i = 1, #lc.stops do n = n + #lc.stops[i].waypoints end
+			end)
+			return n
+		end
+		local before = count()
+		local lc = C.marshal(api.engine.getComponent(pick.line, api.type.ComponentType.LINE))
+		local wps = lc.stops[1].waypoints or {}
+		wps[#wps + 1] = { tag = before + 10, edgePos = { edgeId = { entity = pick.e, index = pick.index }, param = (C.ROLE == "host") and 0.3 or 0.6 } }
+		lc.stops[1].waypoints = wps
+		uiRequest("makeLineUpdateCmd", { n = 2, [1] = pick.line, [2] = lc })
+		log("AUTOTEST waypoint on line " .. pick.line .. ", track " .. pick.e .. " lane " .. tostring(pick.index) .. ", waypoints before " .. before)
+		G.waits[#G.waits + 1] = { at = G.frames + 400, fn = function()
+			local line = "waypoint on line " .. pick.line .. ": waypoints " .. before .. " -> " .. count()
+			log("AUTOTEST " .. line)
+			AUTO.results[#AUTO.results + 1] = line
+			autoFinish()
+		end }
+	end)
+	if not ok then
+		log("AUTOTEST waypoint failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "waypoint error " .. tostring(err)
+		autoFinish()
+	end
 end
 
 H.line = function(from, p)

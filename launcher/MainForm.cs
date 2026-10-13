@@ -1832,7 +1832,10 @@ namespace MPFever
                 if (menuMode && !game.InGame)
                 {
                     // still in the main menu: its MPFever window loads the savegame
-                    menuPhase = "loading"; menuText = T("Chargement de la partie de l'hôte...", "Loading the host's game..."); menuLoad = name; menuLoadSeq = "r" + id;
+                    menuPhase = "loading"; menuText = T("Chargement de la partie de l'hôte...", "Loading the host's game..."); menuLoad = name;
+                    // (unique: the host's resync numbers start again at 1 when its MPFever restarts, and the game's
+                    // script skips a number it already loaded, issue #29)
+                    menuLoadSeq = "r" + id + "-" + DateTime.Now.Ticks;
                     MenuStatus();
                     return;
                 }
