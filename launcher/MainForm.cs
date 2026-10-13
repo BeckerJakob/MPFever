@@ -56,6 +56,10 @@ namespace MPFever
         string menuPhase = "idle", menuText = "", menuLoad = "", menuLoadSeq = "", lastMenuReq;
         volatile bool joinPending;
         volatile bool clientCancelled;
+        // ---- lobby: the host's session is open in the main menu, players join it there, and the host starts the game for
+        // everybody at once (each game loads the host's savegame at the same time); a player may still join a running game
+        volatile bool lobbyOpen, lobbyStarting;
+        string lobbySave = "", lobbyPlayers = "";
         const long Step = 200;                 // game time units per simulation step
         const double UnitsPerSecond = 1000;    // game time units per real second at x1
         const double HashEverySeconds = 10;
@@ -659,7 +663,9 @@ namespace MPFever
             string list;
             int known;
             lock (players) { list = string.Join(", ", players); known = players.Count; }
-            if (hostGame != null && relay != null)
+            if ((lobbyOpen || lobbyStarting) && relay != null) list = LobbyList();
+            else if (lobbyPlayers != "" && hostGame == null && !menuGame.InGame) list = lobbyPlayers;   // a player in a host's lobby
+            else if (hostGame != null && relay != null)
             {
                 if (list == "") list = hostName;
                 int connecting = relay.Count - Math.Max(0, known - 1);
@@ -676,6 +682,8 @@ namespace MPFever
                     ["players"] = list,
                     ["load"] = menuLoad,
                     ["loadSeq"] = menuLoadSeq,
+                    ["lobby"] = lobbyOpen ? "host" : (menuPhase == "lobby" ? "client" : ""),
+                    ["lobbySave"] = lobbyOpen ? lobbySave : "",
                     ["invite"] = steamConnect != null ? "1" : "",
                     ["lang"] = L.Code,
                 });
@@ -741,7 +749,8 @@ namespace MPFever
                 int port = (int)portBox.Value;
                 try { StartHost(name, false, menuGame); }
                 catch (Exception e) { menuPhase = "error"; menuText = T("Impossible d'héberger : ", "Cannot host: ") + e.Message; MenuStatus(); return; }
-                menuLoad = arg; menuLoadSeq = "h" + DateTime.Now.Ticks;   // the game loads the chosen savegame
+                // the lobby opens: the savegame is loaded once the host starts the game (see StartLobbyGame), by every game at once
+                lobbySave = arg; lobbyOpen = true; lobbyStarting = false;
                 // Steam: friends can join from their friends list or an invitation
                 new Thread(() =>
                 {
@@ -752,9 +761,14 @@ namespace MPFever
                     Log.Ok(T("Steam : invitations possibles (", "Steam: invitations enabled (") + steamConnect + ")");
                     MenuStatus();
                 }) { IsBackground = true, Name = "Steam presence" }.Start();
-                menuPhase = "hosting";
-                menuText = F("Partie hébergée (« {0} »). Les autres joueurs rejoignent avec votre adresse IP, port {1} (TCP, à rediriger sur votre box pour Internet). Adresse locale : {2}", "Game hosted (« {0} »). Other players join with your IP address, port {1} (TCP, to forward on your router for the Internet). Local address: {2}", arg, port, LocalAddresses() + string.Concat(NetAddr.PublicIPv6List().Select(a6 => ", " + NetAddr.Show(a6, port))));
+                menuPhase = "lobby";
+                menuText = F("Salon ouvert (« {0} »). Les autres joueurs rejoignent avec votre adresse IP, port {1} (TCP, à rediriger sur votre box pour Internet). Adresse locale : {2}. Lancez la partie quand tout le monde est là.", "Lobby open (« {0} »). Other players join with your IP address, port {1} (TCP, to forward on your router for the Internet). Local address: {2}. Start the game when everybody is here.", arg, port, LocalAddresses() + string.Concat(NetAddr.PublicIPv6List().Select(a6 => ", " + NetAddr.Show(a6, port))));
                 MenuStatus();
+            }
+            else if (cmd == "start")
+            {
+                if (!lobbyOpen || hostGame == null) return;
+                new Thread(StartLobbyGame) { IsBackground = true, Name = "Lobby start" }.Start();
             }
             else if (cmd == "join")
             {
@@ -810,6 +824,8 @@ namespace MPFever
                 // the whole session state goes: a stale "in game" flag sent the next host game to the in-game scripts,
                 // which do not run in the main menu (issue #13)
                 if (resyncing) { Log.Warn(T("Annulation pendant une resynchronisation : session conservée.", "Cancel during a resynchronisation: session kept.")); return; }
+                // (the players in the host's lobby are told, so that they do not try to reconnect)
+                if (lobbyOpen && relay != null) { relay.Broadcast(Msg.Make("lobby", hostName, "{[\"closed\"]=true}")); Thread.Sleep(300); }
                 EndSession(T("=== Annulé : fin de la session ===", "=== Cancelled: the session ends ==="));
             }
         }
@@ -840,6 +856,7 @@ namespace MPFever
             hashN = 0; syncText = "—"; actsRelayed = actRefused = actFails = desyncs = 0;
             resyncing = false; resyncDropping = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = "";
             joinPending = false;
+            lobbyOpen = lobbyStarting = false; lobbySave = ""; lobbyPlayers = "";
             joinedAddr = null;
             if (steamConnect != null) { steamConnect = null; SteamCtl("clear", null); }
             if (menuGame != null)
@@ -854,11 +871,74 @@ namespace MPFever
             MenuStatus();
         }
 
-        /// <summary>Host started from the menu: the session starts as soon as its game runs the savegame.</summary>
+        /// <summary>The players in the host's lobby: the host first, then those connected (names without their number).</summary>
+        string LobbyList()
+        {
+            var names = new List<string> { BaseName(hostName ?? "") };
+            foreach (var n in relay?.PeerNames() ?? new string[0]) names.Add(BaseName(n));
+            return string.Join(", ", names.Where(x => x != ""));
+        }
+
+        /// <summary>Tells the players in the lobby who is there (shown in their MPFever window).</summary>
+        void BroadcastLobby()
+        {
+            if (!lobbyOpen || relay == null) return;
+            relay.Broadcast(Msg.Make("lobby", hostName, "{[\"players\"]=" + LuaLit.Quote(LobbyList()) + ",[\"save\"]=" + LuaLit.Quote(lobbySave)
+                + ",[\"host\"]=" + LuaLit.Quote(BaseName(hostName ?? "")) + "}"));
+        }
+
+        /// <summary>The host starts the game from its lobby: every player in it receives the host's savegame and every game
+        /// (the host's too) loads it at once; the session starts when they are all ready, as after a resynchronisation. A
+        /// player who joins from now on gets the game the usual way (a resynchronisation once the session runs).</summary>
+        void StartLobbyGame()
+        {
+            try
+            {
+                string file = GameInstall.FindSave(lobbySave);
+                if (file == null) { menuPhase = "error"; menuText = F("Sauvegarde « {0} » introuvable.", "Savegame « {0} » not found.", lobbySave); MenuStatus(); return; }
+                byte[] bytes = File.ReadAllBytes(file);
+                lobbyStarting = true;
+                lobbyOpen = false;
+                int id = Interlocked.Increment(ref resyncId);
+                string[] peers = relay?.PeerNames() ?? new string[0];
+                lock (resyncWaiting) { resyncWaiting.Clear(); resyncWaiting.Add(hostName); foreach (var p in peers) resyncWaiting.Add(p); }
+                Log.W(F("=== Lancement de la partie « {0} » pour {1} joueur(s) : envoi de la sauvegarde ({2:0.0} Mo) ===", "=== Starting the game « {0} » for {1} player(s): sending the savegame ({2:0.0} MB) ===", lobbySave, peers.Length + 1, bytes.Length / 1048576.0));
+                HostChat("msg", "MPFever", T("L'hôte lance la partie : chargement...", "The host starts the game: loading..."));
+                int parts = (bytes.Length + ResyncChunk - 1) / ResyncChunk;
+                for (int i = 0; i < parts; i++)
+                {
+                    int len = Math.Min(ResyncChunk, bytes.Length - i * ResyncChunk);
+                    relay?.Broadcast(Msg.Make("resync_file", hostName,
+                        "{[\"id\"]=" + id + ",[\"i\"]=" + i + ",[\"n\"]=" + parts + ",[\"data\"]=\"" + Convert.ToBase64String(bytes, i * ResyncChunk, len) + "\"}"));
+                }
+                // the host's own game loads the savegame from the main menu (mpfever_auto.lua)
+                lastLoadOrder = Now;
+                menuLoad = lobbySave; menuLoadSeq = "h" + DateTime.Now.Ticks;
+                menuPhase = "loading"; menuText = T("Chargement de la partie...", "Loading the game...");
+                MenuStatus();
+            }
+            catch (Exception e)
+            {
+                lobbyStarting = false;
+                Log.Err(T("Lancement de la partie : ", "Starting the game: ") + e.Message);
+                menuPhase = "error"; menuText = T("Lancement de la partie : ", "Starting the game: ") + e.Message; MenuStatus();
+            }
+        }
+
+        /// <summary>Host started from the menu: the session starts as soon as its game runs the savegame (started from a
+        /// lobby: once every game of the lobby runs it).</summary>
         void AutoStart()
         {
             WaitUntil(() => { lock (clocks) return hostName != null && clocks.ContainsKey(hostName); }, 120);
             Thread.Sleep(1000);
+            if (lobbyStarting)
+            {
+                bool all = WaitUntil(() => { lock (resyncWaiting) return resyncWaiting.Count == 0; }, 600);
+                if (!all) { lock (resyncWaiting) Log.Warn(T("Lancement : sans nouvelles de ", "Start: no news from ") + string.Join(", ", resyncWaiting) + T(" (la partie démarre quand même).", " (the game starts anyway).")); }
+                lock (resyncWaiting) resyncWaiting.Clear();
+                lobbyStarting = false;
+                Thread.Sleep(1000);
+            }
             if (started) return;
             StartSession();
             menuPhase = "ingame";
@@ -1037,8 +1117,9 @@ namespace MPFever
                 foreach (var c in history) relay.Send(p, c);   // the chat so far (a reconnecting player skips what it has)
                 HostChat("join", BaseName(p.Name), "");
                 BroadcastSession();
-                // started from the main menu: the new player receives the host's game (every game reloads it)
-                if (menuMode) { joinPending = true; MenuStatus(); }
+                // started from the main menu: the new player receives the host's game (every game reloads it); in the lobby, it
+                // waits there for the host to start the game
+                if (menuMode) { if (lobbyOpen) BroadcastLobby(); else joinPending = true; MenuStatus(); }
             };
             relay.Left += p =>
             {
@@ -1048,6 +1129,9 @@ namespace MPFever
                 lock (players) players.Remove(p.Name);
                 lock (clocks) clocks.Remove(p.Name);
                 HostSend(Msg.Make("peerleft", hostName, "{[\"name\"]=" + LuaLit.Quote(p.Name) + "}"));
+                // (a player gone from the lobby, or while the lobby's games load: nobody waits for it)
+                lock (resyncWaiting) if (lobbyStarting) resyncWaiting.Remove(p.Name);
+                if (lobbyOpen) { BroadcastLobby(); MenuStatus(); }
             };
             relay.Received += (p, m) => OnHostMessage(m, p);
             relay.Start((int)portBox.Value);
@@ -1098,6 +1182,30 @@ namespace MPFever
                 client.Received += m =>
                 {
                     if (m.Kind == "resync_file") { OnResyncFile(game, m); return; }
+                    if (m.Kind == "lobby")
+                    {
+                        // the host's lobby: who is there, until the host starts the game (or closes the lobby)
+                        var lb = LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>();
+                        string S(string k) => lb.TryGetValue(k, out var v) && v != null ? Convert.ToString(v, CultureInfo.InvariantCulture) : "";
+                        if (lb.TryGetValue("closed", out var cl) && cl is bool closed && closed)
+                        {
+                            Log.Warn(T("L'hôte a fermé le salon.", "The host closed the lobby."));
+                            new Thread(() =>
+                            {
+                                EndSession(T("=== L'hôte a fermé le salon : fin de la session ===", "=== The host closed the lobby: the session ends ==="));
+                                menuPhase = "error"; menuText = T("L'hôte a fermé le salon.", "The host closed the lobby."); MenuStatus();
+                            }) { IsBackground = true, Name = "Lobby closed" }.Start();
+                            return;
+                        }
+                        if (menuMode && !game.InGame && menuPhase != "downloading" && menuPhase != "loading")
+                        {
+                            lobbyPlayers = S("players");
+                            menuPhase = "lobby";
+                            menuText = F("Dans le salon de {0} (« {1} ») : l'hôte lance la partie quand tout le monde est là.", "In {0}'s lobby (« {1} »): the host starts the game when everybody is here.", S("host"), S("save"));
+                            MenuStatus();
+                        }
+                        return;
+                    }
                     if (m.Kind == "mpstatus")
                     {
                         if (LuaLit.Parse(m.Payload) is Dictionary<object, object> st && st.TryGetValue("text", out var tx) && tx is string text)

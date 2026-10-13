@@ -255,10 +255,11 @@ local function setup()
 				rows[#rows + 1] = text(T("et aider au développement du mod (signalez les problèmes sur GitHub).", "help the development of the mod (report the problems on GitHub)."), "font-scale-body, error-font", WIDTH)
 			end
 			rows[#rows + 1] = gap()
-			rows[#rows + 1] = button(T("Héberger cette partie", "Host this game"), function()
+			rows[#rows + 1] = button(T("Ouvrir le salon", "Open the lobby"), function()
 				local sel = selected:old()
 				if not sel then return end
-				request("host", sel, name:old(), companies:old())   -- MPFever.exe opens the session, then has the savegame loaded
+				-- MPFever.exe opens the session as a lobby: the players join it here, then the host starts the game for everybody
+				request("host", sel, name:old(), companies:old())
 			end, selected:old() ~= nil and not busy, "font-scale-title-3", WIDTH)
 		else
 			rows[#rows + 1] = box(H, {
@@ -278,6 +279,12 @@ local function setup()
 		end
 		rows[#rows + 1] = gap()
 
+		-- the host's lobby: every game loads the savegame at once when the host starts the game
+		if st.lobby == "host" then
+			rows[#rows + 1] = text((T("Salon : %s", "Lobby: %s"):gsub("%%s", function() return st.lobbySave or "" end)), "font-scale-title-3", WIDTH)
+			rows[#rows + 1] = button(T("Lancer la partie", "Start the game"), function() request("start", "", name:old()) end, true, "font-scale-title-3", WIDTH)
+			rows[#rows + 1] = gap()
+		end
 		if st.invite == "1" then rows[#rows + 1] = button(T("Inviter des amis Steam", "Invite Steam friends"), function() request("invite") end, true, "font-scale-title-3", WIDTH) end
 		if busy and st.phase ~= "hosting" and st.phase ~= "ingame" then rows[#rows + 1] = button(T("Annuler", "Cancel"), function() request("cancel") end) end
 		if st.text and st.text ~= "" then rows[#rows + 1] = text(st.text, nil, WIDTH) end
