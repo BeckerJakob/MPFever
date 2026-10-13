@@ -1240,6 +1240,10 @@ namespace MPFever
                     ClientStatus("lost", 0);
                     game.ToGame(Msg.Make("session", "MPFever", "{[\"started\"]=false,[\"speed\"]=0}"));
                     if (!menuMode || clientCancelled || gen != sessionGen) return;
+                    // a host game half received over this connection never completes (the host sends it again under a
+                    // new number), and a host whose MPFever restarted counts from 1 again: its parts must not be mixed
+                    // with the old ones (issue #29)
+                    lock (resyncParts) resyncParts.Clear();
                     // the connection dropped: try again for 5 minutes; back with the host, this game receives its
                     // game again like any player who joins
                     new Thread(() =>
@@ -1955,18 +1959,19 @@ namespace MPFever
                 string name = ResyncSaveName + " " + new string(game.Name.Where(char.IsLetterOrDigit).ToArray());
                 foreach (var d in GameInstall.SaveDirs()) File.WriteAllBytes(Path.Combine(d, name + ".sav"), bytes);
                 Log.W(F("[{0}] partie de l'hôte reçue ({1:0.0} Mo) : chargement...", "[{0}] host game received ({1:0.0} MB): loading...", game.Name, bytes.Length / 1048576.0));
+                // the host's numbers start again at 1 when its MPFever restarts, while this MPFever and its game remember
+                // the loads they did (menu_loaded.txt, resync_claims.txt) and skipped the host's game as already loaded:
+                // each game received has a number of its own (issue #29)
+                string seq = id + "-" + DateTime.Now.Ticks;
                 if (menuMode && !game.InGame)
                 {
                     // still in the main menu: its MPFever window loads the savegame
-                    menuPhase = "loading"; menuText = T("Chargement de la partie de l'hôte...", "Loading the host's game..."); menuLoad = name;
-                    // (unique: the host's resync numbers start again at 1 when its MPFever restarts, and the game's
-                    // script skips a number it already loaded, issue #29)
-                    menuLoadSeq = "r" + id + "-" + DateTime.Now.Ticks;
+                    menuPhase = "loading"; menuText = T("Chargement de la partie de l'hôte...", "Loading the host's game..."); menuLoad = name; menuLoadSeq = "r" + seq;
                     MenuStatus();
                     return;
                 }
                 lastLoadOrder = Now;
-                game.ToGame(Msg.Make("resync_load", m.From, "{[\"id\"]=" + id + ",[\"name\"]=" + LuaLit.Quote(name) + "}"));
+                game.ToGame(Msg.Make("resync_load", m.From, "{[\"id\"]=" + LuaLit.Quote(seq) + ",[\"name\"]=" + LuaLit.Quote(name) + "}"));
             }
             catch (Exception e) { Log.Warn(F("[{0}] partie de l'hôte : {1}", "[{0}] host game: {1}", game.Name, e.Message)); }
         }

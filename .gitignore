@@ -16,3 +16,4 @@ __pycache__/
 *.pyc
 /.vscode
 dev-test.bat
+dev-test - Server.bat
