@@ -1,7 +1,41 @@
 MPFever - Changelog
 ===================
 
-0.3.8-experimental - speed buttons, large station edits, double slip switches
+0.3.8-experimental - lobby, speed buttons, large station edits, double slip switches, line waypoints
+  - NEW: lobby in the main menu. "Open the lobby" opens the host's session without loading the game: the players join it
+    and see who is there, then the host clicks "Start the game", every player receives the host's savegame and every
+    game loads it at the same time; the session starts once they are all ready (before, the host's game loaded at once
+    and each player who joined reloaded every game). Joining a game already running works as before. A lobby closed by
+    its host tells its players.
+  - FIX (issue #27): a waypoint added to a line vanished after about a second, and every line change in a session
+    removed the line's waypoints. The line was rebuilt without them (they were taken for engine data); their track
+    travelled as a raw entity id. The waypoints are now rebuilt, their track travels as a reference (a waypoint whose
+    track is not found is dropped alone, one on a track that runs the other way round takes the opposite place), and the
+    state check compares them.
+  - FIX (issue #28): a track build that moved one signal and re-created another was refused on the other games
+    ("Collision") and reloaded every game. The rebuilt native street proposal now removes the signals the tool removed,
+    and places the re-created ones on the new segments afterwards.
+  - FIX (issue #29): after the host restarted MPFever, a player who joined again from the main menu received the host's
+    game but never loaded it: the load number repeated (the host's counter starts again at 1) and the game took it as
+    already loaded. The number is now unique.
+  - FIX (issue #30): a whole number above 2,147,483,647 (a company balance, for example) could not be written in a
+    message nor hashed ("%d" is 32 bits in the game's Lua). Strings are now escaped by a fixed list of control bytes
+    instead of the locale-dependent %c, which could split a UTF-8 character.
+  - FIX (issue #31): when the host does not answer, the connection error no longer lists the expected IPv6 failures of a
+    PC without IPv6 first: they are folded into one note after the real reason.
+  - FIX (issue #32): the state check held the simulation about 0.3 s every 10 s on large maps. Its expensive parts
+    (construction parameters, roads, constructions and node configurations) now take turns, one group per check; the
+    launcher keeps a difference per part until that part is checked again.
+  - FIX (desync): a build the engine applies twice at the same moment (a double slip switch set next to another one) was
+    taken by every game for a new build of its own player and shipped: each game then replayed the other's copy a few
+    steps late, and a build applied a few steps late is enough to make the people, the towns and the vehicles drift
+    apart (one of the reloads of our tests). A captured build identical to the action just applied at that moment is no
+    longer shipped.
+  - TESTS: the autotest's bus stop scenario now holds its build until its announced step like a player's tool build
+    (sent at once, it was replayed late on the other game and the towns drifted after a few minutes).
+  - DIAGNOSTICS: every game logs the cost and the town impact of each build ("build stats"), and keeps the game script
+    states of its last 12 checks (sdump_ring_*.txt in the session folder): a drift of the towns can be traced to its
+    first differing value.
   - FIX (issue #24): the game's speed buttons kept showing the speed this player chose last: the other player's changes
     were applied but not shown. The interface waited for an answer to its speed request that MPFever never gave, and
     stopped following the game's speed. The request is answered, and the buttons show the session's speed (not the

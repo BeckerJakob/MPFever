@@ -854,6 +854,12 @@ local function simApplyDue(state)
 					-- mark the replay so that onPreBuildProposal does not ship it again
 					if C.makesProposal(a.fn) then
 						st.replay = { at = now, n = ((st.replay and st.replay.at == now) and st.replay.n or 0) + 1 }
+						-- (and what it builds: the engine's second application of the same build is not shipped either)
+						if a.fn == "makeWorldBuildProposalCmd" then
+							if not (st.replaySigs and st.replaySigs.at == now) then st.replaySigs = { at = now, list = {} } end
+							local okg, sig = pcall(C.buildSig, type(a.args) == "table" and a.args[1] or nil)
+							if okg and sig then st.replaySigs.list[#st.replaySigs.list + 1] = sig end
+						end
 					end
 					state:set(st)
 					SIM.actor = (st.co and a.co) and CO.entityOf(st.co, a.co) or nil
@@ -1471,6 +1477,21 @@ local function captureNativeBuild(state, param)
 		if not oke then log("street experiments failed: " .. tostring(erre)) end
 	end
 	log("capture: translated " .. string.format("%.3f", os.clock() - c0) .. " s")
+	-- the same build as an action this game just applied, at the same moment: the engine's second application of it, which
+	-- every game makes by itself (shipped, each game replayed the other's copy late)
+	do
+		local okg, sig = pcall(C.buildSig, compact)
+		if okg and sig and st.replaySigs and st.replaySigs.at == now then
+			for _, s in ipairs(st.replaySigs.list or {}) do
+				if s == sig then
+					log("build at t=" .. now .. ": the same as the action just applied here (the engine applies it again): not shipped")
+					state:set(st)
+					return
+				end
+			end
+			log("capture: build " .. sig .. " differs from the action(s) applied at this time (" .. table.concat(st.replaySigs.list or {}, " ; ") .. ")")
+		end
+	end
 	if R.CO and R.CO.mode == "separate" then
 		-- who the captured build says it is for (companies mode): a company number per owner reference
 		local tally, seen = {}, 0
@@ -1678,6 +1699,11 @@ local function handleEvent(userParams, state, src, id, name, param)
 			st.terrainNotes[#st.terrainNotes + 1] = { at = tonumber(param.at) or 0, v = tonumber(param.v) or 0 }
 		elseif name == "replaying" then
 			st.replay = { at = gameTime(), n = ((st.replay and st.replay.at == gameTime()) and st.replay.n or 0) + 1 }
+			-- (what it builds, when known: see C.buildSig)
+			if type(param) == "table" and type(param.sig) == "string" then
+				if not (st.replaySigs and st.replaySigs.at == gameTime()) then st.replaySigs = { at = gameTime(), list = {} } end
+				st.replaySigs.list[#st.replaySigs.list + 1] = param.sig
+			end
 		elseif name == "auth" then
 			for _, o in ipairs(st.authOwn or {}) do
 				if o.n == param.n then correctMoney(o.auth, param, param.n, api.cmd.sendCommand, st.co) end
@@ -2988,7 +3014,10 @@ local function replayNative(a, formIndex)
 			.. (#(C.errors or {}) > 0 and (" [" .. table.concat(C.errors, " ; "):sub(1, 200) .. "]") or ""))
 		return replayNative(a, formIndex + 1)
 	end
-	toSim("replaying", {})
+	do
+		local okg, sig = pcall(C.buildSig, type(a.args) == "table" and a.args[1] or nil)
+		toSim("replaying", { sig = okg and sig or nil })
+	end
 	local expected = nil
 	pcall(function()
 		local st = a.args[1].proposal
@@ -3909,7 +3938,10 @@ local function runPausedActions()
 			elseif a.fn == "mpfCoJoin" or coIsLoanEvent({ co = G.co }, a) then
 				toSim("co_apply", a)
 			else
-				if C.makesProposal(a.fn) then toSim("replaying", {}) end
+				if C.makesProposal(a.fn) then
+					local okg, sig = pcall(C.buildSig, a.fn == "makeWorldBuildProposalCmd" and type(a.args) == "table" and a.args[1] or nil)
+					toSim("replaying", { sig = okg and sig or nil })
+				end
 				-- paused: the engine answers in a callback, a frame later; the result is reported then
 				withActor(PL(a), executeAction, a, O.sendCommand, true, G.bind, function(r)
 					r.at = now
@@ -5171,7 +5203,9 @@ local function runStopMatrix(p)
 		if f.nocleanup then ctx.cleanupStreetGraph = false end
 		local okf, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, ctx, f.ie == true, true) end)
 		if not okf or not cmd then log("STOPS " .. f.name .. ": factory " .. shortErr(cmd)); return nextForm() end
-		O.sendCommand(cmd, function(res, success)
+		-- (held until its announced step, as a player's tool build: sent at once, the other games applied it a few steps
+		-- late and the simulation drifted apart)
+		deferredSend(cmd, function(res, success)
 			local why = ""
 			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 			local n = 0

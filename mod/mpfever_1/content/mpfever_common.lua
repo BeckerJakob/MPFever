@@ -753,6 +753,30 @@ function C.nodeConfigs(list)
 	return cfgs
 end
 
+-- What a build does, in short (counts of each kind of change, and the place and switch flag of each node configuration
+-- added), from shipped arguments as well as from a captured build (both with references): the engine sometimes applies an
+-- action's build a second time at the same moment (a double slip switch on a node next to another one), on every game,
+-- and that second build must not be shipped as a new one (each game then replayed the other's copy late)
+function C.buildSig(m)
+	if type(m) ~= "table" then return nil end
+	local st = m.proposal or m.streetProposal or {}
+	local function n(t) return type(t) == "table" and #t or 0 end
+	local parts = { n(st.addedNodes or st.nodesToAdd), n(st.removedNodes or st.nodesToRemove), n(st.addedSegments or st.edgesToAdd),
+		n(st.removedSegments or st.edgesToRemove), n(st.edgeObjectsToAdd), n(st.edgeObjectsToRemove), n(st.nodeConfigsToAdd),
+		n(st.nodeConfigsToRemove), n(m.toAdd), n(m.toRemove) }
+	for _, c in ipairs(st.nodeConfigsToAdd or {}) do
+		local e = type(c) == "table" and c.entity or nil
+		local p = type(e) == "table" and e.p or nil
+		-- (a node given by its id here: its position, as a reference gives it)
+		if type(e) == "number" and e >= 0 then
+			pcall(function() p = api.engine.getComponent(e, api.type.ComponentType.BASE_NODE).position end)
+		end
+		parts[#parts + 1] = p and string.format("%.0f,%.0f", p.x or 0, p.y or 0) or tostring(e)
+		parts[#parts + 1] = tostring(type(c) == "table" and type(c.comp) == "table" and c.comp.doubleSlipSwitch)
+	end
+	return table.concat(parts, "/")
+end
+
 -- Whether replaying a command can reach onPreBuildProposal (and must be marked as a replay so that it is not shipped
 -- again). Vehicles, lines, names, events... never do: counting them while the game time stood still (a paused session)
 -- made every later build of the player look like a replay, and none was shipped (issue #12).

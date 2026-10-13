@@ -34,11 +34,16 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 
 ## What's new in 0.3.8
 
-Three fixes from the GitHub issues (thanks to Zippo1578 and Steelworm):
+A lobby, and fixes from the GitHub issues (thanks to Zippo1578 and Steelworm):
 
+- **Lobby in the main menu.** The host opens a lobby, the players join it and see who is there, then the host starts the game and every game loads it at the same time. Joining a game already running still works.
 - **The speed buttons show the session's speed** when another player changes it (#24).
 - **Editing a large station no longer slows the other games down** for seconds per module (#25).
 - **Double slip switches** can be set in a session (#26).
+- **Line waypoints** are kept in a session (#27).
+- **A track build that moves one signal and re-creates another** no longer reloads every game (#28).
+- **Rejoining after the host restarted MPFever** loads the host's game again (#29).
+- **Smaller fixes:** very large numbers and some accented characters in messages (#30), clearer connection errors on a PC without IPv6 (#31), a lighter state check on large maps (#32).
 
 ## What's new in 0.3.7
 
