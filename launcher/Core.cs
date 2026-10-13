@@ -770,7 +770,8 @@ namespace MPFever
 
         /// <summary>Connects to the host. host may list several addresses (a Steam invitation gives the host's IPv4 and
         /// IPv6 addresses, "1.2.3.4:28090,[2a02:...]:28090"); each one may carry its port, else port. IPv6 is tried first:
-        /// a host behind DS-Lite is only reachable that way.</summary>
+        /// a host behind DS-Lite is only reachable that way. On a PC without IPv6 those attempts fail at once: the error
+        /// then names the other attempts first and ends with one short note on IPv6 (issue #31).</summary>
         public void Connect(string host, int port, string name)
         {
             var targets = new List<IPEndPoint>();
@@ -783,6 +784,7 @@ namespace MPFever
             }
             targets = targets.Where(e => e.AddressFamily == AddressFamily.InterNetworkV6).Concat(targets.Where(e => e.AddressFamily != AddressFamily.InterNetworkV6)).ToList();
             IPEndPoint used = null;
+            bool noIPv6 = false;   // an IPv6 address failed because this PC has no IPv6
             foreach (var ep in targets)
             {
                 TcpClient c = null;
@@ -799,10 +801,22 @@ namespace MPFever
                 {
                     try { c?.Close(); } catch { }
                     var inner = e is AggregateException ae && ae.InnerException != null ? ae.InnerException : e;
-                    errors.Add(NetAddr.Show(ep.Address.ToString(), ep.Port) + " : " + inner.Message);
+                    // no route to IPv6 or IPv6 turned off: this PC has no IPv6, not an error of the host. Its long Windows
+                    // message per address came first and hid the reason of the IPv4 attempt ("host unreachable" stays an
+                    // error of the host)
+                    if (ep.AddressFamily == AddressFamily.InterNetworkV6 && inner is SocketException se
+                        && (se.SocketErrorCode == SocketError.NetworkUnreachable || se.SocketErrorCode == SocketError.AddressFamilyNotSupported))
+                        noIPv6 = true;
+                    else
+                        errors.Add(NetAddr.Show(ep.Address.ToString(), ep.Port) + " : " + inner.Message);
                 }
             }
-            if (tcp == null) throw new IOException(errors.Count > 0 ? string.Join("  |  ", errors) : L.T("adresse vide", "empty address"));
+            if (tcp == null)
+            {
+                // after the other errors, and kept: for a host only reachable over IPv6 it is the reason
+                if (noIPv6) errors.Add(L.T("IPv6 : indisponible sur ce PC", "IPv6: not available on this PC"));
+                throw new IOException(errors.Count > 0 ? string.Join("  |  ", errors) : L.T("adresse vide", "empty address"));
+            }
             writer = new StreamWriter(tcp.GetStream(), new UTF8Encoding(false)) { NewLine = "\n", AutoFlush = true };
             Send(Msg.Make("join", name));
             new Thread(ReadLoop) { IsBackground = true, Name = "Client read" }.Start();
