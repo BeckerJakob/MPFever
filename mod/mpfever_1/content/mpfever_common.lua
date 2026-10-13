@@ -87,15 +87,27 @@ local function escapeChar(c)
 	return BS .. string.format("%03d", string.byte(c))
 end
 
+-- A whole number as decimal text. string.format("%d") takes only 32-bit values in Lua 5.2 on Windows (a company balance
+-- above 2^31 raised "not a number in proper range", issue #30); "%.0f" is exact for every whole number a double holds
+-- exactly (below 2^53), and writes the same text as "%d" did for the others
+function C.int(v)
+	if v == 0 then return "0" end   -- (also -0)
+	return string.format("%.0f", v)
+end
+
+-- the bytes a string escapes, listed instead of %c, whose meaning follows the process locale (under a code page it may
+-- also take the second byte of a UTF-8 character, issue #30): control bytes 0-31 and 127, the quote and the backslash
+local ESCAPED = "[" .. string.char(0) .. "-" .. string.char(31) .. string.char(127) .. QUOTE .. BS .. BS .. "]"
+
 function C.ser(v, depth)
 	depth = depth or 0
 	local t = type(v)
 	if t == "number" then
 		if v ~= v or v == math.huge or v == -math.huge then return "0" end
-		if math.floor(v) == v and math.abs(v) < 9007199254740992 then return string.format("%d", v) end
+		if math.floor(v) == v and math.abs(v) < 9007199254740992 then return C.int(v) end
 		return string.format("%.17g", v)
 	elseif t == "string" then
-		return QUOTE .. v:gsub("[%c" .. QUOTE .. BS .. BS .. "]", escapeChar) .. QUOTE
+		return QUOTE .. v:gsub(ESCAPED, escapeChar) .. QUOTE
 	elseif t == "boolean" then
 		return tostring(v)
 	elseif t == "table" and depth < 40 then

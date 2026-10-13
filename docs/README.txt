@@ -42,10 +42,13 @@ WHAT WORKS
 - Start from the game itself: MPFever.exe starts Transport Fever 3, and a
   "MULTIJOUEUR / MPFever" button in the main menu opens the multiplayer window.
   - Host: pick one of your savegames (any of them, even one made without MPFever: the mod
-    adds no content to the game, it only synchronises). If the game uses other mods that
-    add content (vehicles, buildings...), every player must have the same ones installed.
+    adds no content to the game, it only synchronises) and open the lobby. If the game uses
+    other mods that add content (vehicles, buildings...), every player must have the same
+    ones installed.
+  - Lobby: the players join it in the main menu and see who is there. The host starts the
+    game when everybody is there: every game loads the host's savegame at the same time.
   - Join: type the host's IP address. The host's game is received and loaded
-    automatically (no file to send). Joining a session already running works.
+    automatically (no file to send). Joining a session already running works too.
   - Steam invitations: friends can join from your Steam friends list.
 - Everything a player builds or changes appears in the other games at the same moment:
   roads (all road types, with trees and other decorations), tracks, tram tracks laid on

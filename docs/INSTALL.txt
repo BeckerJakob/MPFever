@@ -58,19 +58,23 @@ stays minimized). In the game's main menu, click "Multiplayer (MPFever)" (under 
 cards) and type your player name.
 
 Host:
-1. "Host a game", click the savegame to share, then "Host".
-2. The savegame loads and the game starts. Your friends can now join.
+1. "Host a game", click the savegame to share, then "Open the lobby".
+2. The lobby stays in the main menu: your friends join it, and the MPFever window lists
+   the players who are there.
 3. Invite friends: click "Invite Steam friends" in the MPFever window of the main menu
    (or friends right-click you in their Steam friends list, "Join game").
+4. When everybody is there, click "Start the game": every player receives your savegame
+   and every game loads it at the same time.
 
 Other players, either:
 - accept the host's Steam invitation (Transport Fever 3 and MPFever start by
   themselves if needed), or
 - "Join a game", type the host's address (for example 89.12.34.56 or
   89.12.34.56:28090), then "Join".
-The host's game is sent to you (progress shown in the MPFever window) and loads by
-itself. Each time a player joins, every game pauses and reloads the host's game for a
-few seconds, then everybody continues together.
+In the lobby, wait for the host to start the game: the host's game is sent to you
+(progress shown in the MPFever window) and loads by itself.
+You can also join a game that is already running: then every game pauses and reloads
+the host's game for a few seconds, and everybody continues together.
 
 During the game:
 - Play normally. Anybody can build, buy vehicles, create lines...

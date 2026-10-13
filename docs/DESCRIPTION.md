@@ -27,7 +27,7 @@
   - vehicles and roads.
 
   Money is corrected automatically. Any other lasting difference triggers an **automatic resync**: a short pause, the host's game is sent to everyone, all games reload it, and play resumes (about 20 s).
-- **Easy start.** Host any savegame from the multiplayer button of the main menu. Friends join by IP address or through a Steam invitation, even in a game already running. The host's game is sent to them automatically.
+- **Easy start, with a lobby.** Open a lobby with any savegame from the multiplayer button of the main menu. Friends join it by IP address or through a Steam invitation, and the host starts the game when everybody is there: every game loads it at the same time. Joining a game already running works too. The host's game is sent to the players automatically.
 - **Chat and MPFever window in the game.** Write to the other players from the pause menu's Chat card. The MPFever window, also from the pause menu, shows:
   - the players and their connection;
   - whether the games are in sync;

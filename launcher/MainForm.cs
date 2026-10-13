@@ -143,6 +143,7 @@ namespace MPFever
         Dictionary<object, object> saveDone;
         string lastDiffKeys = "";
         int diffStreak;
+        readonly Dictionary<string, int> partStreak = new Dictionary<string, int>();
         int postResyncHashN = -1;
         readonly HashSet<string> ignoredParts = new HashSet<string>();
         // parts every game corrects by itself from the host's values (not a reason to reload)
@@ -854,7 +855,7 @@ namespace MPFever
             lock (chatLog) { chatLog.Clear(); chatId = 0; }
             lock (resyncParts) resyncParts.Clear();   // a host game half received in the session that ends
             hashN = 0; syncText = "—"; actsRelayed = actRefused = actFails = desyncs = 0;
-            resyncing = false; resyncDropping = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = "";
+            resyncing = false; resyncDropping = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = ""; lock (partStreak) partStreak.Clear();
             joinPending = false;
             lobbyOpen = lobbyStarting = false; lobbySave = ""; lobbyPlayers = "";
             joinedAddr = null;
@@ -1778,7 +1779,22 @@ namespace MPFever
                 if (local.Count > 0) Log.Warn(T("Mesures propres à chaque jeu (ignorées désormais) : ", "Local measures (ignored from now on): ") + string.Join(", ", local));
             }
             diffs = diffs.Where(d => !ignoredParts.Contains(DiffKey(d))).ToList();
-            CheckResync(diffs.Select(d => DiffKey(d)).Where(k => !CorrectedParts.Contains(k)).ToList(), n);
+            // the expensive parts take turns (issue #32): a part checked at this checkpoint is equal or different (its streak:
+            // how many of its own checks in a row differed); a part not checked keeps its state until it is checked again
+            var nowDiff = new HashSet<string>(diffs.Select(d => DiffKey(d)));
+            List<string> pending;
+            lock (partStreak)
+            {
+                foreach (var k in keys)
+                {
+                    if (nowDiff.Contains(k)) partStreak[k] = (partStreak.TryGetValue(k, out var s) ? s : 0) + 1;
+                    else partStreak.Remove(k);
+                }
+                pending = partStreak.Keys.Where(k => !CorrectedParts.Contains(k) && !ignoredParts.Contains(k)).ToList();
+            }
+            CheckResync(pending, n);
+            // (a difference not checked again at this checkpoint: the sync state stays as it was)
+            if (diffs.Count == 0 && pending.Count > 0) return;
             if (diffs.Count == 0)
             {
                 bool changed = syncState != 1;
@@ -1835,7 +1851,8 @@ namespace MPFever
                 return;
             }
             driftSince = -1;
-            diffStreak = k == lastDiffKeys ? diffStreak + 1 : 1;
+            // the longest run of checks in a row where one part differed (each part counts its own checks, see OnSyncHash)
+            lock (partStreak) diffStreak = keys.Where(x => !DriftParts.Contains(x)).Select(x => partStreak.TryGetValue(x, out var s) ? s : 0).DefaultIfEmpty(0).Max();
             lastDiffKeys = k;
             if (diffStreak < 2) return;
             if (Now - lastResync < ResyncCooldownSeconds)
@@ -1904,6 +1921,7 @@ namespace MPFever
             {
                 lastResync = Now;
                 diffStreak = 0;
+                lock (partStreak) partStreak.Clear();
                 resyncDropping = false;
                 resyncing = false;
                 SetSpeed(prevSpeed, T("fin de resynchronisation", "end of resynchronisation"));

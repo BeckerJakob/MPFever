@@ -3276,6 +3276,19 @@
       "ko": "게임 시작",
       "zh-CN": "开始游戏",
       "zh-TW": "開始遊戲"
+    },
+    "IPv6: not available on this PC": {
+      "de": "IPv6: auf diesem PC nicht verfügbar",
+      "es": "IPv6: no disponible en este PC",
+      "it": "IPv6: non disponibile su questo PC",
+      "nl": "IPv6: niet beschikbaar op deze pc",
+      "pl": "IPv6: niedostępne na tym komputerze",
+      "pt-BR": "IPv6: não disponível neste PC",
+      "ru": "IPv6: недоступен на этом ПК",
+      "ja": "IPv6：この PC では利用できません",
+      "ko": "IPv6: 이 PC에서 사용할 수 없음",
+      "zh-CN": "IPv6：此电脑不可用",
+      "zh-TW": "IPv6：此電腦無法使用"
     }
   }
 }

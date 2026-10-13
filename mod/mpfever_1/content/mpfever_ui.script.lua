@@ -784,7 +784,8 @@ end
 
 -- this player's message, for MPFever.exe (which sends it to the host)
 local function sendChat(t)
-	t = tostring(t or ""):gsub("%c", " "):gsub("^ +", ""):gsub(" +$", "")
+	-- (control bytes listed, not %c: under a code page locale %c may take a byte of a UTF-8 character, issue #30)
+	t = tostring(t or ""):gsub("[" .. string.char(0) .. "-" .. string.char(31) .. string.char(127) .. "]", " "):gsub("^ +", ""):gsub(" +$", "")
 	if t == "" then return false end
 	if ulen(t) > 300 then t = usub(t, 300) end
 	U.chatSeq = (U.chatSeq or 0) + 1

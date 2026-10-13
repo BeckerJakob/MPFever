@@ -46,7 +46,7 @@ local function valueHash(v, d)
 	local t = type(v)
 	if t == "number" then
 		if v ~= v then return 1 end
-		if math.floor(v) == v and math.abs(v) < 1e15 then return C.hashStr(7, string.format("%d", v)) end
+		if math.floor(v) == v and math.abs(v) < 1e15 then return C.hashStr(7, C.int(v)) end
 		return C.hashStr(7, string.format("%.6g", v))
 	elseif t == "string" then
 		return C.hashStr(11, v)
@@ -87,7 +87,7 @@ local function countsHash(counts)
 	for _, c in ipairs(counts) do
 		n = n + 1
 		total = total + c
-		acc = (acc + C.hashStr(23, string.format("%d", c))) % 4294967296
+		acc = (acc + C.hashStr(23, C.int(c))) % 4294967296
 	end
 	return n .. "/" .. total .. "/" .. acc
 end
@@ -210,9 +210,23 @@ end
 
 local hashShown = false
 local hashCostsShown = 0
-local function simHash(terrainSig, reg)
+local function simHash(terrainSig, reg, n)
 	local tStart = os.clock()
+	-- the expensive parts take turns (issue #32: the whole check held the simulation step about 0.3 s every 10 s): every
+	-- checkpoint hashes the cheap parts and one group, chosen by the checkpoint's number, the same on every game. The
+	-- launcher keeps a difference per part until that part is checked again. (Not in the autotests, nor without a number:
+	-- the determinism run; MPFEVER_HASHROT=0 / 1 forces it off / on.)
+	local rot = os.getenv("MPFEVER_HASHROT")
+	R.hashSkip = nil
+	if n and (rot == "1" or (rot ~= "0" and not os.getenv("MPFEVER_SAVE"))) then
+		local groups = { { "conParams" }, { "edges" }, { "constructions", "nodeConfigs" } }
+		local keep = groups[(n % #groups) + 1]
+		R.hashSkip = {}
+		for _, g in ipairs(groups) do for _, p in ipairs(g) do R.hashSkip[p] = true end end
+		for _, p in ipairs(keep) do R.hashSkip[p] = nil end
+	end
 	local parts = R.contentHash(C.hashStr, C.dump)
+	R.hashSkip = nil
 	-- diagnostic (MPFEVER_VDUMP set): every vehicle and every company's money at each checkpoint, to diff two games
 	if os.getenv("MPFEVER_VDUMP") then
 		pcall(function()
@@ -819,7 +833,7 @@ local function simApplyDue(state)
 				if a.kind == "hash" then
 					local c0 = os.clock()
 					local okA, auth = pcall(authValues, st.co)
-					st.hash = { n = a.n, parts = simHash(terrainSigAt(st, now), st.co), cost = os.clock() - c0, auth = okA and auth or nil }
+					st.hash = { n = a.n, parts = simHash(terrainSigAt(st, now), st.co, a.n), cost = os.clock() - c0, auth = okA and auth or nil }
 					st.authOwn = st.authOwn or {}
 					st.authOwn[#st.authOwn + 1] = { n = a.n, auth = okA and auth or nil }
 					while #st.authOwn > 10 do table.remove(st.authOwn, 1) end
@@ -3891,7 +3905,7 @@ local function runPausedActions()
 				local okA, auth = pcall(authValues, G.co)
 				G.authOwn = G.authOwn or {}
 				G.authOwn[a.n] = okA and auth or nil
-				send("sync_hash", { n = a.n, parts = simHash(G.simTerrainSig, G.co), cost = 0, auth = okA and auth or nil })
+				send("sync_hash", { n = a.n, parts = simHash(G.simTerrainSig, G.co, a.n), cost = 0, auth = okA and auth or nil })
 			elseif a.fn == "mpfCoJoin" or coIsLoanEvent({ co = G.co }, a) then
 				toSim("co_apply", a)
 			else

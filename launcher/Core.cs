@@ -783,6 +783,9 @@ namespace MPFever
             }
             targets = targets.Where(e => e.AddressFamily == AddressFamily.InterNetworkV6).Concat(targets.Where(e => e.AddressFamily != AddressFamily.InterNetworkV6)).ToList();
             IPEndPoint used = null;
+            // IPv6 addresses this PC cannot reach at all (no IPv6 connectivity): one short note after the other errors, so that
+            // the real reason (the host not answering on IPv4, say) comes first (issue #31)
+            int noIpv6 = 0;
             foreach (var ep in targets)
             {
                 TcpClient c = null;
@@ -799,9 +802,14 @@ namespace MPFever
                 {
                     try { c?.Close(); } catch { }
                     var inner = e is AggregateException ae && ae.InnerException != null ? ae.InnerException : e;
-                    errors.Add(NetAddr.Show(ep.Address.ToString(), ep.Port) + " : " + inner.Message);
+                    if (ep.AddressFamily == AddressFamily.InterNetworkV6 && inner is SocketException se
+                        && (se.SocketErrorCode == SocketError.NetworkUnreachable || se.SocketErrorCode == SocketError.AddressFamilyNotSupported))
+                        noIpv6++;
+                    else
+                        errors.Add(NetAddr.Show(ep.Address.ToString(), ep.Port) + " : " + inner.Message);
                 }
             }
+            if (noIpv6 > 0) errors.Add(L.T("IPv6 : non disponible sur ce PC", "IPv6: not available on this PC"));
             if (tcp == null) throw new IOException(errors.Count > 0 ? string.Join("  |  ", errors) : L.T("adresse vide", "empty address"));
             writer = new StreamWriter(tcp.GetStream(), new UTF8Encoding(false)) { NewLine = "\n", AutoFlush = true };
             Send(Msg.Make("join", name));

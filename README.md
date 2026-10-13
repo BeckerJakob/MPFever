@@ -5,7 +5,7 @@ Experimental multiplayer for Transport Fever 3. Several players play the same wo
 - in **one shared company** (co-op);
 - or **each with their own company**. This second mode is still in development and has many bugs: use it to test and help.
 
-The game starts from `MPFever.exe`. A multiplayer button in the main menu lets you host one of your savegames or join a host by IP address; the host's game is received automatically. Steam invitations are supported.
+The game starts from `MPFever.exe`. A multiplayer button in the main menu lets you open a lobby with one of your savegames or join a host by IP address. The players gather in the lobby, then the host starts the game and every game loads it at the same time; the host's game is received automatically. Joining a game already running works too, and Steam invitations are supported.
 
 Enjoying MPFever? You can support its development on [Ko-fi](https://ko-fi.com/H2H717LY5N).
 
