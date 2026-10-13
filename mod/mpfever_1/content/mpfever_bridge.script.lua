@@ -1131,6 +1131,19 @@ local function update(userParams, state, dt)
 	end
 	local ok, err = pcall(simApplyDue, state)
 	if not ok then log("simulation apply failed: " .. tostring(err)) end
+	if SIM.idChecks then
+		local keep = {}
+		for _, ck in ipairs(SIM.idChecks) do
+			ck.ticks = ck.ticks + 1
+			if ck.ticks >= 2 then
+				local si, ni = R.idsAt(ck.segs, ck.nodes)
+				log("build ids t=" .. ck.at .. ": segments " .. table.concat(si, ",") .. " nodes " .. table.concat(ni, ","))
+			else
+				keep[#keep + 1] = ck
+			end
+		end
+		SIM.idChecks = (#keep > 0) and keep or nil
+	end
 	local okl, errl = pcall(function()
 		local st = state:get()
 		if st and st.co and st.co.mode == "separate" and #st.co.list > 1 then
@@ -1298,6 +1311,23 @@ local function captureNativeBuild(state, param)
 		log("build stats t=" .. now .. ": costs " .. costs .. ", terrain alignment " .. impact(api.engine.util.town.getTerrainAlignmentImpact)
 			.. ", auto removal " .. impact(api.engine.util.town.getAutoRemovalEntityImpact) .. ", removed " .. rem .. " (town buildings " .. tb .. ")")
 	end)
+	-- diagnostic: the ids this game gives to the new segments and nodes, logged once they exist ("build ids"). The same places
+	-- must get the same ids on every game: a game that numbers them differently numbers everything after differently too
+	-- (vehicles, people) and the games drift apart
+	pcall(function()
+		local sp = param[1].proposal
+		local segs, nodes = {}, {}
+		local function p3(v) return { x = v.x, y = v.y, z = v.z } end
+		for i = 1, #sp.addedSegments do
+			local c = sp.addedSegments[i].comp
+			segs[i] = { p3(c.position0), p3(c.position1) }
+		end
+		for i = 1, #sp.addedNodes do nodes[i] = p3(sp.addedNodes[i].comp.position) end
+		if #segs + #nodes > 0 then
+			SIM.idChecks = SIM.idChecks or {}
+			SIM.idChecks[#SIM.idChecks + 1] = { at = now, segs = segs, nodes = nodes, ticks = 0 }
+		end
+	end)
 	if st.replay and st.replay.at == now and st.replay.n > 0 then
 		st.replay.n = st.replay.n - 1     -- our own replay of a shipped action
 		state:set(st)
@@ -1458,7 +1488,7 @@ local function captureNativeBuild(state, param)
 	local c0 = os.clock()
 	log("capture: start t=" .. now)
 	local okc, compact = pcall(C.compactProposal, proposal)
-	log("capture: compact " .. string.format("%.3f", os.clock() - c0) .. " s, " .. #C.ser(compact or {}) .. " bytes")
+	log("capture: compact " .. string.format("%.3f", os.clock() - c0) .. " s, " .. #C.ser(compact or {}) .. " bytes" .. C.mapSizes(compact))
 	if not okc then
 		log("native build capture failed at t=" .. now .. ": " .. tostring(compact) .. " (desync)")
 		return
@@ -2730,6 +2760,13 @@ local function replayNativeStreet(a)
 	ctx.checkTerrainAlignment = true
 	ctx.cleanupStreetGraph = false
 	ctx.gatherBuildings = true
+	-- the tool's own flags when they came with the build (the same proposal applied the same way)
+	local bits = tonumber(a.ctx)
+	if bits and bits >= 32 then
+		ctx.gatherBuildings = bits % 2 == 1
+		ctx.checkTerrainAlignment = math.floor(bits / 2) % 2 == 1
+		ctx.cleanupStreetGraph = math.floor(bits / 4) % 2 == 1
+	end
 	ctx.gatherFields = true
 	ctx.player = api.engine.util.getPlayer()
 	local okk, cmd, label = false, nil, nil
@@ -2900,6 +2937,23 @@ local function replayNative(a, formIndex)
 		end)
 		local probe = C.deser(C.ser(a.args))
 		local missing = R.translateIn(probe, G.bind)
+		-- town buildings the build moved (a street upgrade in a town: nobody's constructions added, town buildings removed). Rebuilt
+		-- as plain constructions they were no town buildings any more (two fewer in the town, which then drifted): the street is
+		-- sent without them, and this game's engine takes the same buildings away and puts the same ones back, as the
+		-- builder's did (the game's random numbers are the same on every game)
+		if #missing == 0 and probe[1] and (#(probe[1].toAdd or {}) > 0 or #(probe[1].toRemove or {}) > 0) then
+			local town = true
+			for _, ce in ipairs(probe[1].toAdd or {}) do if ce.playerEntity ~= -1 then town = false end end
+			for _, e in ipairs(probe[1].toRemove or {}) do
+				local okc, c = pcall(function() return api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) end)
+				if not (okc and c and #c.townBuildings > 0) then town = false end
+			end
+			if town and not hasConstructionSegments(a.args[1]) then
+				a.townAuto = true
+				log("NATIVE REPLAY " .. tostring(a.uid) .. ": " .. #(probe[1].toAdd or {}) .. " town building(s) put back and " .. #(probe[1].toRemove or {})
+					.. " taken away by the engine itself")
+			end
+		end
 		local plan = (#missing == 0) and upgradePlan(probe) or nil
 		if plan then return replayUpgrade(a, plan, 1) end
 		-- stops: the stop tool replaces one existing segment between the same nodes and adds edge objects
@@ -2955,6 +3009,14 @@ local function replayNative(a, formIndex)
 			log("NATIVE REPLAY " .. tostring(a.uid) .. ": the build cuts a segment with stops or signals: native street proposal")
 			return replayNativeStreet(a)
 		end
+		-- the tool said which new segments and nodes replace which old ones (a track joined to another, a curve reshaped, a
+		-- junction node moved): only a native proposal carries that. Rebuilt without it, the replaced parts were paid again and
+		-- built as new ones on the other games, which then numbered their next entities differently and drifted apart
+		if stp and C.hasReplaceMaps(stp) and #(a.args[1].toAdd or {}) == 0
+			and #(stp.edgeObjectsToAdd or {}) == 0 and os.getenv("MPFEVER_MAPREPLAY") ~= "0" then
+			log("NATIVE REPLAY " .. tostring(a.uid) .. ": the tool's replacement maps" .. C.mapSizes(a.args[1]) .. ": native street proposal")
+			return replayNativeStreet(a)
+		end
 		if C.movesObjects(stp) then
 			a.objectForms = true
 			log("NATIVE REPLAY " .. tostring(a.uid) .. ": the build cuts a segment with stops or signals: native forms only")
@@ -3001,6 +3063,12 @@ local function replayNative(a, formIndex)
 	end
 	if form.ie ~= nil then margs[3] = form.ie end
 	if form.pi ~= nil then margs[4] = form.pi end
+	if a.townAuto and type(margs[1]) == "table" then
+		margs[1].toAdd = {}
+		margs[1].toRemove = {}
+		margs[1].old2new = nil
+		margs[1].old2newByRank = nil
+	end
 	local okr, args, n = pcall(C.rebuildArgs, a.fn, margs, { seed = 7919, variant = form.v, ctx = form.ctx, raw = form.raw, rm = form.rm, exp = a.noStops and "noeo," or nil })
 	local label = form.v .. (form.raw and "/raw" or "") .. "/" .. form.ctx .. (form.ie and "/ie" or "") .. (form.pi == false and "/pi0" or "")
 		.. (form.rm and ("/rm-" .. form.rm) or "")
@@ -6938,7 +7006,9 @@ local function runSplit(p)
 	log("SPLIT factory: " .. (okf and "OK" or shortErr(cmd)))
 	AUTO.results[#AUTO.results + 1] = "split factory " .. (okf and "OK" or shortErr(cmd))
 	if not okf then return autoFinish() end
-	O.sendCommand(cmd, function(res, success)
+	-- (p.defer: sent like a tool's build, held and shipped as a native build)
+	local sendIt = p.defer and deferredSend or O.sendCommand
+	sendIt(cmd, function(res, success)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 		log("SPLIT build: " .. (success and "BUILT" or ("refused " .. why)))
@@ -6954,6 +7024,312 @@ H.split = function(from, p)
 	if not ok then
 		log("SPLIT failed: " .. tostring(err))
 		AUTO.results[#AUTO.results + 1] = "split error " .. tostring(err)
+		autoFinish()
+	end
+end
+
+-- the same split sent like a tool's build (native: the other games rebuild it from what is shipped)
+H.dsplit = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	p.nodeConfigs = true
+	p.defer = true
+	local ok, err = pcall(runSplit, p)
+	if not ok then
+		log("SPLIT failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "split error " .. tostring(err)
+		autoFinish()
+	end
+end
+
+-- A segment a vehicle is on, cut in two by a new road (a native proposal, like a tool's), held and shipped as a native build.
+-- MPFEVER_SPLITMAPS=1: with the tool's maps of which new segments replace the old one
+H.dsplitbusy = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local ok, err = pcall(function()
+		local busy, seen = {}, {}
+		for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+			pcall(function()
+				local mp = api.engine.getComponent(v, api.type.ComponentType.MOVE_PATH)
+				local e = mp.path.edges[mp.dyn.pathPos.edgeIndex + 1].edgeId.entity
+				local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+				if c and c.type == 0 and #c.objects == 0 and not seen[e] then
+					local a, b = nodePosition(c.node0), nodePosition(c.node1)
+					if a and b and math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) > 30 then seen[e] = true; busy[#busy + 1] = e end
+				end
+			end)
+		end
+		table.sort(busy)
+		if #busy == 0 then AUTO.results[#AUTO.results + 1] = "dsplitbusy: no vehicle on a plain segment"; return autoFinish() end
+		local E = busy[((C.ROLE == "host") and 0 or 1) % #busy + 1]
+		local c = api.engine.getComponent(E, api.type.ComponentType.BASE_EDGE)
+		local A, B = nodePosition(c.node0), nodePosition(c.node1)
+		local M = { x = (A.x + B.x) / 2, y = (A.y + B.y) / 2, z = (A.z + B.z) / 2 }
+		local dx, dy = B.x - A.x, B.y - A.y
+		local len = math.sqrt(dx * dx + dy * dy)
+		local Q = { x = M.x - dy / len * 30, y = M.y + dx / len * 30 }
+		Q.z = groundZ(Q.x, Q.y, M.z)
+		local function seg(id, n0, n1, p0, p1, t0, t1)
+			local e = api.type.SegmentAndEntity.new()
+			e.entity = id
+			e.type = 0
+			local cc = e.comp
+			cc.node0 = n0; cc.node1 = n1
+			cc.tangent0 = vec(t0); cc.tangent1 = vec(t1)
+			cc.position0 = vec(p0); cc.position1 = vec(p1)
+			cc.type = 0; cc.typeIndex = -1
+			cc.roadTemplate = c.roadTemplate; cc.roadStyle = c.roadStyle; cc.roadType = c.roadType
+			cc.laneConfigs = c.laneConfigs
+			e.comp = cc
+			local se = e.streetEdge; se.precedenceNode0 = 2; se.precedenceNode1 = 2; e.streetEdge = se
+			local po = C.newOf("PlayerOwned"); po.player = api.engine.util.getPlayer(); e.playerOwned = po
+			return e
+		end
+		local function node(id, q)
+			local n = api.type.NodeAndEntity.new()
+			n.entity = id
+			local bn = n.comp; bn.position = vec(q); n.comp = bn
+			return n
+		end
+		local half = { x = (B.x - A.x) / 2, y = (B.y - A.y) / 2, z = (B.z - A.z) / 2 }
+		local side = { x = Q.x - M.x, y = Q.y - M.y, z = Q.z - M.z }
+		local P = api.engine.util.proposal.makeSegmentsRemoveProposal({ E })
+		local st = P.proposal
+		st.addedNodes = { node(-1, M), node(-2, Q) }
+		st.addedSegments = { seg(-3, c.node0, -1, A, M, half, half), seg(-4, -1, c.node1, M, B, half, half), seg(-5, -1, -2, M, Q, side, side) }
+		local maps = os.getenv("MPFEVER_SPLITMAPS") == "1"
+		if maps then
+			st.new2oldSegments = { [-3] = { E }, [-4] = { E } }
+			st.old2newSegments = { [E] = { -3, -4 } }
+		end
+		local ncr = {}
+		for _, n in ipairs({ c.node0, c.node1 }) do
+			local okn, nc = pcall(function() return api.engine.getComponent(n, api.type.ComponentType.BASE_NODE_CONFIG) end)
+			if okn and nc then ncr[#ncr + 1] = n end
+		end
+		if #ncr > 0 then st.nodeConfigsToRemove = ncr end
+		P.proposal = st
+		AUTO.points[#AUTO.points + 1] = M
+		log("DSPLITBUSY segment " .. E .. " (" .. tostring(c.roadTemplate) .. "), " .. #busy .. " busy segments, maps " .. tostring(maps)
+			.. ", removed nodes " .. #P.proposal.removedNodes)
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res, success)
+			local why = ""
+			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+			log("DSPLITBUSY build: " .. (success and "BUILT" or ("refused " .. why)))
+			AUTO.results[#AUTO.results + 1] = "busy split of " .. E .. ": " .. (success and "built" or ("refused " .. why))
+			G.waits[#G.waits + 1] = { at = G.frames + 90, fn = autoFinish }
+		end)
+	end)
+	if not ok then
+		log("DSPLITBUSY failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "dsplitbusy error " .. tostring(err)
+		autoFinish()
+	end
+end
+
+-- A node of two segments replaced by a node 2 m aside with a branch (as a tool joining a road to it does: the node and its two
+-- segments are replaced by reshaped ones), a native proposal held and shipped as a native build. MPFEVER_SPLITMAPS=1: with
+-- the tool's maps of which new node and segments replace the old ones
+H.dnodemove = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local ok, err = pcall(function()
+		local busy = {}
+		for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+			pcall(function()
+				local mp = api.engine.getComponent(v, api.type.ComponentType.MOVE_PATH)
+				busy[mp.path.edges[mp.dyn.pathPos.edgeIndex + 1].edgeId.entity] = true
+			end)
+		end
+		local deg, segs = {}, {}
+		for _, e in ipairs(R.allEdges()) do
+			local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+			if c then
+				for _, n in ipairs({ c.node0, c.node1 }) do
+					deg[n] = (deg[n] or 0) + 1
+					segs[n] = segs[n] or {}
+					segs[n][#segs[n] + 1] = e
+				end
+			end
+		end
+		local cands = {}
+		for n, d in pairs(deg) do
+			if d == 2 then
+				local s1, s2 = segs[n][1], segs[n][2]
+				local c1 = api.engine.getComponent(s1, api.type.ComponentType.BASE_EDGE)
+				local c2 = api.engine.getComponent(s2, api.type.ComponentType.BASE_EDGE)
+				if s1 ~= s2 and c1.type == 0 and c2.type == 0 and #c1.objects == 0 and #c2.objects == 0 and c1.roadTemplate == c2.roadTemplate
+					and api.engine.getComponent(s1, api.type.ComponentType.BASE_EDGE_STREET) and api.engine.getComponent(s2, api.type.ComponentType.BASE_EDGE_STREET) then
+					cands[#cands + 1] = { n = n, s1 = s1, s2 = s2, busy = (busy[s1] or busy[s2]) and 1 or 0 }
+				end
+			end
+		end
+		table.sort(cands, function(x, y) if x.busy ~= y.busy then return x.busy > y.busy end return x.n < y.n end)
+		if #cands == 0 then AUTO.results[#AUTO.results + 1] = "dnodemove: no node of two plain segments"; return autoFinish() end
+		local pick = cands[((C.ROLE == "host") and 0 or 1) % #cands + 1]
+		local N, S1, S2 = pick.n, pick.s1, pick.s2
+		local c1 = api.engine.getComponent(S1, api.type.ComponentType.BASE_EDGE)
+		local c2 = api.engine.getComponent(S2, api.type.ComponentType.BASE_EDGE)
+		local a = (c1.node0 == N) and c1.node1 or c1.node0
+		local b = (c2.node0 == N) and c2.node1 or c2.node0
+		local PA, PB, PN = nodePosition(a), nodePosition(b), nodePosition(N)
+		local dx, dy = PB.x - PA.x, PB.y - PA.y
+		local len = math.sqrt(dx * dx + dy * dy)
+		local ux, uy = -dy / len, dx / len
+		local N2 = { x = PN.x + ux * 2, y = PN.y + uy * 2, z = PN.z }
+		local Q = { x = PN.x + ux * 30, y = PN.y + uy * 30 }
+		Q.z = groundZ(Q.x, Q.y, PN.z)
+		local function d(p0, p1) return { x = p1.x - p0.x, y = p1.y - p0.y, z = p1.z - p0.z } end
+		local function seg(id, n0, n1, p0, p1, tmpl)
+			local e = api.type.SegmentAndEntity.new()
+			e.entity = id
+			e.type = 0
+			local cc = e.comp
+			cc.node0 = n0; cc.node1 = n1
+			cc.tangent0 = vec(d(p0, p1)); cc.tangent1 = vec(d(p0, p1))
+			cc.position0 = vec(p0); cc.position1 = vec(p1)
+			cc.type = 0; cc.typeIndex = -1
+			cc.roadTemplate = tmpl.roadTemplate; cc.roadStyle = tmpl.roadStyle; cc.roadType = tmpl.roadType
+			cc.laneConfigs = tmpl.laneConfigs
+			e.comp = cc
+			local se = e.streetEdge; se.precedenceNode0 = 2; se.precedenceNode1 = 2; e.streetEdge = se
+			local po = C.newOf("PlayerOwned"); po.player = api.engine.util.getPlayer(); e.playerOwned = po
+			return e
+		end
+		local function node(id, q)
+			local nn = api.type.NodeAndEntity.new()
+			nn.entity = id
+			local bn = nn.comp; bn.position = vec(q); nn.comp = bn
+			return nn
+		end
+		local P = api.engine.util.proposal.makeSegmentsRemoveProposal({ S1, S2 })
+		local st = P.proposal
+		st.addedNodes = { node(-1, N2), node(-2, Q) }
+		st.addedSegments = { seg(-3, a, -1, PA, N2, c1), seg(-4, -1, b, N2, PB, c2), seg(-5, -1, -2, N2, Q, c1) }
+		local maps = os.getenv("MPFEVER_SPLITMAPS") == "1"
+		if maps then
+			st.new2oldNodes = { [-1] = { N } }
+			st.old2newNodes = { [N] = { -1 } }
+			st.new2oldSegments = { [-3] = { S1 }, [-4] = { S2 } }
+			st.old2newSegments = { [S1] = { -3 }, [S2] = { -4 } }
+		end
+		local ncr = {}
+		for _, n in ipairs({ a, b }) do
+			local okn, nc = pcall(function() return api.engine.getComponent(n, api.type.ComponentType.BASE_NODE_CONFIG) end)
+			if okn and nc then ncr[#ncr + 1] = n end
+		end
+		if #ncr > 0 then st.nodeConfigsToRemove = ncr end
+		P.proposal = st
+		AUTO.points[#AUTO.points + 1] = PN
+		log("DNODEMOVE node " .. N .. " segments " .. S1 .. "," .. S2 .. " busy " .. pick.busy .. " (" .. tostring(c1.roadTemplate) .. "), maps " .. tostring(maps)
+			.. ", removed nodes " .. #P.proposal.removedNodes)
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res, success)
+			local why = ""
+			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+			log("DNODEMOVE build: " .. (success and "BUILT" or ("refused " .. why)))
+			AUTO.results[#AUTO.results + 1] = "node move " .. N .. ": " .. (success and "built" or ("refused " .. why))
+			G.waits[#G.waits + 1] = { at = G.frames + 90, fn = autoFinish }
+		end)
+	end)
+	if not ok then
+		log("DNODEMOVE failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "dnodemove error " .. tostring(err)
+		autoFinish()
+	end
+end
+
+-- A signal put on a track like the signal tool does (its segment replaced by a copy carrying the new signal, no street graph
+-- cleanup), held and shipped as a native build: the other games replay it
+H.dsignal = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local ok, err = pcall(function()
+		local list = {}
+		for _, e in ipairs(R.allEdges()) do
+			local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+			if c and c.type == 0 and #c.objects == 0 and not api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) then
+				local a, b = nodePosition(c.node0), nodePosition(c.node1)
+				if a and b and math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) > 40 then list[#list + 1] = e end
+			end
+		end
+		if #list == 0 then AUTO.results[#AUTO.results + 1] = "dsignal: no free track segment"; return autoFinish() end
+		local E = list[((C.ROLE == "host") and 7 or 23) % #list + 1]
+		local c = api.engine.getComponent(E, api.type.ComponentType.BASE_EDGE)
+		local sp = api.type.SimpleProposal.new()
+		local ssp = sp.streetProposal
+		local e = api.type.SegmentAndEntity.new()
+		e.entity = -1
+		e.type = 1
+		local cc = e.comp
+		cc.node0 = c.node0; cc.node1 = c.node1
+		cc.tangent0 = vec(c.tangent0); cc.tangent1 = vec(c.tangent1)
+		cc.position0 = vec(nodePosition(c.node0)); cc.position1 = vec(nodePosition(c.node1))
+		cc.type = c.type; cc.typeIndex = c.typeIndex
+		pcall(function() if c.distance ~= 0 then cc.distance = c.distance end end)
+		cc.roadTemplate = c.roadTemplate; cc.roadStyle = c.roadStyle; cc.roadType = c.roadType
+		cc.laneConfigs = c.laneConfigs
+		cc.objects = { { -400000000, 2 } }
+		e.comp = cc
+		local se = e.streetEdge; se.precedenceNode0 = 2; se.precedenceNode1 = 2; e.streetEdge = se
+		local po = C.newOf("PlayerOwned"); po.player = api.engine.util.getPlayer(); e.playerOwned = po
+		local eo = api.type.SimpleStreetProposal.EdgeObject.new()
+		eo.edgeEntity = -1
+		eo.param = 0.5
+		eo.oneWay = false
+		eo.left = true
+		eo.model = "infrastructure/signal/signal_path_a.con"
+		eo.playerEntity = api.engine.util.getPlayer()
+		eo.name = "MPF signal"
+		ssp.edgesToRemove = { E }
+		ssp.edgesToAdd = { e }
+		ssp.edgeObjectsToAdd = { eo }
+		sp.streetProposal = ssp
+		local ctx = api.type.Context.new()
+		ctx.checkTerrainAlignment = false
+		ctx.cleanupStreetGraph = false
+		ctx.gatherBuildings = false
+		ctx.gatherFields = true
+		ctx.player = api.engine.util.getPlayer()
+		local p0 = nodePosition(c.node0)
+		AUTO.points[#AUTO.points + 1] = p0
+		log("DSIGNAL on track segment " .. E .. " (" .. tostring(c.roadTemplate) .. ")")
+		local cmd = api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true)
+		-- MPFEVER_SPLITMAPS=1: the command's own native proposal (the engine's conversion), with the map of the replaced segment
+		-- added, as the signal tool's build has it
+		if os.getenv("MPFEVER_SPLITMAPS") == "1" then
+			local okc, P = pcall(function() return cmd.proposal end)
+			log("DSIGNAL command's proposal: " .. tostring(okc) .. " " .. tostring(P):sub(1, 60))
+			if okc and P then
+				local okm, em = pcall(function()
+					local st = P.proposal
+					local newId = st.addedSegments[1].entity
+					log("DSIGNAL converted: +segments " .. #st.addedSegments .. " (" .. tostring(newId) .. ") -segments " .. #st.removedSegments
+						.. " objects " .. #st.edgeObjectsToAdd .. " maps " .. C.mapSizes({ proposal = { new2oldSegments = C.marshalMap(st.new2oldSegments), old2newSegments = C.marshalMap(st.old2newSegments) } }))
+					st.new2oldSegments = { [newId] = { E } }
+					st.old2newSegments = { [E] = { newId } }
+					P.proposal = st
+					cmd = api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true)
+				end)
+				log("DSIGNAL maps added: " .. (okm and "yes" or shortErr(em)))
+			end
+		end
+		deferredSend(cmd, function(res, success)
+			local why = ""
+			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+			log("DSIGNAL build: " .. (success and "BUILT" or ("refused " .. why)))
+			AUTO.results[#AUTO.results + 1] = "signal on segment " .. E .. ": " .. (success and "built" or ("refused " .. why))
+			G.waits[#G.waits + 1] = { at = G.frames + 90, fn = autoFinish }
+		end)
+	end)
+	if not ok then
+		log("DSIGNAL failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "dsignal error " .. tostring(err)
 		autoFinish()
 	end
 end

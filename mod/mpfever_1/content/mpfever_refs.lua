@@ -327,6 +327,19 @@ local function resolveEdge(r)
 	return nil
 end
 
+-- (diagnostic) the ids this game gave to the segments and nodes at these places: {{p0, p1}...}, {p...} -> two id lists
+function R.idsAt(segs, nodes)
+	local outer = R.pass
+	R.pass = {}
+	local si, ni = {}, {}
+	local ok = pcall(function()
+		for i, sg in ipairs(segs or {}) do si[i] = resolveEdge({ id = -1, p0 = sg[1], p1 = sg[2] }) or -1 end
+		for i, p in ipairs(nodes or {}) do ni[i] = resolveNode({ id = -1, p = p }) or -1 end
+	end)
+	R.pass = outer
+	return si, ni, ok
+end
+
 resolve = function(r, bind)
 	if type(r) ~= "table" then return r end
 	if r.key and bind and bind[r.key] then return bind[r.key] end

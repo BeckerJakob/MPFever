@@ -366,7 +366,7 @@ C.CTOR = {
 local SCHEMA = {
 	NodeAndEntity = { comp = "BaseNode" },
 	BaseNode = { position = "Vec3f" },
-	SegmentAndEntity = { comp = "BaseEdge", streetEdge = "BaseEdgeStreet", playerOwned = "PlayerOwned", emissionEmitter = false },
+	SegmentAndEntity = { comp = "BaseEdge", streetEdge = "BaseEdgeStreet", playerOwned = "PlayerOwned", emissionEmitter = false, params = false },
 	BaseEdge = { position0 = "Vec3f", position1 = "Vec3f", tangent0 = "Vec3f", tangent1 = "Vec3f", laneConfigs = false, laneConfigs_native = false, laneConfig = false, distance = false },
 	TransportVehicleConfig = { vehicles = { list = "TransportVehiclePart" } },
 	TransportVehiclePart = { part = "VehiclePart" },
@@ -1147,23 +1147,24 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 		end
 		conList[1] = ce
 		P.toAdd = conList
-		-- an edited construction (a module added to a street station): the old one is replaced, and old2new keeps its
-		-- stations (the lines stopping there keep their stops). Without them the new one collided with the old (issue #14).
-		local removeList = entityList(m.toRemove or m.constructionsToRemove)
-		if #removeList > 0 and os.getenv("MPFEVER_CONREMOVE") ~= "0" then
-			local okr, er = pcall(function() P.toRemove = removeList end)
-			if not okr then C.errors[#C.errors + 1] = "toRemove: " .. tostring(er):sub(1, 100) end
-			if type(m.old2newByRank) == "table" then
-				local okm, em = pcall(function()
-					local map = {}
-					for i, e in ipairs(removeList) do
-						local v = m.old2newByRank[i] or m.old2newByRank[tostring(i)]
-						if v ~= nil then map[e] = v end
-					end
-					P.old2new = map
-				end)
-				if not okm then C.errors[#C.errors + 1] = "old2new: " .. tostring(em):sub(1, 100) end
-			end
+	end
+	-- an edited construction (a module added to a street station): the old one is replaced, and old2new keeps its
+	-- stations (the lines stopping there keep their stops). Without them the new one collided with the old (issue #14).
+	-- (without a construction: the town buildings the street build takes away)
+	local removeList = entityList(m.toRemove or m.constructionsToRemove)
+	if #removeList > 0 and os.getenv("MPFEVER_CONREMOVE") ~= "0" then
+		local okr, er = pcall(function() P.toRemove = removeList end)
+		if not okr then C.errors[#C.errors + 1] = "toRemove: " .. tostring(er):sub(1, 100) end
+		if conv and type(m.old2newByRank) == "table" then
+			local okm, em = pcall(function()
+				local map = {}
+				for i, e in ipairs(removeList) do
+					local v = m.old2newByRank[i] or m.old2newByRank[tostring(i)]
+					if v ~= nil then map[e] = v end
+				end
+				P.old2new = map
+			end)
+			if not okm then C.errors[#C.errors + 1] = "old2new: " .. tostring(em):sub(1, 100) end
 		end
 	end
 	local sp = P.proposal
@@ -1286,6 +1287,30 @@ function C.marshalMap(v)
 	return ok and r or nil
 end
 
+-- whether a street part says which new segments or nodes replace which old ones (maps as shipped: __pairs, or plain)
+function C.hasReplaceMaps(st)
+	if type(st) ~= "table" then return false end
+	for _, k in ipairs({ "new2oldSegments", "old2newSegments", "new2oldNodes", "old2newNodes" }) do
+		local t = st[k]
+		if type(t) == "table" and next(t.__pairs or t) ~= nil then return true end
+	end
+	return false
+end
+
+-- for the logs: how many entries the replacement maps of a compact proposal have (", maps segments 2/2 nodes 1/1")
+function C.mapSizes(m)
+	local st = type(m) == "table" and m.proposal
+	if type(st) ~= "table" then return "" end
+	local function n(t)
+		local c = 0
+		if type(t) == "table" then for _ in pairs(t.__pairs or t) do c = c + 1 end end
+		return c
+	end
+	local a, b, c, d, e, f = n(st.new2oldSegments), n(st.old2newSegments), n(st.new2oldNodes), n(st.old2newNodes), n(st.new2oldEdgeObjects), n(st.old2newEdgeObjects)
+	if a + b + c + d + e + f == 0 then return "" end
+	return ", maps segments " .. a .. "/" .. b .. " nodes " .. c .. "/" .. d .. " objects " .. e .. "/" .. f
+end
+
 -- compact, serializable form of a native Proposal (from the construction tools): only what a replay needs
 function C.compactProposal(p)
 	local function get(o, k)
@@ -1340,6 +1365,13 @@ function C.compactProposal(p)
 			nodeConfigsToRemove = C.marshal(get(st, "nodeConfigsToRemove")) or {},
 			frozenNodes = C.marshal(get(st, "frozenNodes")),
 		}
+		-- which new segments and nodes replace which old ones (a track joined to an existing one, a signal put on a segment):
+		-- the engine charges nothing for a replaced part and carries over what was on it. Rebuilt without them, every game
+		-- paid for the replaced parts and the simulation drifted apart
+		for _, k in ipairs({ "new2oldSegments", "old2newSegments", "new2oldNodes", "old2newNodes", "new2oldEdgeObjects", "old2newEdgeObjects" }) do
+			local mm = C.marshalMap(get(st, k))
+			if mm and next(mm) ~= nil then out.proposal[k] = mm end
+		end
 	end
 	return out
 end

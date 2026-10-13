@@ -32,6 +32,12 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 - **Joining and reconnecting.** Joining a session already running works. A lost connection reconnects by itself for 5 minutes.
 - **In the game's 13 languages.** The launcher and the in-game windows follow the language of Transport Fever 3.
 
+## What's new in 0.3.9
+
+- **Fewer reloads while building railways:** a track that joins another one, reshapes a curve or moves a junction is now rebuilt on the other games exactly as the builder's game built it. Before, the other games paid for it differently and drifted apart a few minutes later.
+- **Street upgrades in towns:** when the game moves town buildings for a wider street, the other games now move the same buildings. Before, they ended up with fewer town buildings and the towns drifted apart.
+- **Joining and reconnecting** (PR #33 by SlikerDev): clearer connection errors on a PC without IPv6 (#31), and a player always loads the host's game it receives, also after the host restarted MPFever (#29).
+
 ## What's new in 0.3.8
 
 A lobby, and fixes from the GitHub issues (thanks to Zippo1578 and Steelworm):
@@ -153,7 +159,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Experimental (0.3.8). Supported game builds:
+Experimental (0.3.9). Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.

@@ -1,6 +1,32 @@
 MPFever - Changelog
 ===================
 
+0.3.9-experimental - track builds replayed with the tool's replacement maps, street upgrades in towns, PR #33
+  - FIX (desync): a track or road build that joins an existing one, reshapes a curve or moves a junction node made the
+    simulation drift apart a few minutes later (the reloads of our tests while building railways and adding trains). The
+    builder's tool tells the engine which new segments and nodes replace which old ones; the engine then charges nothing
+    for the replaced parts and keeps what was on them. The other games rebuilt the build without that information: they
+    paid for the replaced parts again (the money differed after every such build) and the engine handled them as new
+    ones, so every game numbered its next entities (vehicles, people...) differently, and the towns and the vehicles
+    drifted apart. The capture now ships these maps, and a build that has them is replayed as a native proposal that
+    carries them, with the tool's own build settings. Reproduced and checked with an autotest that moves a junction
+    node: without the maps the costs and the entity numbering differed at once and the games desynced; with them the
+    costs, the entity numbering and the state are identical.
+  - FIX (desync): a street upgraded in a town, where the game moves town buildings for the wider street, left the other
+    games with two town buildings fewer, and the towns drifted apart. The moved buildings were rebuilt as plain
+    constructions, which are no town buildings (and the map of which old building each new one replaces is numbered from
+    0 in the native proposal, from 1 in the script one). Such a build is now sent without the buildings: every game's
+    engine takes the same buildings away and puts the same ones back (the game's random numbers are the same on every
+    game). Checked with the upgrade autotest on a town street with 7 buildings: identical costs, ids and state.
+  - MERGED PR #33 (SlikerDev): the IPv6 note of a failed connection comes after the other errors (#31); every host game
+    a player receives gets a number of its own, also when the game is already running, and the parts of a host game half
+    received are cleared when the connection drops (#29).
+  - DIAGNOSTICS: every game logs the entity ids it gives to the segments and nodes of each build ("build ids t=..."):
+    the same build must give the same ids on every game. The capture logs the replacement maps it ships ("maps ...").
+  - TESTS: new autotest scenarios that build like the native tools (held and shipped as native builds): dsplit (a road
+    cutting a segment), dsplitbusy (the same on a segment a vehicle is on), dnodemove (a junction node moved, with
+    MPFEVER_SPLITMAPS=1 the tool's maps), dsignal (a signal on a track). Line waypoints checked on a train line (#27).
+
 0.3.8-experimental - lobby, speed buttons, large station edits, double slip switches, line waypoints
   - NEW: lobby in the main menu. "Open the lobby" opens the host's session without loading the game: the players join it
     and see who is there, then the host clicks "Start the game", every player receives the host's savegame and every
