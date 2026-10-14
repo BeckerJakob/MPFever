@@ -25,6 +25,9 @@ local U = {
 	stats = { held = 0, speed = 0, failed = 0, untracked = 0, answered = 0 },
 }
 
+-- notifications kept across reloads (see N.record and N.tick, before tick)
+local N = {}
+
 local function sendLine(kind, payload)
 	if not C.appendFile(C.DIR .. C.BS .. "ui.log", C.line(kind, payload)) then log("cannot write ui.log") end
 end
@@ -75,6 +78,7 @@ local function install()
 		if tag.name == "makeScriptingSendEventCmd" and tag.args[2] == "Notifications" then
 			U.notifLogged = (U.notifLogged or 0) + 1
 			if U.notifLogged <= 40 then log("local notification event " .. tostring(tag.args[1]) .. "/" .. tostring(tag.args[3]) .. " " .. C.ser(C.marshal(tag.args[4])):sub(1, 200)) end
+			pcall(N.record, tag.args[3], tag.args[4])
 			if os.getenv("MPFEVER_NONOTIF") then return end
 			return O.sendCommand(cmd, cb, progress)
 		end
@@ -1346,6 +1350,9 @@ local function pollControl()
 				-- the game script bridge may handle it first (it runs every frame, even paused): wait for its claim
 				U.resyncQueue = U.resyncQueue or {}
 				U.resyncQueue[#U.resyncQueue + 1] = { kind = kind, p = C.deser(payload) or {}, t = os.clock() }
+			elseif kind == "notiftest" then
+				local okt, errt = pcall(N.test, C.deser(payload) or {})
+				if not okt then log("NOTIFTEST failed: " .. tostring(errt)) end
 			end
 		end
 		U.ctlOff = U.ctlOff + consumed
@@ -1367,6 +1374,268 @@ local function pollControl()
 		end
 	end
 	U.resyncQueue = keep
+end
+
+-- ---------------------------------------------------------------- notifications kept across reloads
+-- At every resynchronisation each game loads the host's savegame, and with it the host's notification list (the game script
+-- notifications.gs): the notifications this player dismissed since the last load come back, again and again. Dismissing is a
+-- local event (see the hook: each game's own interface), so this player's choices are kept here instead, in the session
+-- folder (notif_dismissed.txt, never in a savegame nor in a message), and made again after every load with the same local
+-- event a right-click sends. A notification is known by its content, not by its id (each game numbers its own entries):
+-- a one-shot one (a new industry, a town's wish...) also by its time, within two game minutes (the host's copy of an entry the
+-- interface created has the host's time), a persistent one (warnings, contract cards) by what it stands for, without time.
+-- The filter of the notification log (updateIgnoredTypes) is kept the same way. notifications.gs is not among the parts the
+-- games compare, and nothing in the simulation reads it: none of this can make the games differ.
+-- Also logged, to find why a client sometimes misses an "Industry Founded" notification (made by each game's own interface,
+-- not by the simulation): every new notification (type, time, whether it came in dismissed) and every new industry.
+N.file = "notif_dismissed.txt"
+N.TOLERANCE = 120000                -- (game time units: two game minutes)
+N.done, N.seen, N.ind = {}, {}, nil   -- this load: ids dismissed again or by the player, ids looked at, industries known
+
+-- the notification game script's state, as the game's own windows read it
+function N.native()
+	if N.util == nil then
+		local okU, nu = pcall(ug_require, "/game_mechanics/notifications/notification_util.tl")
+		N.util = (okU and type(nu) == "table") and nu or false
+	end
+	if not N.util then return nil end
+	local okS, native = pcall(N.util.externalGetNotificationsStateNative)
+	if okS then return native end
+	return nil
+end
+
+function N.entry(native, id)
+	local okE, e = pcall(N.util.getNotificationEntryFromNative, native, id)
+	if okE and type(e) == "table" then return e end
+	return nil
+end
+
+-- the same text for the same content on every game: keys sorted, an entity with its revision as the game compares it
+-- (entityChanged0: the first number only), numbers without float noise, control characters escaped
+function N.canon(v, depth)
+	local t = type(v)
+	if t == "number" then
+		if v == math.floor(v) and math.abs(v) < 1e15 then return string.format("%d", v) end
+		return string.format("%.6g", v)
+	elseif t == "string" then
+		return '"' .. v:gsub('[%c"\\]', function(c) return string.format("\\%03d", c:byte()) end) .. '"'
+	elseif t == "boolean" then
+		return tostring(v)
+	elseif t == "table" then
+		if (depth or 0) > 8 then return "{...}" end
+		if v.entity ~= nil and type(v.revision) == "table" and type(v.revision.num) == "table" then
+			return "E" .. N.canon(v.entity) .. "@" .. N.canon(v.revision.num[1])
+		end
+		local ks = {}
+		for k in pairs(v) do ks[#ks + 1] = k end
+		table.sort(ks, function(a, b) return tostring(a) < tostring(b) end)
+		local parts = {}
+		for _, k in ipairs(ks) do parts[#parts + 1] = tostring(k) .. "=" .. N.canon(v[k], (depth or 0) + 1) end
+		return "{" .. table.concat(parts, ",") .. "}"
+	end
+	return t
+end
+
+-- key of an entry, and whether it is a one-shot one (matched with its time)
+function N.key(entry)
+	local n = entry and entry.notification
+	if type(n) ~= "table" or type(n.type) ~= "string" then return nil end
+	local body = n.type .. "|" .. N.canon(n.params)
+	if type(entry.persisting) == "table" and next(entry.persisting) ~= nil then return "P|" .. N.canon(entry.persisting) .. "|" .. body, false end
+	return "O|" .. body, true
+end
+
+-- what this player chose in this session (read once per load)
+function N.load()
+	if N.keys then return end
+	N.keys = {}
+	local f = C.IO.open(C.DIR .. C.BS .. N.file, "rb")
+	if not f then return end
+	local txt = f:read("*a") or ""
+	f:close()
+	for line in txt:gmatch("[^" .. C.NL .. "]+") do
+		local op, a, b = line:match("^(.)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "?(.*)$")
+		if op == "+" then
+			N.keys[a] = N.keys[a] or {}
+			table.insert(N.keys[a], tonumber(b) or 0)
+		elseif op == "-" then
+			N.keys[a] = nil
+		elseif op == "F" then
+			N.filter = a
+		end
+	end
+end
+
+-- this player dismissed or brought back a notification, or changed the log's filter (the hook's local events; read before
+-- the event changes the entry)
+function N.record(ev, p)
+	if ev ~= "dismiss" and ev ~= "enlist" and ev ~= "updateIgnoredTypes" then return end
+	N.load()
+	if ev == "updateIgnoredTypes" then
+		local okS, s = pcall(function() return C.ser(C.marshal(p)) end)
+		if okS and type(s) == "string" and not s:find("[" .. C.NL .. C.TAB .. "]") then
+			N.filter = s
+			C.appendFile(C.DIR .. C.BS .. N.file, "F" .. C.TAB .. s .. C.NL)
+			log("notifications: the log's filter kept for the next loads")
+		end
+		return
+	end
+	local id = type(p) == "table" and tonumber(p.id) or nil
+	local native = id and N.native()
+	local entry = native and N.entry(native, id)
+	local key, oneShot = N.key(entry)
+	if not key then return end
+	if ev == "dismiss" then
+		local t0 = oneShot and (tonumber(entry.timestamp) or 0) or 0
+		N.keys[key] = N.keys[key] or {}
+		table.insert(N.keys[key], t0)
+		C.appendFile(C.DIR .. C.BS .. N.file, "+" .. C.TAB .. key .. C.TAB .. t0 .. C.NL)
+	else
+		N.keys[key] = nil
+		C.appendFile(C.DIR .. C.BS .. N.file, "-" .. C.TAB .. key .. C.NL)
+	end
+	N.done[id] = true
+	log("notifications: " .. ev .. " of " .. id .. " kept for the next loads (" .. key:sub(1, 160) .. ")")
+end
+
+-- is this entry one this player dismissed?
+function N.dismissedBefore(entry)
+	local key, oneShot = N.key(entry)
+	local list = key and N.keys[key]
+	if not list then return false end
+	if not oneShot then return true end
+	local t = tonumber(entry.timestamp) or 0
+	for _, t0 in ipairs(list) do
+		if math.abs(t - t0) <= N.TOLERANCE then return true end
+	end
+	return false
+end
+
+-- periodic (tick): after a load, dismiss again what this player had dismissed and set the log's filter again; log new
+-- notifications and new industries (the first look after a load only counts them)
+function N.tick()
+	local now = os.clock()
+	if N.primed and N.at and now - N.at < 1 then return end
+	N.at = now
+	N.load()
+	local native = N.native()
+	if not native then return end
+	local okH, history = pcall(N.util.getHistoryFromNative, native)
+	if not okH or type(history) ~= "table" then return end
+	local orig = C.origCmds()
+	if not (orig.sendCommand and orig.event) then return end
+	if N.filter and not N.filterDone then
+		N.filterDone = true
+		local f = C.deser(N.filter)
+		if type(f) == "table" then
+			pcall(orig.sendCommand, orig.event("", "Notifications", "updateIgnoredTypes", f))
+			log("notifications: the log's filter set again after the load")
+		end
+	end
+	local again, fresh = 0, 0
+	for _, id in ipairs(history) do
+		if not N.seen[id] then
+			local entry = N.entry(native, id)
+			if entry then
+				N.seen[id] = true
+				fresh = fresh + 1
+				if N.primed and (N.logs or 0) < 300 then
+					N.logs = (N.logs or 0) + 1
+					local n = entry.notification or {}
+					log("notification new " .. id .. ": " .. tostring(n.type) .. " t=" .. tostring(entry.timestamp)
+						.. (entry.dismissed and " (came in dismissed: filtered)" or "") .. " " .. N.canon(n.params):sub(1, 160))
+				end
+				if not entry.dismissed and not N.done[id] and N.dismissedBefore(entry) then
+					N.done[id] = true
+					pcall(orig.sendCommand, orig.event("", "Notifications", "dismiss", { id = id }))
+					again = again + 1
+				end
+			end
+		end
+	end
+	if not N.primed then
+		N.primed = true
+		log("notifications: " .. fresh .. " in the list after the load")
+	end
+	if again > 0 then log("notifications: " .. again .. " dismissed again as this player had dismissed them before the load") end
+	-- new industries, every 5 s (the game's interface scans them every 5 s of game time for "Industry Founded")
+	if N.indAt == nil or now - N.indAt >= 5 then
+		N.indAt = now
+		local list = {}
+		pcall(function() api.engine.forEachEntityWithComponent(function(e) list[#list + 1] = e end, api.type.ComponentType.INDUSTRY) end)
+		local first = N.ind == nil
+		N.ind = N.ind or {}
+		local t = nil
+		pcall(function() t = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME).gameTime end)
+		for _, e in ipairs(list) do
+			if not N.ind[e] then
+				N.ind[e] = true
+				if not first and (N.logs or 0) < 300 then
+					N.logs = (N.logs or 0) + 1
+					local con, built = nil, nil
+					pcall(function()
+						con = api.engine.getComponent(e, api.type.ComponentType.INDUSTRY).construction
+						built = api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION).timeBuilt
+					end)
+					log("new industry " .. e .. ": construction " .. tostring(con) .. ", built at t=" .. tostring(built) .. ", seen at t=" .. tostring(t))
+				end
+			end
+		end
+		if first then log("industries: " .. #list .. " after the load") end
+	end
+end
+
+-- autotest (MPFEVER_SCENARIO=notiftest,resync,notiftest,resync,notiftest): 1st message, host: three "Industry Founded"
+-- notifications (local, as the interface makes them); 2nd, client (it has them from the host's savegame): dismissed the way
+-- a right-click does; 3rd, both: how many of them are dismissed (client: all, again after the load; host: none)
+function N.test(p)
+	if type(p) ~= "table" or p.role ~= C.ROLE then return end
+	local f = C.IO.open(C.DIR .. C.BS .. "notiftest_step.txt", "rb")
+	local step = 1
+	if f then step = (tonumber(f:read("*a")) or 0) + 1; f:close() end
+	local fw = C.IO.open(C.DIR .. C.BS .. "notiftest_step.txt", "wb")
+	if fw then fw:write(tostring(step)); fw:close() end
+	local native = N.native()
+	local orig = C.origCmds()
+	local function tests()
+		local list = {}
+		local okH, history = pcall(N.util.getHistoryFromNative, native)
+		for _, id in ipairs(okH and history or {}) do
+			local e = N.entry(native, id)
+			if e and type(e.notification) == "table" and type(e.notification.params) == "table" and e.notification.params.mpfTest then list[#list + 1] = { id = id, e = e } end
+		end
+		return list
+	end
+	if not native then log("NOTIFTEST step " .. step .. ": no notification state") return end
+	if step == 1 and C.ROLE == "host" then
+		local okE, eu = pcall(ug_require, "/scripts/entity_util.tl")
+		local inds = {}
+		pcall(function() api.engine.forEachEntityWithComponent(function(e) inds[#inds + 1] = e end, api.type.ComponentType.INDUSTRY) end)
+		local made = 0
+		for i = 1, math.min(3, #inds) do
+			local er = okE and eu.makeEntityAndRevision(inds[i]) or nil
+			if er then
+				pcall(orig.sendCommand, orig.event("", "Notifications", "add", { type = "game_mechanics/notifications/types/industry_spawn.script",
+					params = { entity = er, mpfTest = 1 }, autoDismissDuration = 3600000 }))
+				made = made + 1
+			end
+		end
+		log("NOTIFTEST step 1 (host): " .. made .. " test notifications added")
+	elseif step == 2 and C.ROLE == "client" then
+		local list = tests()
+		for _, t in ipairs(list) do
+			if not t.e.dismissed then
+				-- (through the hooked function, as the notification window's right-click)
+				api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd("", "Notifications", "dismiss", { id = t.id }))
+			end
+		end
+		log("NOTIFTEST step 2 (client): " .. #list .. " test notifications dismissed")
+	else
+		local list = tests()
+		local d = 0
+		for _, t in ipairs(list) do if t.e.dismissed then d = d + 1 end end
+		log("NOTIFTEST step " .. step .. " (" .. C.ROLE .. "): " .. #list .. " test notifications, " .. d .. " dismissed")
+	end
 end
 
 local function tick(pendingState)
@@ -1437,6 +1706,8 @@ local function tick(pendingState)
 		end
 	end
 	pcall(pollLoanView)
+	local okn, errn = pcall(N.tick)
+	if not okn and not N.failed then N.failed = true; log("notifications: " .. tostring(errn)) end
 	pcall(pollStatus)
 	local okch, errch = pcall(pollChat)
 	if not okch then log("chat poll failed: " .. tostring(errch)) end
