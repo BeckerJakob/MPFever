@@ -809,12 +809,19 @@ local function simApplyDue(state)
 		table.sort(q, before)
 		-- the due actions leave the queue before any of them runs: a state saved while one runs (or an event handled
 		-- meanwhile) never holds them again (a player's purchase was once applied three times on the host)
+		-- (one vehicle purchase per game step, not per call: this function also runs while the game time stands still, at a
+		-- held build, at the barrier or behind a terrain tool, and a game standing still then created several vehicles at one
+		-- step that a running game created one step apart: other ids, the games drifted apart, issue #35. The step of the last
+		-- purchase is part of the state saved with the game, so every game applies the same rule after a reload)
 		local due, keep, bought = {}, {}, false
+		local oldRule = os.getenv("MPFEVER_OLDBUY") == "1"   -- (tests: the rule of 0.3.9 and before, one purchase per call)
 		for _, a in ipairs(q) do
-			if a.at <= now and not (a.fn == "makeVehicleBuyCmd" and bought) then
-				if a.fn == "makeVehicleBuyCmd" then bought = true end
+			local buy = a.fn == "makeVehicleBuyCmd"
+			if a.at <= now and not (buy and (bought or (not oldRule and st.buyAt and st.buyAt >= now))) then
+				if buy then st.buyAt = now; bought = true end
 				due[#due + 1] = a
 			else
+				if buy and a.at <= now then a.spread = true end
 				keep[#keep + 1] = a
 			end
 		end
@@ -847,7 +854,10 @@ local function simApplyDue(state)
 					st.results[#st.results + 1] = { tok = a.tok, id = a.id, uid = a.uid, fn = a.fn, success = true, at = now }
 					while #st.results > 40 do table.remove(st.results, 1) end
 				else
-					if a.at < now then
+					if a.at < now and a.spread then
+						-- (a purchase that waited for the one before it: the same step on every game, not a late action, #34)
+						log("action " .. tostring(a.uid) .. " for t=" .. a.at .. " applied at " .. now .. ": one purchase per step")
+					elseif a.at < now then
 						log("LATE action " .. tostring(a.uid) .. " for t=" .. a.at .. " applied at " .. now .. " (" .. ((now - a.at) / STEP) .. " step(s) late)")
 						st.late = (st.late or 0) + 1
 					end
@@ -886,7 +896,8 @@ local function simApplyDue(state)
 		local keepW = {}
 		for _, r in ipairs(st.watches) do
 			local w = r.watch
-			w.steps = w.steps + 1
+			-- (steps of game time: this runs while the game stands still too, #35)
+			if w.lastT ~= now then w.steps = w.steps + 1; w.lastT = now end
 			local seen = {}
 			for _, e in ipairs(w.before) do seen[e] = true end
 			local created = nil
@@ -1748,6 +1759,7 @@ end
 
 local O = {}
 local G = {
+	oldHolds = os.getenv("MPFEVER_OLDHOLDS") == "1",   -- (tests: the stop logic of 0.3.9 and before, issue #34)
 	inOff = 0, uiOff = 0, frames = 0, started = false, me = C.NAME, connected = false,
 	session = { speed = 0, pauseAt = nil, started = false },
 	peers = {},                -- other players' clocks (barrier)
@@ -1899,21 +1911,28 @@ local function pacing()
 	local catchUp = s.pauseAt ~= nil and G.holdAt ~= nil and G.holdAt > s.pauseAt and now < G.holdAt
 	if catchUp then stopAt = G.holdAt
 	elseif G.holdAt and (stopAt == nil or G.holdAt < stopAt) then stopAt = G.holdAt end
-	local barrier = nil
+	local barrier, exactBarrier = nil, nil
 	local mine = leadLevel()
 	for _, pc in pairs(G.peers) do
 		-- window (see G.ahead): a game that overshoots this limit by its reserve is still before the time stamped on
 		-- the peer's next action
 		local limit = pc.t + (G.window or 3) * STEP
+		-- exact steps never overshoot: they may go up to the step before the peer's next action could be stamped (its stamp
+		-- distance past its clock), one round less towards a build's time (issue #34)
+		local exact = pc.t + math.max(G.window or 3, (tonumber(pc.ah) or 0) - 1) * STEP
 		local theirs = pc.tl or 0
 		if s.pauseAt == nil and theirs > mine then
 			-- that player has a terrain tool in hand: stay behind it, overshoot included, with room to stop before its edits
 			limit = pc.t - terrainLeadSteps() * STEP
+			exact = limit
 		elseif s.pauseAt == nil and mine > theirs then
 			-- this game leads: the others keep that distance behind it
 			limit = pc.t + ((G.window or 3) + terrainLeadSteps()) * STEP
+			exact = limit
 		end
+		if G.oldHolds then exact = limit end
 		if barrier == nil or limit < barrier then barrier = limit end
+		if exactBarrier == nil or exact < exactBarrier then exactBarrier = exact end
 	end
 	if barrier and (stopAt == nil or barrier < stopAt) then stopAt = barrier end
 	G.lastBarrier = barrier
@@ -1939,6 +1958,14 @@ local function pacing()
 		-- towards the barrier when an action waits just past it, which the overshoot would reach)
 		local zone = (overshootReserve() + 1) * STEP
 		local holdNear = G.holdAt ~= nil and G.holdAt - now <= zone
+		if O.steps and holdNear and stopAt == barrier and exactBarrier and exactBarrier > barrier then
+			-- towards a hold by exact steps: as far as the peers' stamp distances allow
+			local target = math.min(G.holdAt, exactBarrier)
+			if s.pauseAt ~= nil and not catchUp then target = math.min(target, s.pauseAt) end
+			if now >= target then return slowed(0) end
+			G.wantSteps = math.floor((target - now) / STEP)
+			return slowed(0)
+		end
 		if O.steps and (stopAt ~= barrier or holdNear) and stopAt - now <= zone then
 			G.wantSteps = math.floor((stopAt - now) / STEP)
 			return slowed(0)
@@ -3176,6 +3203,9 @@ local function nativeHoldAt()
 	local early = overshootReserve() + 1
 	local stopped = G.simStill()
 	local function approach(at)
+		-- (with exact steps, pacing already stops the game that far before a stop point and steps exactly from there: aimed
+		-- at that early point as well, the two margins added up and the game stopped at the click, issue #34)
+		if O.steps and not G.oldHolds then return at end
 		local e = at - early * STEP
 		if now < e or not stopped then return e end   -- (inside the margin while still running: stop where it is)
 		return at
@@ -3290,7 +3320,7 @@ local function deferredSend(cmd, cb)
 	local at = stampFor(now) + STEP
 	G.natRelease[#G.natRelease + 1] = { id = id, at = at, fn = function() O.sendCommand(cmd, cb) end }
 	markPending(id, { x = 0, y = 0 })
-	log("pending mark drawn for autotest build " .. id)
+	log("autotest build " .. id .. " held, released at t=" .. at .. " (now " .. now .. ") [frame " .. G.frames .. "]")
 	send("nat_pending", { origin = G.me, at = at, id = id })
 end
 
@@ -3995,8 +4025,13 @@ local function runPausedActions()
 	if gameSpeed() ~= 0 then return end
 	local keep = {}
 	table.sort(G.pendingPaused, before)
+	-- An action that creates something (a vehicle, a line) is known to the later actions only once the engine has answered,
+	-- a frame later: until then the actions after it wait, in their order. A vehicle bought and assigned to a line at once in a
+	-- pause had its assignment skipped on the other games, which then all reloaded (issue #36). (At most 600 frames.)
+	local creating = G.pausedCreating ~= nil and G.frames - G.pausedCreating.frame < 600
+	if not creating then G.pausedCreating = nil end
 	for _, a in ipairs(G.pendingPaused) do
-		if a.at <= now then
+		if a.at <= now and not creating then
 			if a.at < now then log("paused action " .. tostring(a.uid) .. " for t=" .. tostring(a.at) .. " applied at " .. now .. " (desync risk)") end
 			if a.kind == "hash" then
 				local okA, auth = pcall(authValues, G.co)
@@ -4011,7 +4046,13 @@ local function runPausedActions()
 					toSim("replaying", { sig = okg and sig or nil })
 				end
 				-- paused: the engine answers in a callback, a frame later; the result is reported then
+				local creates = (a.fn == "makeVehicleBuyCmd" or a.fn == "makeLineCreateCmd") and os.getenv("MPFEVER_OLDPAUSED") ~= "1"
+				if creates then
+					G.pausedCreating = { uid = a.uid, frame = G.frames }
+					creating = true
+				end
 				withActor(PL(a), executeAction, a, O.sendCommand, true, G.bind, function(r)
+					if G.pausedCreating and G.pausedCreating.uid == a.uid then G.pausedCreating = nil end
 					r.at = now
 					r.answered, r.returned = nil, nil
 					log("paused action " .. tostring(r.uid) .. " " .. tostring(r.fn) .. " at t=" .. tostring(now) .. " -> " .. (r.success and "OK" or "REFUSED"))
@@ -6007,6 +6048,109 @@ local function uiRequest(fn, margs)
 	R.translateOut(fn, margs, G.rev)
 	AUTO.reqId = (AUTO.reqId or 0) + 1
 	C.appendFile(C.DIR .. BS .. "ui.log", C.line("act_req", { tok = "auto-" .. C.ROLE, id = AUTO.reqId, fn = fn, args = margs }))
+end
+
+-- Several purchases at once (issue #35): four copies of a vehicle requested in the same frame, so stamped at the same step;
+-- MPFEVER_BUYBUILD=1: with a held road build at the same time, so that the games stand still around the purchases' step.
+-- Every game must create them at the same steps (one per step) and with the same ids
+H.buymany = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local ok, err = pcall(function()
+		local me = api.engine.util.getPlayer()
+		local pick = nil
+		for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+			local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+			if not pick and tv and type(tv.depot) == "number" and tv.depot >= 0 and api.engine.entityExists(tv.depot)
+				and (G.cmode ~= "separate" or R.ownerOf(v) == me) then pick = { v = v, tv = tv } end
+		end
+		if not pick then AUTO.results[#AUTO.results + 1] = "buymany: no vehicle with a depot"; return autoFinish() end
+		local before = #R.entitiesWith("TRANSPORT_VEHICLE")
+		for _ = 1, 4 do
+			uiRequest("makeVehicleBuyCmd", { n = 3, [1] = me, [2] = pick.tv.depot, [3] = C.marshal(pick.tv.transportVehicleConfig) })
+		end
+		log("AUTOTEST buymany: 4 copies of vehicle " .. pick.v .. " requested at once (" .. before .. " vehicles)")
+		-- (an empty build held like a tool's: every game stops around its step, which is right after the purchases')
+		if os.getenv("MPFEVER_BUYBUILD") == "1" then
+			pcall(function() deferredSend(api.cmd.makeWorldBuildProposalCmd(api.type.SimpleProposal.new(), playerContext(), false, true), function() end) end)
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 600, fn = function()
+			local line = "buymany: vehicles " .. before .. " -> " .. #R.entitiesWith("TRANSPORT_VEHICLE")
+			log("AUTOTEST " .. line)
+			AUTO.results[#AUTO.results + 1] = line
+			autoFinish()
+		end }
+	end)
+	if not ok then
+		log("AUTOTEST buymany failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "buymany error " .. tostring(err)
+		autoFinish()
+	end
+end
+
+-- Purchases then line assignments (issue #36, run with MPFEVER_PAUSED=1): three copies of a vehicle on a line requested at
+-- once, and each new vehicle assigned to that line as soon as this game knows it, as the depot window does from the
+-- purchase's callback. Every game must assign them all (an assignment that arrived before its purchase was registered on the
+-- other game was skipped there, and every game reloaded)
+H.buyline = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local ok, err = pcall(function()
+		local me = api.engine.util.getPlayer()
+		local pick = nil
+		for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+			local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+			if not pick and tv and type(tv.depot) == "number" and tv.depot >= 0 and api.engine.entityExists(tv.depot)
+				and type(tv.line) == "number" and tv.line >= 0 and (G.cmode ~= "separate" or R.ownerOf(v) == me) then
+				pick = { v = v, depot = tv.depot, line = tv.line, cfg = C.marshal(tv.transportVehicleConfig) }
+			end
+		end
+		if not pick then AUTO.results[#AUTO.results + 1] = "buyline: no vehicle with a depot on a line"; return autoFinish() end
+		local known = {}
+		for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do known[v] = true end
+		for _ = 1, 2 do
+			uiRequest("makeVehicleBuyCmd", { n = 3, [1] = me, [2] = pick.depot, [3] = pick.cfg })
+		end
+		log("AUTOTEST buyline: 2 copies of vehicle " .. pick.v .. " requested, each assigned to line " .. pick.line .. " once known")
+		local assigned, frames, mine = 0, 0, {}
+		local function poll()
+			frames = frames + 1
+			for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+				if not known[v] and G.rev[v] then
+					known[v] = true
+					assigned = assigned + 1
+					mine[#mine + 1] = v
+					uiRequest("makeVehicleSetLineCmd", { n = 3, [1] = v, [2] = pick.line, [3] = 0 })
+					log("AUTOTEST buyline: vehicle " .. v .. " (" .. tostring(G.rev[v]) .. ") assigned at frame " .. frames)
+				end
+			end
+			if assigned >= 2 or frames > 900 then
+				G.waits[#G.waits + 1] = { at = G.frames + 400, fn = function()
+					local onLine = 0
+					for _, v in ipairs(mine) do
+						local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+						if tv and tv.line == pick.line then onLine = onLine + 1 end
+					end
+					local line = "buyline: " .. assigned .. " bought and assigned here, " .. onLine .. " on the line"
+					log("AUTOTEST " .. line)
+					AUTO.results[#AUTO.results + 1] = line
+					autoFinish()
+				end }
+			else
+				G.waits[#G.waits + 1] = { at = G.frames + 1, fn = poll }
+			end
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 1, fn = poll }
+	end)
+	if not ok then
+		log("AUTOTEST buyline failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "buyline error " .. tostring(err)
+		autoFinish()
+	end
 end
 
 -- Double slip scenario (issue #26): the node window's build, which holds nothing but a node configuration, sent through the

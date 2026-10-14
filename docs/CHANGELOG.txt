@@ -1,6 +1,34 @@
 MPFever - Changelog
 ===================
 
+0.3.10-experimental - faster builds, vehicles bought together, purchases and line assignments in a pause
+  - FIX (issue #34): a build appeared about 3 s after the click, and the game stopped at the click and reached the build's
+    time in three stopped rounds. Two stop margins were stacked (the hold aimed a few steps before the build's time, and
+    the stop zone added as many again), and the barrier, narrower than that margin, left a third round for the last
+    step. The hold now aims at the build's time itself when exact steps are available (the stop zone already stops the
+    game early enough and steps exactly from there), and exact steps towards a hold may go up to the step before the
+    other game's next action could be stamped (its stamp distance), since they never overshoot. Measured with held
+    builds in autotests: one stopped round per build instead of three; click to release 197 -> 142 frames (median) at
+    1x, 210 -> 115 at 4x; every build still landed at its time on both games.
+  - FIX (issue #34): a vehicle purchase that waited for the one before it (one purchase per step) was logged as a late
+    action and locked the shorter stamp distance for the rest of the session. It is no longer counted as late.
+  - FIX (issue #35, desync): vehicles bought together (same step) were created one per call of the simulation script,
+    not one per step. That script also runs while the game time stands still (at a held build, at the barrier, behind a
+    terrain tool), so a game standing still created several of them at one step that a running game created a step
+    apart: other entity ids, the games drifted apart and reloaded. The step of the last purchase is now kept in the
+    state saved with the game: one purchase per step on every game, also after a reload. The purchase watch counts game
+    steps too. Reproduced with an autotest (four purchases at once and a held build): before, the fourth vehicle was
+    created at different steps with different ids; now at the same steps with the same ids.
+  - FIX (issue #36, desync): in a pause, vehicles bought and assigned to a line at once (the depot window assigns each one
+    as soon as its purchase is confirmed): the assignment reached the other game before its purchase was registered
+    there (only the engine's answer, a frame later, registers it), so it was skipped and every game reloaded. In a
+    pause, after an action that creates a vehicle or a line, the following actions now wait for its answer (at most 600
+    frames), in their order. Reproduced with an autotest in a pause: before, the assignments were skipped on the other
+    game and the games desynced; now every assignment is applied everywhere.
+  - TESTS: autotest scenarios buymany (four purchases at once, MPFEVER_BUYBUILD=1 with a held build) and buyline (purchases
+    then line assignments, for a paused session); MPFEVER_OLDHOLDS=1, MPFEVER_OLDBUY=1 and MPFEVER_OLDPAUSED=1 bring back
+    the previous behaviours for comparisons; the autotest builds log their hold frame.
+
 0.3.9-experimental - track builds replayed with the tool's replacement maps, street upgrades in towns, PR #33
   - FIX (desync): a track or road build that joins an existing one, reshapes a curve or moves a junction node made the
     simulation drift apart a few minutes later (the reloads of our tests while building railways and adding trains). The

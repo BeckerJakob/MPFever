@@ -32,6 +32,14 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 - **Joining and reconnecting.** Joining a session already running works. A lost connection reconnects by itself for 5 minutes.
 - **In the game's 13 languages.** The launcher and the in-game windows follow the language of Transport Fever 3.
 
+## What's new in 0.3.10
+
+Fixes from the GitHub issues (thanks to Steelworm):
+
+- **Faster builds:** a build used to appear about 3 seconds after the click, with the game stopping three times on the way. It now stops once, about 30 % sooner at 1x and 45 % sooner at 4x (#34).
+- **Vehicles bought together** are created at the same moments on every game. Before, a game standing still could create them at other moments, and the games drifted apart (#35).
+- **In a pause, vehicles bought and put on a line at once** no longer reload every game (#36).
+
 ## What's new in 0.3.9
 
 - **Fewer reloads while building railways:** a track that joins another one, reshapes a curve or moves a junction is now rebuilt on the other games exactly as the builder's game built it. Before, the other games paid for it differently and drifted apart a few minutes later.
@@ -159,7 +167,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Experimental (0.3.9). Supported game builds:
+Experimental (0.3.10). Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.
