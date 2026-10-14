@@ -1760,6 +1760,10 @@ end
 local O = {}
 local G = {
 	oldHolds = os.getenv("MPFEVER_OLDHOLDS") == "1",   -- (tests: the stop logic of 0.3.9 and before, issue #34)
+	-- (experimental, off by default: the shorter proof that the engine stands still, see stillWatch; read once, and the counters
+	-- are only watched with it or with MPFEVER_STEPLOG)
+	fastStill = os.getenv("MPFEVER_FASTSTILL") == "1",
+	stillLog = os.getenv("MPFEVER_STEPLOG") ~= nil,
 	inOff = 0, uiOff = 0, frames = 0, started = false, me = C.NAME, connected = false,
 	session = { speed = 0, pauseAt = nil, started = false },
 	peers = {},                -- other players' clocks (barrier)
@@ -3189,8 +3193,145 @@ local JOIN_GATHER = 120
 -- simulation thread still finishes the steps it had started)
 -- (in real time: the interface sees the simulation's clock only at the 200 ms handshake, so a clock still for a few frames
 -- may still be running; asking for exact steps then adds them to the steps it is still making)
+-- Every stop round of a hold waits for this, 0.45 s at least. MPFEVER_FASTSTILL=1 proves it from the counters of the game time
+-- component instead (G.stillWatch), one handshake after the last step.
+-- (either proof is enough: the new one can only make this sooner, never leave a hold waiting for a proof it cannot make)
+-- (not the new one once a speed above 0 was asked for since its proof: a step may be under way that no copy shows yet; the old
+-- rule decides until the next proof)
 G.simStill = function()
+	local S = G.stillS
+	if G.fastStill and S and S.usable and S.proven and not S.askedSince and gameSpeed() == 0 then return true end
+	return G.stillOldRule()
+end
+
+-- the old rule (with MPFEVER_STEPLOG also timed next to the new one)
+G.stillOldRule = function()
 	return gameSpeed() == 0 and G.frames - (G.clockMovedAt or 0) >= 12 and os.clock() - (G.clockMovedClock or 0) >= 0.45
+end
+
+-- A shorter proof that the engine stands still (MPFEVER_FASTSTILL=1; with MPFEVER_STEPLOG=1 both proofs are timed and the new one
+-- is checked, in either mode). The interface sees the simulation only at the handshake (every 200 ms of real time, one copy of the
+-- world's components), so a clock still for a few frames proves nothing and the old rule waits 0.45 s. The game time component
+-- has two counters (engine.d.tl): tickCount, one per frame of the simulation, also when it is paused, and updateCount, one per
+-- update (step). Seen from the interface both change only with a handshake. The proof: the latest copy reads speed 0, and its
+-- updateCount is the one of the copy before it. No step was made between the two handshakes, and from the latest one on the
+-- simulation runs at speed 0: it makes no step until the interface asks for one. (A first version also wanted the copy before to
+-- read speed 0: one handshake later, 0.4 s instead of 0.2 s when the game has just stopped for a build.)
+-- Measured with two games on one PC (autotests newroad and dsplit at 1x, 2x and 4x, upgrade and dnodemove at 1x and 4x): for
+-- the interface tickCount changes about 5 times a second while the game stands still (once per handshake), the clock and
+-- updateCount always changed together, the speed only with a new copy, and the clock never moved after this proof without a step
+-- request. Safety: never trusted until the counters were watched for 120 frames and tickCount changed in some of them but not
+-- more than half (checked again every 120 frames: a counter moving with every frame of the interface proves nothing about a
+-- handshake, one that does not move proves nothing either); not used when the fields cannot be read; and the old rule still
+-- counts.
+-- (the functions hang on G: this chunk is a few locals short of the 200 a Lua function may have)
+G.STILL_WINDOW = 120
+G.stillCounters = function()
+	local okG, gt = pcall(function() return api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME) end)
+	if not okG or gt == nil then return nil end
+	local okF, tick, upd = pcall(function() return gt.tickCount, gt.updateCount end)
+	if okF and type(tick) == "number" and type(upd) == "number" then return tick, upd end
+	return nil
+end
+
+G.stillEpisodeLog = function(S, ended)
+	local function part(f, s) return f and (f .. " frames / " .. string.format("%.2f", s) .. " s") or "not before the clock moved again" end
+	S.logs = (S.logs or 0) + 1
+	if S.logs > 3000 then return end
+	log("STILL since the clock last moved (t=" .. tostring(S.epT) .. ", frame " .. tostring(S.epAt) .. "): old rule " .. part(S.oldF, S.oldS)
+		.. ", new rule " .. (S.usable and part(S.newF, S.newS) or ("not usable (" .. tostring(S.why) .. ")"))
+		.. ((S.usable and S.newF and S.oldF) and (", " .. (S.oldF - S.newF) .. " frames / " .. string.format("%.2f", S.oldS - S.newS) .. " s sooner") or "")
+		.. ((S.proofText and S.newF) and (", proof: " .. S.proofText) or "")
+		.. " (wrong so far: " .. (S.wrong or 0) .. ")"
+		.. " [decides: " .. ((G.fastStill and S.usable) and "the earlier of the two" or "the old rule") .. "]" .. (ended and " [episode over]" or ""))
+end
+
+G.stillWatch = function()
+	local S = G.stillS
+	if not S then
+		S = { usable = false, why = "watching the counters", win = 0, changes = 0 }
+		G.stillS = S
+	end
+	local tick, upd = G.stillCounters()
+	local speed = gameSpeed()
+	-- (MPFEVER_STEPLOG: checks of the premise, logged only) the clock moved while the proof stood, with nothing asked of the engine
+	-- since (no exact steps, no speed above 0): the proof was wrong. The clock and updateCount should change together, and the speed
+	-- only with a new copy. Exact steps that pass their target were added to steps the engine was still making.
+	if G.stillLog and tick ~= nil then
+		local moved = G.clockMovedAt == G.frames
+		if S.lastUpd ~= nil then
+			if moved and S.proven and not S.askedSince and (G.stepSince or -1) < (S.provenAt or 0) then
+				S.wrong = (S.wrong or 0) + 1
+				log("STILL CHECK: the clock moved to t=" .. tostring(G.clockSeen) .. " " .. (G.frames - (S.provenAt or 0)) .. " frames after the new rule's proof, with no step request and no speed above 0 since: the proof was WRONG (" .. S.wrong .. ") [frame " .. G.frames .. "]")
+			end
+			if moved ~= (upd ~= S.lastUpd) then
+				S.apart = (S.apart or 0) + 1
+				if S.apart <= 20 then
+					log("STILL CHECK: " .. (moved and "the clock moved, updateCount did not" or "updateCount moved, the clock did not") .. " (t=" .. tostring(G.clockSeen) .. ", updateCount " .. upd .. ", speed " .. tostring(speed) .. ", " .. S.apart .. " so far) [frame " .. G.frames .. "]")
+				end
+			end
+			if speed ~= S.lastSpeed and tick == S.lastTickSeen then
+				S.speedApart = (S.speedApart or 0) + 1
+				if S.speedApart <= 20 then
+					log("STILL CHECK: the speed changed from " .. tostring(S.lastSpeed) .. " to " .. tostring(speed) .. " without a new copy (tickCount " .. tick .. ", " .. S.speedApart .. " so far) [frame " .. G.frames .. "]")
+				end
+			end
+		end
+		S.lastUpd, S.lastSpeed, S.lastTickSeen = upd, speed, tick
+		if G.stepTarget and type(G.clockSeen) == "number" and G.clockSeen > G.stepTarget and S.overAt ~= G.stepTarget then
+			S.overAt = G.stepTarget
+			S.over = (S.over or 0) + 1
+			log("STILL CHECK: exact steps passed their target: t=" .. G.clockSeen .. " for " .. G.stepTarget .. " (" .. S.over .. " so far) [frame " .. G.frames .. "]")
+		end
+	end
+	if tick == nil then
+		if S.why ~= "fields not readable" then
+			S.why = "fields not readable"
+			log("STILL: GameTime.tickCount / updateCount cannot be read from the interface: the old rule decides" .. (G.fastStill and " (MPFEVER_FASTSTILL has no effect)" or ""))
+		end
+		S.usable, S.proven, S.cpTick, S.cpUpd, S.cpPrevUpd = false, false, nil, nil, nil
+	else
+		-- is tickCount a handshake counter (it changes in a fraction of the frames) or a frame counter (it changes in all)?
+		S.win = S.win + 1
+		if S.lastTick ~= nil and tick ~= S.lastTick then S.changes = S.changes + 1 end
+		S.lastTick = tick
+		if S.win >= G.STILL_WINDOW then
+			local frameCounter = S.changes * 2 > S.win
+			local was = S.calibrated and S.usable
+			S.usable = not frameCounter and S.changes > 0
+			S.why = frameCounter and "tickCount changes with nearly every frame" or (S.changes == 0 and "tickCount does not change" or "ok")
+			if S.calibrated == nil or was ~= S.usable then
+				log("STILL: tickCount changed in " .. S.changes .. " of " .. S.win .. " frames (" .. (speed == 0 and "stopped" or "running") .. "): "
+					.. (S.usable and "it follows the handshakes, the new rule can be used" or ("the new rule is not used (" .. S.why .. "), the old rule decides")))
+			end
+			S.calibrated = true
+			S.win, S.changes = 0, 0
+		end
+		-- the proof (see above): the latest copy and the one before it
+		if tick ~= S.cpTick then S.cpPrevTick, S.cpPrevUpd, S.cpTick, S.cpUpd = S.cpTick, S.cpUpd, tick, upd end
+		local proven = speed == 0 and S.cpPrevUpd ~= nil and S.cpUpd == S.cpPrevUpd
+		if proven and not S.proven then
+			S.provenAt, S.askedSince = G.frames, false
+			S.proofText = "updateCount " .. upd .. " in the copies with tickCount " .. tostring(S.cpPrevTick) .. " and " .. tick .. ", speed 0"
+		end
+		S.proven = proven
+		-- (for the check above: a speed other than 0 asked of the engine since the proof; -1 = to be sent again, counted too)
+		if S.proven and G.lastSet ~= 0 then S.askedSince = true end
+	end
+	-- timing, per time the clock stood still: the frames and seconds after its last move that each rule needed
+	if G.stillLog then
+		if S.epAt ~= G.clockMovedAt then
+			if S.epAt ~= nil and not S.logged and (S.oldF or S.newF) then G.stillEpisodeLog(S, true) end
+			S.epAt, S.epT, S.oldF, S.oldS, S.newF, S.newS, S.logged = G.clockMovedAt, G.clockSeen, nil, nil, nil, nil, false
+		end
+		local sinceF, sinceS = G.frames - (G.clockMovedAt or 0), os.clock() - (G.clockMovedClock or 0)
+		if not S.oldF and G.stillOldRule() then S.oldF, S.oldS = sinceF, sinceS end
+		if not S.newF and S.usable and S.proven then S.newF, S.newS = sinceF, sinceS end
+		if not S.logged and S.oldF and (S.newF or not S.usable) then
+			S.logged = true
+			G.stillEpisodeLog(S, false)
+		end
+	end
 end
 
 local function nativeHoldAt()
@@ -8150,6 +8291,11 @@ local function guiUpdate(userParams, state, guiState)
 		local okT, tNow = pcall(gameTime)
 		if okT and tNow ~= G.clockSeen then G.clockSeen = tNow; G.clockMovedAt = G.frames; G.clockMovedClock = os.clock() end
 	end
+	-- the counters of the game time component (MPFEVER_FASTSTILL decides with them; MPFEVER_STEPLOG times both rules)
+	if (G.fastStill or G.stillLog) and not G.stillFailed then
+		local okS, errS = pcall(G.stillWatch)
+		if not okS and not G.stillFailed then G.stillFailed = true; G.stillS = nil; log("stillness watch failed: " .. tostring(errS)) end
+	end
 	local okh, st = pcall(function() return state:get() end)
 	if not (okh and type(st) == "table") then st = {} end
 	G.simTerrainSig = st.terrainSig
@@ -8195,7 +8341,8 @@ local function guiUpdate(userParams, state, guiState)
 			if G.stepTarget and (now >= G.stepTarget or (G.frames - G.stepSince > 120 and G.frames - (G.clockMovedAt or 0) > 120)) then G.stepTarget = nil end
 			if sp == 0 and G.wantSteps and G.wantSteps > 0 and not G.stepTarget and G.simStill() then
 				G.stepTarget, G.stepSince = now + G.wantSteps * STEP, G.frames
-				if os.getenv("MPFEVER_STEPLOG") then log("STEPS " .. G.wantSteps .. " from t=" .. now .. " to " .. G.stepTarget .. " (hold " .. tostring(G.holdAt) .. ", barrier " .. tostring(G.lastBarrier) .. ", pause " .. tostring(G.session.pauseAt) .. ") [frame " .. G.frames .. "]") end
+				if os.getenv("MPFEVER_STEPLOG") then log("STEPS " .. G.wantSteps .. " from t=" .. now .. " to " .. G.stepTarget .. " (hold " .. tostring(G.holdAt) .. ", barrier " .. tostring(G.lastBarrier) .. ", pause " .. tostring(G.session.pauseAt) .. ") [frame " .. G.frames .. "]"
+					.. (G.stillS and (" [still: old rule " .. (G.stillOldRule() and "yes" or "no") .. ", new rule " .. ((G.stillS.usable and G.stillS.proven) and "yes" or (G.stillS.usable and "no" or "n/a")) .. ", " .. ((G.fastStill and G.stillS.usable) and "the earlier of the two decides" or "the old rule decides") .. "]") or "")) end
 				O.sendCommand(O.steps(G.wantSteps))
 			end
 		end
