@@ -1900,11 +1900,11 @@ local function otherLeads()
 	return false
 end
 
--- the earliest held build of this game (the native module holds it until this game's clock reaches the time it was announced
--- for, see pollNativeEvents), nil when there is none
+-- the time of this game's earliest held build (released by this script when the game stands at that time, see
+-- runNativeRelease), nil when there is none
 G.ownHeldAt = function()
 	local m = nil
-	for _, r in ipairs(G.natRelease or {}) do if not r.lead and (m == nil or r.at < m) then m = r.at end end
+	for _, r in ipairs(G.natRelease or {}) do if m == nil or r.at < m then m = r.at end end
 	return m
 end
 
@@ -1932,11 +1932,12 @@ local function pacing()
 		if s.pauseAt == nil and theirs > mine then
 			-- that player has a terrain tool in hand: stay behind it, overshoot included, with room to stop before its edits
 			limit = pc.t - terrainLeadSteps() * STEP
-			-- but not short of this game's own held build once the leader stands at its time: it is stamped ahead of the leader's
-			-- clock, the leader stops there for it, and only this game can release it, at that time (kept behind the leader, both
-			-- games waited for each other until the hold expired, 30 s, and the build landed late). The leader's clock at that time
-			-- comes after every edit it made before it; an edit it makes while it waits lands at that time, which this game, back
-			-- behind the leader once its build is released, does not pass before the leader is that far ahead again.
+			-- but not short of this game's own held build once the leader's clock has reached its time. That build is stamped
+			-- ahead of the leader's clock, so the leader stops there and waits for it, and only this game can release it, at that
+			-- time: kept behind the leader, the two games waited for each other until the hold expired (1800 frames) and the build
+			-- landed late. The leader sends its clock after the edits it made up to that time, and this game comes up from
+			-- terrainLeadSteps() behind it. An edit the leader makes while it waits lands at that time too; once the build is
+			-- released this game is behind the leader again and does not pass that time before the leader is that far past it.
 			local own = G.ownHeldAt()
 			if own and pc.t >= own and own > limit then limit = own end
 			exact = limit
@@ -5223,12 +5224,34 @@ end
 -- leader had to give up waiting ("never arrived", then "LATE native build" on the leader).
 H.terrainlead = function(from, p)
 	if p.role ~= C.ROLE then
-		-- the leader: the terrain tool stays in hand until the builder is done (terrainlead_stop), at most 7200 frames
-		local last = G.frames + 7200
+		-- the leader: the terrain tool stays in hand until the builder is done (terrainlead_stop), at most 14400 frames, and
+		-- it shapes the ground every 120 frames (8x8 cells next to each other, as the terrain scenario does) while the builder
+		-- waits for its builds (MPFEVER_TERRAINLEAD_EDITS=0: no edit)
+		local last = G.frames + 14400
+		local edits = os.getenv("MPFEVER_TERRAINLEAD_EDITS") ~= "0"
+		local bx, by = -640, -756
+		if C.ROLE ~= "host" then bx, by = 300, -200 end
+		local calls, k = 0, 0
 		G.tlHold = true
 		local function keep()
-			if not G.tlHold or G.frames > last then G.tlHold = nil; log("AUTOTEST terrainlead: terrain tool put away"); return end
+			if not G.tlHold or G.frames > last then G.tlHold = nil; log("AUTOTEST terrainlead: terrain tool put away after " .. k .. " edits"); return end
 			terrainLead("autotest terrainlead")
+			calls = calls + 1
+			if edits and calls % 2 == 0 then
+				k = k + 1
+				local i, x0 = k, bx + ((k - 1) % 4) * 10
+				local okE, errE = pcall(function()
+					local h0 = api.engine.terrain.getBaseHeightAt(api.type.Vec2f.new((x0 + 4) * 4, (by + 4) * 4))
+					local prop = api.type.Proposal.new()
+					prop.terrain.baseHeightMod = api.type.GridVec2f.new(x0, by, 8, 8, api.type.Vec2f.new(h0 + 1 + i % 3, h0))
+					local ctx = api.type.Context.new()
+					ctx.player = api.engine.util.getPlayer()
+					O.sendCommand(api.cmd.makeWorldBuildProposalCmd(prop, ctx, false, true), function(res, success)
+						log("AUTOTEST terrainlead: edit " .. i .. " " .. (success and "made" or "refused") .. " at t=" .. tostring(gameTime()))
+					end)
+				end)
+				if not okE then log("AUTOTEST terrainlead: edit " .. i .. " failed: " .. shortErr(errE)) end
+			end
 			G.waits[#G.waits + 1] = { at = G.frames + 60, fn = keep }
 		end
 		keep()
