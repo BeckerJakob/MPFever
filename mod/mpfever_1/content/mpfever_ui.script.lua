@@ -78,7 +78,8 @@ local function install()
 		if tag.name == "makeScriptingSendEventCmd" and tag.args[2] == "Notifications" then
 			U.notifLogged = (U.notifLogged or 0) + 1
 			if U.notifLogged <= 40 then log("local notification event " .. tostring(tag.args[1]) .. "/" .. tostring(tag.args[3]) .. " " .. C.ser(C.marshal(tag.args[4])):sub(1, 200)) end
-			pcall(N.record, tag.args[3], tag.args[4])
+			local okr, errr = pcall(N.record, tag.args[3], tag.args[4])
+			if not okr then log("notifications: not kept: " .. tostring(errr)) end
 			if os.getenv("MPFEVER_NONOTIF") then return end
 			return O.sendCommand(cmd, cb, progress)
 		end
@@ -1411,14 +1412,16 @@ function N.entry(native, id)
 end
 
 -- the same text for the same content on every game: keys sorted, an entity with its revision as the game compares it
--- (entityChanged0: the first number only), numbers without float noise, control characters escaped
+-- (entityChanged0: the first number only), whole numbers with C.int (string.format "%d" fails from 2^31 in Lua 5.2 on
+-- Windows: a contract card's uid is an entity times 10000), control bytes escaped (listed, not %c, see C.ser)
+N.CONTROL = "[" .. string.char(0) .. "-" .. string.char(31) .. string.char(127) .. '"\\]'
 function N.canon(v, depth)
 	local t = type(v)
 	if t == "number" then
-		if v == math.floor(v) and math.abs(v) < 1e15 then return string.format("%d", v) end
+		if v == math.floor(v) and math.abs(v) < 1e15 then return C.int(v) end
 		return string.format("%.6g", v)
 	elseif t == "string" then
-		return '"' .. v:gsub('[%c"\\]', function(c) return string.format("\\%03d", c:byte()) end) .. '"'
+		return '"' .. v:gsub(N.CONTROL, function(c) return string.format("\\%03d", c:byte()) end) .. '"'
 	elseif t == "boolean" then
 		return tostring(v)
 	elseif t == "table" then
@@ -1484,7 +1487,7 @@ function N.record(ev, p)
 	local native = id and N.native()
 	local entry = native and N.entry(native, id)
 	local key, oneShot = N.key(entry)
-	if not key then return end
+	if not key or key:find("[" .. C.TAB .. C.NL .. "]") then return end
 	if ev == "dismiss" then
 		local t0 = oneShot and (tonumber(entry.timestamp) or 0) or 0
 		N.keys[key] = N.keys[key] or {}
@@ -1528,7 +1531,7 @@ function N.tick()
 		N.filterDone = true
 		local f = C.deser(N.filter)
 		if type(f) == "table" then
-			pcall(orig.sendCommand, orig.event("", "Notifications", "updateIgnoredTypes", f))
+			pcall(function() orig.sendCommand(orig.event("", "Notifications", "updateIgnoredTypes", f)) end)
 			log("notifications: the log's filter set again after the load")
 		end
 	end
@@ -1547,7 +1550,7 @@ function N.tick()
 				end
 				if not entry.dismissed and not N.done[id] and N.dismissedBefore(entry) then
 					N.done[id] = true
-					pcall(orig.sendCommand, orig.event("", "Notifications", "dismiss", { id = id }))
+					pcall(function() orig.sendCommand(orig.event("", "Notifications", "dismiss", { id = id })) end)
 					again = again + 1
 				end
 			end
@@ -1585,8 +1588,8 @@ function N.tick()
 	end
 end
 
--- autotest (MPFEVER_SCENARIO=notiftest,resync,notiftest,resync,notiftest): 1st message, host: three "Industry Founded"
--- notifications (local, as the interface makes them); 2nd, client (it has them from the host's savegame): dismissed the way
+-- autotest (MPFEVER_SCENARIO=notiftest,resync,notiftest,resync,notiftest): 1st message, host: three test notifications of
+-- type industry_spawn (a local Notifications/add, as the interface sends it); 2nd, client (it has them from the host's savegame): dismissed the way
 -- a right-click does; 3rd, both: how many of them are dismissed (client: all, again after the load; host: none)
 function N.test(p)
 	if type(p) ~= "table" or p.role ~= C.ROLE then return end
