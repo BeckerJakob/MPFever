@@ -5232,12 +5232,22 @@ H.terrainlead = function(from, p)
 		local bx, by = -640, -756
 		if C.ROLE ~= "host" then bx, by = 300, -200 end
 		local calls, k = 0, 0
+		-- (a player shapes the ground a moment after picking the tool: the edits start once the other games have fallen as far
+		-- behind as the lead keeps them; an edit made before lands late on a game that was still ahead, as in 0.3.10)
+		local function behind()
+			local okT, now = pcall(gameTime)
+			if not okT then return false end
+			for _, pc in pairs(G.peers) do
+				if type(pc.t) ~= "number" or pc.t > now - (terrainLeadSteps() - overshootReserve()) * STEP then return false end
+			end
+			return true
+		end
 		G.tlHold = true
 		local function keep()
 			if not G.tlHold or G.frames > last then G.tlHold = nil; log("AUTOTEST terrainlead: terrain tool put away after " .. k .. " edits"); return end
 			terrainLead("autotest terrainlead")
 			calls = calls + 1
-			if edits and calls % 2 == 0 then
+			if edits and calls % 2 == 0 and behind() then
 				k = k + 1
 				local i, x0 = k, bx + ((k - 1) % 4) * 10
 				local okE, errE = pcall(function()
