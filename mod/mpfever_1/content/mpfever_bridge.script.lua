@@ -1900,6 +1900,14 @@ local function otherLeads()
 	return false
 end
 
+-- the earliest held build of this game (the native module holds it until this game's clock reaches the time it was announced
+-- for, see pollNativeEvents), nil when there is none
+G.ownHeldAt = function()
+	local m = nil
+	for _, r in ipairs(G.natRelease or {}) do if not r.lead and (m == nil or r.at < m) then m = r.at end end
+	return m
+end
+
 -- the speed this game may run at: session speed, never past the slowest other player (barrier), stop points
 G.pstat = { frames = 0, barrier = 0, hold = 0 }
 local function pacing()
@@ -1924,6 +1932,13 @@ local function pacing()
 		if s.pauseAt == nil and theirs > mine then
 			-- that player has a terrain tool in hand: stay behind it, overshoot included, with room to stop before its edits
 			limit = pc.t - terrainLeadSteps() * STEP
+			-- but not short of this game's own held build once the leader stands at its time: it is stamped ahead of the leader's
+			-- clock, the leader stops there for it, and only this game can release it, at that time (kept behind the leader, both
+			-- games waited for each other until the hold expired, 30 s, and the build landed late). The leader's clock at that time
+			-- comes after every edit it made before it; an edit it makes while it waits lands at that time, which this game, back
+			-- behind the leader once its build is released, does not pass before the leader is that far ahead again.
+			local own = G.ownHeldAt()
+			if own and pc.t >= own and own > limit then limit = own end
 			exact = limit
 		elseif s.pauseAt == nil and mine > theirs then
 			-- this game leads: the others keep that distance behind it
