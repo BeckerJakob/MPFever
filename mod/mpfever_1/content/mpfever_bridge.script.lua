@@ -3692,13 +3692,13 @@ local function deferredSend(cmd, cb)
 	if lead then
 		-- (a scripted build hears the engine's answer: a refused one is cancelled at once. MPFEVER_BUILDLEAD_NOANSWER=1, tests:
 		-- not used, as for a tool's build, whose answer only the tool hears: G.leadRefusedCheck must find it out)
-		local answer = function(res, success)
+		local answer = function(res, success, ...)
 			if not success and os.getenv("MPFEVER_BUILDLEAD_NOANSWER") ~= "1" then
 				for _, e in ipairs(G.natShipIds or {}) do
 					if e.id == id then G.leadRefused(e, "refused: the engine's answer (BUILDLEAD autotest)"); break end
 				end
 			end
-			if cb then return cb(res, success) end
+			if cb then return cb(res, success, ...) end
 		end
 		G.natRelease[#G.natRelease + 1] = { id = id, at = now, lead = true, fn = function() O.sendCommand(cmd, answer) end }
 		send("nat_pending", { origin = G.me, at = now, id = id, lead = true })
