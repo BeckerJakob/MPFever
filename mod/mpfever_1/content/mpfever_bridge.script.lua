@@ -1498,6 +1498,13 @@ local function captureNativeBuild(state, param)
 	end)
 	local c0 = os.clock()
 	log("capture: start t=" .. now)
+	-- MPFEVER_SLOWCAPTURE=<seconds> (tests): each capture takes that much longer, as a big build does (a street through a town
+	-- that took 28 town buildings away: 1.7 s); the simulation stands still meanwhile, the interface runs on
+	local slow = tonumber(os.getenv("MPFEVER_SLOWCAPTURE") or "")
+	if slow and slow > 0 then
+		while os.clock() - c0 < slow do end
+		log("capture: held back " .. slow .. " s (MPFEVER_SLOWCAPTURE)")
+	end
 	local okc, compact = pcall(C.compactProposal, proposal)
 	log("capture: compact " .. string.format("%.3f", os.clock() - c0) .. " s, " .. #C.ser(compact or {}) .. " bytes" .. C.mapSizes(compact))
 	if not okc then
@@ -3488,10 +3495,38 @@ local function cancelNativeBuild(entry, why)
 	log("native build " .. tostring(entry.id) .. " produced nothing (" .. why .. "): the others stop holding for it")
 end
 
+-- The interface's copy of GameTime.tickCount changes when the interface takes over a new copy of the simulation's state (in
+-- our runs once per handshake, in a pause too; it counts the engine's frames, not steps, see docs/RESEARCH.md). While the
+-- simulation half is still capturing a build no new copy comes, and a big build takes seconds (a street through a town: 1.7 s).
+G.simTick = function()
+	local ok, t = pcall(function() return api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME).tickCount end)
+	return (ok and type(t) == "number") and t or nil
+end
+
+-- A released build not shipped 150 frames and 4 handshakes after its release was refused (an applied build is applied at the
+-- first handshake, captured during it and seen here at the next: 4 leave two to spare; counted at most once per frame), and
+-- after 900 frames in any case (the others give up waiting after 1800). Counted in frames alone, a big build still being
+-- captured was given up: the others stopped holding for it, ran on and built it a step late (and differently). Nothing is
+-- given up while a capture waits to be shipped (shipNativeBuilds holds some back for a few frames).
 local function expireShipIds()
+	if not G.natShipIds or #G.natShipIds == 0 or G.outWaiting then return end
 	local keep = {}
-	for _, e in ipairs(G.natShipIds or {}) do
-		if G.frames - e.frame > 150 then cancelNativeBuild(e, "refused or not built") else keep[#keep + 1] = e end
+	local tick = G.simTick()
+	for _, e in ipairs(G.natShipIds) do
+		if tick and e.simTick == nil then e.simTick = tick end
+		if tick and tick ~= e.simTick then e.simTick, e.handshakes = tick, (e.handshakes or 0) + 1 end
+		local age = G.frames - e.frame
+		local sure = (e.handshakes or 0) >= 4 or (tick == nil and e.simTick == nil)
+		if age > 150 and (sure or age > 900) then
+			cancelNativeBuild(e, "refused or not built: " .. age .. " frames and " .. (e.handshakes or 0) .. " handshakes after its release")
+		else
+			if age > 150 and not e.waitTold then
+				e.waitTold = true
+				log("native build " .. tostring(e.id) .. " not shipped " .. age .. " frames after its release, after " .. (e.handshakes or 0)
+					.. " handshake(s): the simulation is still busy, waiting for its capture")
+			end
+			keep[#keep + 1] = e
+		end
 	end
 	G.natShipIds = keep
 end
@@ -3514,7 +3549,7 @@ end
 local function releaseOne(r, at, how)
 	G.natReleased = G.natReleased + 1
 	G.natShipIds = G.natShipIds or {}
-	G.natShipIds[#G.natShipIds + 1] = { id = r.id, at = at, frame = G.frames, combined = how ~= nil }
+	G.natShipIds[#G.natShipIds + 1] = { id = r.id, at = at, frame = G.frames, combined = how ~= nil, simTick = G.simTick(), handshakes = 0 }
 	if r.fn then
 		-- a scripted build (autotest) deferred like the tools' ones: sent now, at its announced time
 		G.natReleased = G.natReleased - 1
@@ -4122,16 +4157,18 @@ end
 
 local function shipNativeBuilds(st)
 	G.outFirstSeen = G.outFirstSeen or {}
+	-- (a capture held back here is not shipped yet: see expireShipIds)
+	G.outWaiting = false
 	for _, o in ipairs(st.out or {}) do
 		if o.n > G.outSent and o.terrain then
 			G.outFirstSeen[o.n] = G.outFirstSeen[o.n] or G.frames
 			local okT, r = pcall(shipTerrain, o)
 			if not okT then log("terrain shipping failed: " .. tostring(r)); r = "failed" end
-			if r == "wait" then return end
+			if r == "wait" then G.outWaiting = true; return end
 			G.outSent = o.n
 		elseif o.n > G.outSent then
 			G.outFirstSeen[o.n] = G.outFirstSeen[o.n] or G.frames
-			if o.ready == false and G.frames - G.outFirstSeen[o.n] < 30 then return end
+			if o.ready == false and G.frames - G.outFirstSeen[o.n] < 30 then G.outWaiting = true; return end
 			G.outSent = o.n
 			G.oseq = G.oseq + 1
 			if needsEnrich(o.args and o.args[1]) then
