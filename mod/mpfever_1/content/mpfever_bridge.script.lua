@@ -1760,6 +1760,10 @@ end
 local O = {}
 local G = {
 	oldHolds = os.getenv("MPFEVER_OLDHOLDS") == "1",   -- (tests: the stop logic of 0.3.9 and before, issue #34)
+	-- (experimental, off by default: the shorter proof that the engine stands still, see stillWatch; read once, and the counters
+	-- are only watched with it or with MPFEVER_STEPLOG)
+	fastStill = os.getenv("MPFEVER_FASTSTILL") ~= "0",   -- (on by default for testing; MPFEVER_FASTSTILL=0 turns it off)
+	stillLog = os.getenv("MPFEVER_STEPLOG") ~= nil,
 	inOff = 0, uiOff = 0, frames = 0, started = false, me = C.NAME, connected = false,
 	session = { speed = 0, pauseAt = nil, started = false },
 	peers = {},                -- other players' clocks (barrier)
@@ -1900,6 +1904,14 @@ local function otherLeads()
 	return false
 end
 
+-- the time of this game's earliest held build (released by this script when the game stands at that time, see
+-- runNativeRelease), nil when there is none
+G.ownHeldAt = function()
+	local m = nil
+	for _, r in ipairs(G.natRelease or {}) do if m == nil or r.at < m then m = r.at end end
+	return m
+end
+
 -- the speed this game may run at: session speed, never past the slowest other player (barrier), stop points
 G.pstat = { frames = 0, barrier = 0, hold = 0 }
 local function pacing()
@@ -1924,6 +1936,14 @@ local function pacing()
 		if s.pauseAt == nil and theirs > mine then
 			-- that player has a terrain tool in hand: stay behind it, overshoot included, with room to stop before its edits
 			limit = pc.t - terrainLeadSteps() * STEP
+			-- but not short of this game's own held build once the leader's clock has reached its time. That build is stamped
+			-- ahead of the leader's clock, so the leader stops there and waits for it, and only this game can release it, at that
+			-- time: kept behind the leader, the two games waited for each other until the hold expired (1800 frames) and the build
+			-- landed late. The leader sends its clock after the edits it made up to that time, and this game comes up from
+			-- terrainLeadSteps() behind it. An edit the leader makes while it waits lands at that time too; once the build is
+			-- released this game is behind the leader again and does not pass that time before the leader is that far past it.
+			local own = G.ownHeldAt()
+			if own and pc.t >= own and own > limit then limit = own end
 			exact = limit
 		elseif s.pauseAt == nil and mine > theirs then
 			-- this game leads: the others keep that distance behind it
@@ -3189,8 +3209,145 @@ local JOIN_GATHER = 120
 -- simulation thread still finishes the steps it had started)
 -- (in real time: the interface sees the simulation's clock only at the 200 ms handshake, so a clock still for a few frames
 -- may still be running; asking for exact steps then adds them to the steps it is still making)
+-- Every stop round of a hold waits for this, 0.45 s at least. MPFEVER_FASTSTILL=1 proves it from the counters of the game time
+-- component instead (G.stillWatch), one handshake after the last step.
+-- (either proof is enough: the new one can only make this sooner, never leave a hold waiting for a proof it cannot make)
+-- (not the new one once a speed above 0 was asked for since its proof: a step may be under way that no copy shows yet; the old
+-- rule decides until the next proof)
 G.simStill = function()
+	local S = G.stillS
+	if G.fastStill and S and S.usable and S.proven and not S.askedSince and gameSpeed() == 0 then return true end
+	return G.stillOldRule()
+end
+
+-- the old rule (with MPFEVER_STEPLOG also timed next to the new one)
+G.stillOldRule = function()
 	return gameSpeed() == 0 and G.frames - (G.clockMovedAt or 0) >= 12 and os.clock() - (G.clockMovedClock or 0) >= 0.45
+end
+
+-- A shorter proof that the engine stands still (MPFEVER_FASTSTILL=1; with MPFEVER_STEPLOG=1 both proofs are timed and the new one
+-- is checked, in either mode). The interface sees the simulation only at the handshake (every 200 ms of real time, one copy of the
+-- world's components), so a clock still for a few frames proves nothing and the old rule waits 0.45 s. The game time component
+-- has two counters (engine.d.tl): tickCount, one per frame of the simulation, also when it is paused, and updateCount, one per
+-- update (step). Seen from the interface both change only with a handshake. The proof: the latest copy reads speed 0, and its
+-- updateCount is the one of the copy before it. No step was made between the two handshakes, and from the latest one on the
+-- simulation runs at speed 0: it makes no step until the interface asks for one. (A first version also wanted the copy before to
+-- read speed 0: one handshake later, 0.4 s instead of 0.2 s when the game has just stopped for a build.)
+-- Measured with two games on one PC (autotests newroad and dsplit at 1x, 2x and 4x, upgrade and dnodemove at 1x and 4x): for
+-- the interface tickCount changes about 5 times a second while the game stands still (once per handshake), the clock and
+-- updateCount always changed together, the speed only with a new copy, and the clock never moved after this proof without a step
+-- request. Safety: never trusted until the counters were watched for 120 frames and tickCount changed in some of them but not
+-- more than half (checked again every 120 frames: a counter moving with every frame of the interface proves nothing about a
+-- handshake, one that does not move proves nothing either); not used when the fields cannot be read; and the old rule still
+-- counts.
+-- (the functions hang on G: this chunk is a few locals short of the 200 a Lua function may have)
+G.STILL_WINDOW = 120
+G.stillCounters = function()
+	local okG, gt = pcall(function() return api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME) end)
+	if not okG or gt == nil then return nil end
+	local okF, tick, upd = pcall(function() return gt.tickCount, gt.updateCount end)
+	if okF and type(tick) == "number" and type(upd) == "number" then return tick, upd end
+	return nil
+end
+
+G.stillEpisodeLog = function(S, ended)
+	local function part(f, s) return f and (f .. " frames / " .. string.format("%.2f", s) .. " s") or "not before the clock moved again" end
+	S.logs = (S.logs or 0) + 1
+	if S.logs > 3000 then return end
+	log("STILL since the clock last moved (t=" .. tostring(S.epT) .. ", frame " .. tostring(S.epAt) .. "): old rule " .. part(S.oldF, S.oldS)
+		.. ", new rule " .. (S.usable and part(S.newF, S.newS) or ("not usable (" .. tostring(S.why) .. ")"))
+		.. ((S.usable and S.newF and S.oldF) and (", " .. (S.oldF - S.newF) .. " frames / " .. string.format("%.2f", S.oldS - S.newS) .. " s sooner") or "")
+		.. ((S.proofText and S.newF) and (", proof: " .. S.proofText) or "")
+		.. " (wrong so far: " .. (S.wrong or 0) .. ")"
+		.. " [decides: " .. ((G.fastStill and S.usable) and "the earlier of the two" or "the old rule") .. "]" .. (ended and " [episode over]" or ""))
+end
+
+G.stillWatch = function()
+	local S = G.stillS
+	if not S then
+		S = { usable = false, why = "watching the counters", win = 0, changes = 0 }
+		G.stillS = S
+	end
+	local tick, upd = G.stillCounters()
+	local speed = gameSpeed()
+	-- (MPFEVER_STEPLOG: checks of the premise, logged only) the clock moved while the proof stood, with nothing asked of the engine
+	-- since (no exact steps, no speed above 0): the proof was wrong. The clock and updateCount should change together, and the speed
+	-- only with a new copy. Exact steps that pass their target were added to steps the engine was still making.
+	if G.stillLog and tick ~= nil then
+		local moved = G.clockMovedAt == G.frames
+		if S.lastUpd ~= nil then
+			if moved and S.proven and not S.askedSince and (G.stepSince or -1) < (S.provenAt or 0) then
+				S.wrong = (S.wrong or 0) + 1
+				log("STILL CHECK: the clock moved to t=" .. tostring(G.clockSeen) .. " " .. (G.frames - (S.provenAt or 0)) .. " frames after the new rule's proof, with no step request and no speed above 0 since: the proof was WRONG (" .. S.wrong .. ") [frame " .. G.frames .. "]")
+			end
+			if moved ~= (upd ~= S.lastUpd) then
+				S.apart = (S.apart or 0) + 1
+				if S.apart <= 20 then
+					log("STILL CHECK: " .. (moved and "the clock moved, updateCount did not" or "updateCount moved, the clock did not") .. " (t=" .. tostring(G.clockSeen) .. ", updateCount " .. upd .. ", speed " .. tostring(speed) .. ", " .. S.apart .. " so far) [frame " .. G.frames .. "]")
+				end
+			end
+			if speed ~= S.lastSpeed and tick == S.lastTickSeen then
+				S.speedApart = (S.speedApart or 0) + 1
+				if S.speedApart <= 20 then
+					log("STILL CHECK: the speed changed from " .. tostring(S.lastSpeed) .. " to " .. tostring(speed) .. " without a new copy (tickCount " .. tick .. ", " .. S.speedApart .. " so far) [frame " .. G.frames .. "]")
+				end
+			end
+		end
+		S.lastUpd, S.lastSpeed, S.lastTickSeen = upd, speed, tick
+		if G.stepTarget and type(G.clockSeen) == "number" and G.clockSeen > G.stepTarget and S.overAt ~= G.stepTarget then
+			S.overAt = G.stepTarget
+			S.over = (S.over or 0) + 1
+			log("STILL CHECK: exact steps passed their target: t=" .. G.clockSeen .. " for " .. G.stepTarget .. " (" .. S.over .. " so far) [frame " .. G.frames .. "]")
+		end
+	end
+	if tick == nil then
+		if S.why ~= "fields not readable" then
+			S.why = "fields not readable"
+			log("STILL: GameTime.tickCount / updateCount cannot be read from the interface: the old rule decides" .. (G.fastStill and " (MPFEVER_FASTSTILL has no effect)" or ""))
+		end
+		S.usable, S.proven, S.cpTick, S.cpUpd, S.cpPrevUpd = false, false, nil, nil, nil
+	else
+		-- is tickCount a handshake counter (it changes in a fraction of the frames) or a frame counter (it changes in all)?
+		S.win = S.win + 1
+		if S.lastTick ~= nil and tick ~= S.lastTick then S.changes = S.changes + 1 end
+		S.lastTick = tick
+		if S.win >= G.STILL_WINDOW then
+			local frameCounter = S.changes * 2 > S.win
+			local was = S.calibrated and S.usable
+			S.usable = not frameCounter and S.changes > 0
+			S.why = frameCounter and "tickCount changes with nearly every frame" or (S.changes == 0 and "tickCount does not change" or "ok")
+			if S.calibrated == nil or was ~= S.usable then
+				log("STILL: tickCount changed in " .. S.changes .. " of " .. S.win .. " frames (" .. (speed == 0 and "stopped" or "running") .. "): "
+					.. (S.usable and "it follows the handshakes, the new rule can be used" or ("the new rule is not used (" .. S.why .. "), the old rule decides")))
+			end
+			S.calibrated = true
+			S.win, S.changes = 0, 0
+		end
+		-- the proof (see above): the latest copy and the one before it
+		if tick ~= S.cpTick then S.cpPrevTick, S.cpPrevUpd, S.cpTick, S.cpUpd = S.cpTick, S.cpUpd, tick, upd end
+		local proven = speed == 0 and S.cpPrevUpd ~= nil and S.cpUpd == S.cpPrevUpd
+		if proven and not S.proven then
+			S.provenAt, S.askedSince = G.frames, false
+			S.proofText = "updateCount " .. upd .. " in the copies with tickCount " .. tostring(S.cpPrevTick) .. " and " .. tick .. ", speed 0"
+		end
+		S.proven = proven
+		-- (for the check above: a speed other than 0 asked of the engine since the proof; -1 = to be sent again, counted too)
+		if S.proven and G.lastSet ~= 0 then S.askedSince = true end
+	end
+	-- timing, per time the clock stood still: the frames and seconds after its last move that each rule needed
+	if G.stillLog then
+		if S.epAt ~= G.clockMovedAt then
+			if S.epAt ~= nil and not S.logged and (S.oldF or S.newF) then G.stillEpisodeLog(S, true) end
+			S.epAt, S.epT, S.oldF, S.oldS, S.newF, S.newS, S.logged = G.clockMovedAt, G.clockSeen, nil, nil, nil, nil, false
+		end
+		local sinceF, sinceS = G.frames - (G.clockMovedAt or 0), os.clock() - (G.clockMovedClock or 0)
+		if not S.oldF and G.stillOldRule() then S.oldF, S.oldS = sinceF, sinceS end
+		if not S.newF and S.usable and S.proven then S.newF, S.newS = sinceF, sinceS end
+		if not S.logged and S.oldF and (S.newF or not S.usable) then
+			S.logged = true
+			G.stillEpisodeLog(S, false)
+		end
+	end
 end
 
 local function nativeHoldAt()
@@ -5199,6 +5356,123 @@ H.newroad = function(from, p)
 		AUTO.results[#AUTO.results + 1] = "new road error " .. tostring(err)
 		autoFinish()
 	end
+end
+
+-- Terrain lead scenario (MPFEVER_SCENARIO=terrainlead): the other game has a terrain tool in hand, as when a player shapes the
+-- ground (it leads; no edit is made), and this game lays MPFEVER_TERRAINLEAD_COUNT (3) roads the usual held way, each one 40
+-- frames after the answer to the previous one. A held build of this game is stamped ahead of the leader's clock, and the leader
+-- stops there for it. The results give the frames from sending each road to the engine's answer; the logs show whether the
+-- leader had to give up waiting ("never arrived", then "LATE native build" on the leader).
+H.terrainlead = function(from, p)
+	if p.role ~= C.ROLE then
+		-- the leader: the terrain tool stays in hand until the builder is done (terrainlead_stop), at most 14400 frames, and
+		-- it shapes the ground every 120 frames (8x8 cells next to each other, as the terrain scenario does) while the builder
+		-- waits for its builds (MPFEVER_TERRAINLEAD_EDITS=0: no edit)
+		local last = G.frames + 14400
+		local edits = os.getenv("MPFEVER_TERRAINLEAD_EDITS") ~= "0"
+		local bx, by = -640, -756
+		if C.ROLE ~= "host" then bx, by = 300, -200 end
+		local calls, k = 0, 0
+		-- (a player shapes the ground a moment after picking the tool: the edits start once the other games have fallen as far
+		-- behind as the lead keeps them; an edit made before lands late on a game that was still ahead, as in 0.3.10)
+		local function behind()
+			local okT, now = pcall(gameTime)
+			if not okT then return false end
+			for _, pc in pairs(G.peers) do
+				if type(pc.t) ~= "number" or pc.t > now - (terrainLeadSteps() - overshootReserve()) * STEP then return false end
+			end
+			return true
+		end
+		G.tlHold = true
+		local function keep()
+			if not G.tlHold or G.frames > last then G.tlHold = nil; log("AUTOTEST terrainlead: terrain tool put away after " .. k .. " edits"); return end
+			terrainLead("autotest terrainlead")
+			calls = calls + 1
+			if edits and calls % 2 == 0 and behind() then
+				k = k + 1
+				local i, x0 = k, bx + ((k - 1) % 4) * 10
+				local okE, errE = pcall(function()
+					local h0 = api.engine.terrain.getBaseHeightAt(api.type.Vec2f.new((x0 + 4) * 4, (by + 4) * 4))
+					local prop = api.type.Proposal.new()
+					prop.terrain.baseHeightMod = api.type.GridVec2f.new(x0, by, 8, 8, api.type.Vec2f.new(h0 + 1 + i % 3, h0))
+					local ctx = api.type.Context.new()
+					ctx.player = api.engine.util.getPlayer()
+					O.sendCommand(api.cmd.makeWorldBuildProposalCmd(prop, ctx, false, true), function(res, success)
+						log("AUTOTEST terrainlead: edit " .. i .. " " .. (success and "made" or "refused") .. " at t=" .. tostring(gameTime()))
+					end)
+				end)
+				if not okE then log("AUTOTEST terrainlead: edit " .. i .. " failed: " .. shortErr(errE)) end
+			end
+			G.waits[#G.waits + 1] = { at = G.frames + 60, fn = keep }
+		end
+		keep()
+		return
+	end
+	if AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("AUTOTEST terrainlead " .. t); AUTO.results[#AUTO.results + 1] = t end
+	local count = tonumber(os.getenv("MPFEVER_TERRAINLEAD_COUNT") or "3") or 3
+	local startFrame, built, answers = G.frames, 0, {}
+	local nextRoad
+	local function finish()
+		say("done: " .. built .. " roads, answers after " .. table.concat(answers, "/") .. " frames")
+		send("terrainlead_stop", {})
+		G.waits[#G.waits + 1] = { at = G.frames + 90, fn = autoFinish }
+	end
+	local function waitLead()
+		local leads = otherLeads()
+		if leads or G.frames - startFrame > 1800 then
+			say(leads and ("the other game leads after " .. (G.frames - startFrame) .. " frames") or "no lead of the other game seen in 1800 frames")
+			return nextRoad()
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 5, fn = waitLead }
+	end
+	nextRoad = function()
+		if built >= count then return finish() end
+		built = built + 1
+		local i = built
+		local okp, err = pcall(function()
+			local n, info, pn, a = matrixPlace((p.offset or 0) + 40 + i * 5)
+			local o = { tlanes = true, template = true, roadType = true, street = true, owner = true, positions = true, sharedIds = true,
+				tmpl = { roadTemplate = info.c.roadTemplate, roadStyle = info.c.roadStyle, roadType = info.c.roadType } }
+			local sp = buildMatrixProposal(o, n, pn, a)
+			local ctx = api.type.Context.new()
+			ctx.checkTerrainAlignment = true
+			ctx.cleanupStreetGraph = os.getenv("MPFEVER_CLEANUP") == "1"
+			ctx.gatherBuildings = true
+			ctx.gatherFields = true
+			ctx.player = api.engine.util.getPlayer()
+			local edges0, frame0 = edgeCount(), G.frames
+			deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), function(res, success)
+				local why = ""
+				if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+				answers[#answers + 1] = G.frames - frame0
+				say("road " .. i .. " from node " .. n .. ": " .. (success and "built" or ("refused " .. why)) .. ", answer after " .. (G.frames - frame0)
+					.. " frames, edges " .. edges0 .. " -> " .. edgeCount())
+				if success then AUTO.points[#AUTO.points + 1] = pn end
+				G.waits[#G.waits + 1] = { at = G.frames + 40, fn = nextRoad }
+			end)
+		end)
+		if not okp then
+			say("road " .. i .. " failed: " .. shortErr(err))
+			G.waits[#G.waits + 1] = { at = G.frames + 40, fn = nextRoad }
+		end
+	end
+	waitLead()
+end
+
+-- (the builder of the terrain lead scenario is done: the leader puts the terrain tool away)
+H.terrainlead_stop = function(from, p) G.tlHold = nil end
+
+-- (autotest notiftest: the interface does the work, see N.test in mpfever_ui.script.lua; this game answers once it had the time)
+H.notiftest = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = { "see ui_mod.log (NOTIFTEST lines)" }
+	AUTO.points = {}
+	G.waits[#G.waits + 1] = { at = G.frames + 180, fn = autoFinish }
 end
 
 -- Stop scenario: which proposal form can put a bus stop on an existing street segment?
@@ -8150,6 +8424,11 @@ local function guiUpdate(userParams, state, guiState)
 		local okT, tNow = pcall(gameTime)
 		if okT and tNow ~= G.clockSeen then G.clockSeen = tNow; G.clockMovedAt = G.frames; G.clockMovedClock = os.clock() end
 	end
+	-- the counters of the game time component (MPFEVER_FASTSTILL decides with them; MPFEVER_STEPLOG times both rules)
+	if (G.fastStill or G.stillLog) and not G.stillFailed then
+		local okS, errS = pcall(G.stillWatch)
+		if not okS and not G.stillFailed then G.stillFailed = true; G.stillS = nil; log("stillness watch failed: " .. tostring(errS)) end
+	end
 	local okh, st = pcall(function() return state:get() end)
 	if not (okh and type(st) == "table") then st = {} end
 	G.simTerrainSig = st.terrainSig
@@ -8195,7 +8474,8 @@ local function guiUpdate(userParams, state, guiState)
 			if G.stepTarget and (now >= G.stepTarget or (G.frames - G.stepSince > 120 and G.frames - (G.clockMovedAt or 0) > 120)) then G.stepTarget = nil end
 			if sp == 0 and G.wantSteps and G.wantSteps > 0 and not G.stepTarget and G.simStill() then
 				G.stepTarget, G.stepSince = now + G.wantSteps * STEP, G.frames
-				if os.getenv("MPFEVER_STEPLOG") then log("STEPS " .. G.wantSteps .. " from t=" .. now .. " to " .. G.stepTarget .. " (hold " .. tostring(G.holdAt) .. ", barrier " .. tostring(G.lastBarrier) .. ", pause " .. tostring(G.session.pauseAt) .. ") [frame " .. G.frames .. "]") end
+				if os.getenv("MPFEVER_STEPLOG") then log("STEPS " .. G.wantSteps .. " from t=" .. now .. " to " .. G.stepTarget .. " (hold " .. tostring(G.holdAt) .. ", barrier " .. tostring(G.lastBarrier) .. ", pause " .. tostring(G.session.pauseAt) .. ") [frame " .. G.frames .. "]"
+					.. (G.stillS and (" [still: old rule " .. (G.stillOldRule() and "yes" or "no") .. ", new rule " .. ((G.stillS.usable and G.stillS.proven) and "yes" or (G.stillS.usable and "no" or "n/a")) .. ", " .. ((G.fastStill and G.stillS.usable) and "the earlier of the two decides" or "the old rule decides") .. "]") or "")) end
 				O.sendCommand(O.steps(G.wantSteps))
 			end
 		end
