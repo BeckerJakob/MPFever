@@ -1,6 +1,19 @@
 MPFever - Changelog
 ===================
 
+0.3.11-experimental - pull requests #38 to #42 (Steelworm)
+  - FIX (issue #37, PR #38): the game's release notes window (the thank-you note), left open on the main page, stayed over
+    a game loaded from MPFever's main menu and could no longer be closed. It is now closed as soon as a session starts
+    (lobby, join, Steam invitation), while the main page still exists.
+  - PR #39: the launcher window's name field shows the player name saved by the last host or join.
+  - PR #40 (experimental, off by default): MPFEVER_FASTSTILL=1 proves that the engine stands still from the game time
+    component's update counter, about 0.25 s sooner per stopped round.
+  - FIX (PR #41): a game kept behind a player holding a terrain tool could not reach the time of its own held build, the
+    leader waited for it, and after 1800 frames the build landed late on the leader (money drift, reloads). That game may
+    now come up to its own held build once the leader stands at its time. New autotest scenario terrainlead.
+  - PR #42: a player's dismissed notifications and log filter survive a resynchronisation (kept in the session folder);
+    log lines for new notifications and new industries. New autotest scenario notiftest.
+
 0.3.10-experimental - faster builds, vehicles bought together, purchases and line assignments in a pause
   - FIX (issue #34): a build appeared about 3 s after the click, and the game stopped at the click and reached the build's
     time in three stopped rounds. Two stop margins were stacked (the hold aimed a few steps before the build's time, and
