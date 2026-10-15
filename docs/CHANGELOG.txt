@@ -6,8 +6,8 @@ MPFever - Changelog
     a game loaded from MPFever's main menu and could no longer be closed. It is now closed as soon as a session starts
     (lobby, join, Steam invitation), while the main page still exists.
   - PR #39: the launcher window's name field shows the player name saved by the last host or join.
-  - PR #40 (experimental, off by default): MPFEVER_FASTSTILL=1 proves that the engine stands still from the game time
-    component's update counter, about 0.25 s sooner per stopped round.
+  - PR #40: the engine is proven still from the game time component's update counter, about 0.25 s sooner per stopped
+    round (on by default after a two-player test: 150 -> 132 frames from click to build; MPFEVER_FASTSTILL=0 turns it off).
   - FIX (PR #41): a game kept behind a player holding a terrain tool could not reach the time of its own held build, the
     leader waited for it, and after 1800 frames the build landed late on the leader (money drift, reloads). That game may
     now come up to its own held build once the leader stands at its time. New autotest scenario terrainlead.

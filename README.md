@@ -32,6 +32,16 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 - **Joining and reconnecting.** Joining a session already running works. A lost connection reconnects by itself for 5 minutes.
 - **In the game's 13 languages.** The launcher and the in-game windows follow the language of Transport Fever 3.
 
+## What's new in 0.3.11
+
+Pull requests by Steelworm:
+
+- **Builds a little faster again** (#40).
+- **A player holding a terrain tool no longer blocks the other player's builds** for 30 seconds (#41).
+- **Dismissed notifications stay dismissed** after a resynchronisation (#42).
+- **The game's release notes window** no longer stays stuck over a game started from MPFever (#37, #38).
+- **The launcher shows your saved player name** (#39).
+
 ## What's new in 0.3.10
 
 Fixes from the GitHub issues (thanks to Steelworm):
