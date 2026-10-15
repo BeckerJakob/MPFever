@@ -1498,6 +1498,13 @@ local function captureNativeBuild(state, param)
 	end)
 	local c0 = os.clock()
 	log("capture: start t=" .. now)
+	-- MPFEVER_SLOWCAPTURE=<seconds> (tests): each capture takes that much longer, as a big build does (a street through a town
+	-- that took 28 town buildings away: 1.7 s); the simulation stands still meanwhile, the interface runs on
+	local slow = tonumber(os.getenv("MPFEVER_SLOWCAPTURE") or "")
+	if slow and slow > 0 then
+		while os.clock() - c0 < slow do end
+		log("capture: held back " .. slow .. " s (MPFEVER_SLOWCAPTURE)")
+	end
 	local okc, compact = pcall(C.compactProposal, proposal)
 	log("capture: compact " .. string.format("%.3f", os.clock() - c0) .. " s, " .. #C.ser(compact or {}) .. " bytes" .. C.mapSizes(compact))
 	if not okc then
