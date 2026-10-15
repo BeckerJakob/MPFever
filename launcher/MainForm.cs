@@ -64,7 +64,7 @@ namespace MPFever
         const double UnitsPerSecond = 1000;    // game time units per real second at x1
         const double HashEverySeconds = 10;
 
-        readonly TextBox nameBox = new TextBox { Text = Environment.UserName };
+        readonly TextBox nameBox = new TextBox { Text = SavedName() };
         readonly TextBox hostBox = new TextBox { Text = "127.0.0.1" };
         readonly NumericUpDown portBox = new NumericUpDown { Minimum = 1024, Maximum = 65535, Value = 28090 };
         readonly ModernButton hostBtn = new ModernButton(ButtonKind.Primary);
@@ -584,6 +584,10 @@ namespace MPFever
             try { File.WriteAllLines(SettingsFile, d.Select(kv => kv.Key + "=" + kv.Value)); } catch { }
         }
 
+        /// <summary>The player name kept from the last host or join in the MPFever window (name= in mpfever_settings.txt),
+        /// else the Windows user name. The game and the launcher window both start with it.</summary>
+        static string SavedName() => LoadSettings().TryGetValue("name", out var n) && n != "" ? n : Environment.UserName;
+
         /// <summary>MPFever.exe started normally: the game starts at once; hosting or joining is chosen in the MPFever
         /// window of its main menu.</summary>
         void StartMenuMode()
@@ -591,8 +595,7 @@ namespace MPFever
             menuMode = true;
             running = true;
             hostBtn.Enabled = joinBtn.Enabled = localBtn.Enabled = false;
-            var st = LoadSettings();
-            menuGame = new GameLink(st.TryGetValue("name", out var n) && n != "" ? n : Environment.UserName, "menu");
+            menuGame = new GameLink(SavedName(), "menu");
             games.Add(menuGame);
             menuGame.Exited += () => { Log.W(T("Transport Fever 3 fermé : fin de MPFever.", "Transport Fever 3 closed: MPFever exits.")); try { BeginInvoke((Action)Close); } catch { } };
             MenuStatus();
@@ -735,8 +738,13 @@ namespace MPFever
             if (name == "") name = new string(Environment.UserName.Where(char.IsLetterOrDigit).ToArray());
             if (name == "") name = "Player";
             Log.Dim(F("Menu : {0} {1} ({2})", "Menu: {0} {1} ({2})", cmd, arg, name));
-            // the name typed in the MPFever window is kept for next time (the other requests do not send one)
-            if (cmd == "host" || cmd == "join") SaveSetting("name", name);
+            // the name typed in the MPFever window is kept for next time and shown in the launcher window (the other
+            // requests do not send one)
+            if (cmd == "host" || cmd == "join")
+            {
+                SaveSetting("name", name);
+                try { BeginInvoke((Action)(() => nameBox.Text = name)); } catch { }
+            }
             if (cmd == "host")
             {
                 if (hostGame != null || clients.Count > 0) return;
