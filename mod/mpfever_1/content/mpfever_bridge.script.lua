@@ -1762,7 +1762,7 @@ local G = {
 	oldHolds = os.getenv("MPFEVER_OLDHOLDS") == "1",   -- (tests: the stop logic of 0.3.9 and before, issue #34)
 	-- (experimental, off by default: the shorter proof that the engine stands still, see stillWatch; read once, and the counters
 	-- are only watched with it or with MPFEVER_STEPLOG)
-	fastStill = os.getenv("MPFEVER_FASTSTILL") == "1",
+	fastStill = os.getenv("MPFEVER_FASTSTILL") ~= "0",   -- (on by default for testing; MPFEVER_FASTSTILL=0 turns it off)
 	stillLog = os.getenv("MPFEVER_STEPLOG") ~= nil,
 	inOff = 0, uiOff = 0, frames = 0, started = false, me = C.NAME, connected = false,
 	session = { speed = 0, pauseAt = nil, started = false },
