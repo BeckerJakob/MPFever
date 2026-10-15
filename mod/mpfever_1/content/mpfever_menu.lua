@@ -117,6 +117,34 @@ local function loadSave(name)
 	return true
 end
 
+-- The release notes window (with the thank-you note for the game's buyers), which the main menu opens over the main
+-- page at start until "Do Not Show Again": its close button calls back into the main page, whose states are gone once a
+-- game has been loaded from it as MPFever does (the game's own menus leave the main page first). Left open, the window
+-- stayed over the loaded game and its close buttons no longer removed it. Its onClose is caught here (recipe
+-- replacement, as for the main page) so that MPPage closes it before a game loads.
+local NOTICE_WINDOWS = { ReleaseNotesWindow = true }
+local noticeClose = {}   -- recipe id -> onClose of that window while it is shown
+local function catchNotice(id, name)
+	_react.recipeReplace[id] = function(p, ...)
+		local okq, q = pcall(function()
+			if type(p) ~= "table" or type(p.onClose) ~= "function" then return nil end
+			local orig = p.onClose
+			local c = {}
+			for k, v in pairs(p) do c[k] = v end
+			-- (closed by its own button: nothing left to close)
+			c.onClose = function(...)
+				noticeClose[id] = nil
+				return orig(...)
+			end
+			noticeClose[id] = c.onClose
+			return c
+		end)
+		if okq and q then return _react.originalRecipeFn[id](q, ...) end
+		return _react.originalRecipeFn[id](p, ...)
+	end
+	log("notice window caught: " .. tostring(name))
+end
+
 -- the main page's recipe id, caught when main_page.tl registers it (this file is loaded before it)
 local mainId
 local MPPage
@@ -128,6 +156,10 @@ do
 		detail.makeRecipeId = function(name, ...)
 			local id = orig(name, ...)
 			if name == "MainPage" and not mainId then mainId = id; installReplacement() end
+			if NOTICE_WINDOWS[name] then
+				local okn, errn = pcall(catchNotice, id, name)
+				if not okn then log("notice window " .. tostring(name) .. " not caught: " .. tostring(errn)) end
+			end
 			return id
 		end
 	end)
@@ -317,6 +349,21 @@ local function setup()
 			if st0.phase ~= nil and st0.phase ~= "" and st0.phase ~= "idle" then request("menu", "", st0.name or "") end
 			if os.getenv("MPFEVER_MENU_OPEN") then open() end
 		end)
+		-- MPFever starts something from here (a lobby, a join, the host's game received): the release notes window is
+		-- closed now, while the main page it calls back into still exists (see NOTICE_WINDOWS). Done here and not by the
+		-- MPFever window, which is not open when a player joins through a Steam invitation. (Often, as nothing is read
+		-- while no such window is shown: the load may follow the phase change within a second.)
+		react.onStepTimer(function()
+			if next(noticeClose) == nil then return end
+			local s = readState()
+			if s.phase == nil or s.phase == "" or s.phase == "idle" or s.phase == "error" then return end
+			for id, close in pairs(noticeClose) do
+				noticeClose[id] = nil
+				log("phase " .. tostring(s.phase) .. ": closing the release notes window")
+				local okc, errc = pcall(close)
+				if not okc then log("closing the release notes window failed: " .. tostring(errc)) end
+			end
+		end, 0.2)
 		-- inside the menu's box layout a page must be a layout: the original page fills it, the button floats over it
 		return builtin.FloatingLayout{
 			children = {
