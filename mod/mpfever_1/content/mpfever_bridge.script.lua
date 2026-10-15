@@ -5466,6 +5466,15 @@ end
 -- (the builder of the terrain lead scenario is done: the leader puts the terrain tool away)
 H.terrainlead_stop = function(from, p) G.tlHold = nil end
 
+-- (autotest notiftest: the interface does the work, see N.test in mpfever_ui.script.lua; this game answers once it had the time)
+H.notiftest = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = { "see ui_mod.log (NOTIFTEST lines)" }
+	AUTO.points = {}
+	G.waits[#G.waits + 1] = { at = G.frames + 180, fn = autoFinish }
+end
+
 -- Stop scenario: which proposal form can put a bus stop on an existing street segment?
 local function stopForms(E)
 	local c = api.engine.getComponent(E, api.type.ComponentType.BASE_EDGE)
