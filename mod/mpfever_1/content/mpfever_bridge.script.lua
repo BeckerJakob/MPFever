@@ -1904,6 +1904,14 @@ local function otherLeads()
 	return false
 end
 
+-- the time of this game's earliest held build (released by this script when the game stands at that time, see
+-- runNativeRelease), nil when there is none
+G.ownHeldAt = function()
+	local m = nil
+	for _, r in ipairs(G.natRelease or {}) do if m == nil or r.at < m then m = r.at end end
+	return m
+end
+
 -- the speed this game may run at: session speed, never past the slowest other player (barrier), stop points
 G.pstat = { frames = 0, barrier = 0, hold = 0 }
 local function pacing()
@@ -1928,6 +1936,14 @@ local function pacing()
 		if s.pauseAt == nil and theirs > mine then
 			-- that player has a terrain tool in hand: stay behind it, overshoot included, with room to stop before its edits
 			limit = pc.t - terrainLeadSteps() * STEP
+			-- but not short of this game's own held build once the leader's clock has reached its time. That build is stamped
+			-- ahead of the leader's clock, so the leader stops there and waits for it, and only this game can release it, at that
+			-- time: kept behind the leader, the two games waited for each other until the hold expired (1800 frames) and the build
+			-- landed late. The leader sends its clock after the edits it made up to that time, and this game comes up from
+			-- terrainLeadSteps() behind it. An edit the leader makes while it waits lands at that time too; once the build is
+			-- released this game is behind the leader again and does not pass that time before the leader is that far past it.
+			local own = G.ownHeldAt()
+			if own and pc.t >= own and own > limit then limit = own end
 			exact = limit
 		elseif s.pauseAt == nil and mine > theirs then
 			-- this game leads: the others keep that distance behind it
@@ -5341,6 +5357,114 @@ H.newroad = function(from, p)
 		autoFinish()
 	end
 end
+
+-- Terrain lead scenario (MPFEVER_SCENARIO=terrainlead): the other game has a terrain tool in hand, as when a player shapes the
+-- ground (it leads; no edit is made), and this game lays MPFEVER_TERRAINLEAD_COUNT (3) roads the usual held way, each one 40
+-- frames after the answer to the previous one. A held build of this game is stamped ahead of the leader's clock, and the leader
+-- stops there for it. The results give the frames from sending each road to the engine's answer; the logs show whether the
+-- leader had to give up waiting ("never arrived", then "LATE native build" on the leader).
+H.terrainlead = function(from, p)
+	if p.role ~= C.ROLE then
+		-- the leader: the terrain tool stays in hand until the builder is done (terrainlead_stop), at most 14400 frames, and
+		-- it shapes the ground every 120 frames (8x8 cells next to each other, as the terrain scenario does) while the builder
+		-- waits for its builds (MPFEVER_TERRAINLEAD_EDITS=0: no edit)
+		local last = G.frames + 14400
+		local edits = os.getenv("MPFEVER_TERRAINLEAD_EDITS") ~= "0"
+		local bx, by = -640, -756
+		if C.ROLE ~= "host" then bx, by = 300, -200 end
+		local calls, k = 0, 0
+		-- (a player shapes the ground a moment after picking the tool: the edits start once the other games have fallen as far
+		-- behind as the lead keeps them; an edit made before lands late on a game that was still ahead, as in 0.3.10)
+		local function behind()
+			local okT, now = pcall(gameTime)
+			if not okT then return false end
+			for _, pc in pairs(G.peers) do
+				if type(pc.t) ~= "number" or pc.t > now - (terrainLeadSteps() - overshootReserve()) * STEP then return false end
+			end
+			return true
+		end
+		G.tlHold = true
+		local function keep()
+			if not G.tlHold or G.frames > last then G.tlHold = nil; log("AUTOTEST terrainlead: terrain tool put away after " .. k .. " edits"); return end
+			terrainLead("autotest terrainlead")
+			calls = calls + 1
+			if edits and calls % 2 == 0 and behind() then
+				k = k + 1
+				local i, x0 = k, bx + ((k - 1) % 4) * 10
+				local okE, errE = pcall(function()
+					local h0 = api.engine.terrain.getBaseHeightAt(api.type.Vec2f.new((x0 + 4) * 4, (by + 4) * 4))
+					local prop = api.type.Proposal.new()
+					prop.terrain.baseHeightMod = api.type.GridVec2f.new(x0, by, 8, 8, api.type.Vec2f.new(h0 + 1 + i % 3, h0))
+					local ctx = api.type.Context.new()
+					ctx.player = api.engine.util.getPlayer()
+					O.sendCommand(api.cmd.makeWorldBuildProposalCmd(prop, ctx, false, true), function(res, success)
+						log("AUTOTEST terrainlead: edit " .. i .. " " .. (success and "made" or "refused") .. " at t=" .. tostring(gameTime()))
+					end)
+				end)
+				if not okE then log("AUTOTEST terrainlead: edit " .. i .. " failed: " .. shortErr(errE)) end
+			end
+			G.waits[#G.waits + 1] = { at = G.frames + 60, fn = keep }
+		end
+		keep()
+		return
+	end
+	if AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("AUTOTEST terrainlead " .. t); AUTO.results[#AUTO.results + 1] = t end
+	local count = tonumber(os.getenv("MPFEVER_TERRAINLEAD_COUNT") or "3") or 3
+	local startFrame, built, answers = G.frames, 0, {}
+	local nextRoad
+	local function finish()
+		say("done: " .. built .. " roads, answers after " .. table.concat(answers, "/") .. " frames")
+		send("terrainlead_stop", {})
+		G.waits[#G.waits + 1] = { at = G.frames + 90, fn = autoFinish }
+	end
+	local function waitLead()
+		local leads = otherLeads()
+		if leads or G.frames - startFrame > 1800 then
+			say(leads and ("the other game leads after " .. (G.frames - startFrame) .. " frames") or "no lead of the other game seen in 1800 frames")
+			return nextRoad()
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 5, fn = waitLead }
+	end
+	nextRoad = function()
+		if built >= count then return finish() end
+		built = built + 1
+		local i = built
+		local okp, err = pcall(function()
+			local n, info, pn, a = matrixPlace((p.offset or 0) + 40 + i * 5)
+			local o = { tlanes = true, template = true, roadType = true, street = true, owner = true, positions = true, sharedIds = true,
+				tmpl = { roadTemplate = info.c.roadTemplate, roadStyle = info.c.roadStyle, roadType = info.c.roadType } }
+			local sp = buildMatrixProposal(o, n, pn, a)
+			local ctx = api.type.Context.new()
+			ctx.checkTerrainAlignment = true
+			ctx.cleanupStreetGraph = os.getenv("MPFEVER_CLEANUP") == "1"
+			ctx.gatherBuildings = true
+			ctx.gatherFields = true
+			ctx.player = api.engine.util.getPlayer()
+			local edges0, frame0 = edgeCount(), G.frames
+			deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), function(res, success)
+				local why = ""
+				if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+				answers[#answers + 1] = G.frames - frame0
+				say("road " .. i .. " from node " .. n .. ": " .. (success and "built" or ("refused " .. why)) .. ", answer after " .. (G.frames - frame0)
+					.. " frames, edges " .. edges0 .. " -> " .. edgeCount())
+				if success then AUTO.points[#AUTO.points + 1] = pn end
+				G.waits[#G.waits + 1] = { at = G.frames + 40, fn = nextRoad }
+			end)
+		end)
+		if not okp then
+			say("road " .. i .. " failed: " .. shortErr(err))
+			G.waits[#G.waits + 1] = { at = G.frames + 40, fn = nextRoad }
+		end
+	end
+	waitLead()
+end
+
+-- (the builder of the terrain lead scenario is done: the leader puts the terrain tool away)
+H.terrainlead_stop = function(from, p) G.tlHold = nil end
 
 -- Stop scenario: which proposal form can put a bus stop on an existing street segment?
 local function stopForms(E)
