@@ -2043,6 +2043,9 @@ G.buildLeadState = function()
 	if not G.buildLead then return false, "off" end
 	if not G.session.started then return false, "the session has not started" end
 	if G.session.pauseAt ~= nil then return false, "the session is paused" end
+	-- (above 1x the town development drifted: streets through a town released at once at 2x and 4x, then a minute of play,
+	-- desynchronised 4 of 5 runs (houses placed differently, same builds and ids); at 1x and held the usual way: in sync)
+	if (G.session.speed or 1) > 1 then return false, "the session runs faster than 1x" end
 	if G.leadYields() then return false, "the lead gives way to another game's build" end
 	local mine = leadLevel()
 	if mine == 0 then return false, "no tool in hand" end
