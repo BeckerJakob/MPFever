@@ -1623,8 +1623,10 @@ namespace MPFever
                             int ah = t.TryGetValue("ah", out var av) && av is double ad ? (int)ad : 3;
                             // tl: that player has a terrain tool in hand (1, 2 when used in the last seconds), the others stay behind its game
                             int tl = t.TryGetValue("tl", out var lv) && lv is double ld ? (int)ld : 0;
+                            // bl (MPFEVER_BUILDLEAD): that game takes part in the builder's lead (1), and follows another game's lead (2)
+                            int bl = t.TryGetValue("bl", out var bv) && bv is double bd ? (int)bd : 0;
                             var pc = Msg.Make("peerclock", hostName, "{[\"name\"]=" + LuaLit.Quote(m.From) + ",[\"t\"]=" + (long)td + ",[\"ah\"]=" + ah
-                                + (tl > 0 ? ",[\"tl\"]=" + tl : "") + "}");
+                                + (tl > 0 ? ",[\"tl\"]=" + tl : "") + (bl > 0 ? ",[\"bl\"]=" + bl : "") + "}");
                             lock (sendGate)
                             {
                                 if (from != null) hostGame?.ToGame(pc);
