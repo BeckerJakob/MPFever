@@ -8986,20 +8986,21 @@ end
 -- ================================================================== companies (GUI half)
 -- A player is known by its name (what it types in the menu); the relay adds "#n" to the names of the players who join, which
 -- changes at every connection, so the key is the name without it.
-local function coMyName()
+G.coMyName = function()
 	local n = tostring(G.me or C.NAME or "player"):gsub("#.*$", "")
 	return n
 end
 
+-- (G.coMyName/coMyKey/coMySid are fields of G: the main chunk is at Lua's limit of 200 locals)
 -- this player's key in the registry: its name in lower case; empty for a dedicated server, which plays no company of its own
-local function coMyKey()
+G.coMyKey = function()
 	if C.SERVER then return "" end
-	return coMyName():lower()
+	return G.coMyName():lower()
 end
 
 -- this player's Steam account (steam_id.txt, written by the native module once Steam is up), nil while unknown (and never
 -- used for a dedicated server: its account owns no company)
-local function coMySid()
+G.coMySid = function()
 	if C.SERVER then return nil end
 	if G.mySid == nil and G.frames - (G.sidTried or -1000) > 120 then
 		G.sidTried = G.frames
@@ -9080,14 +9081,14 @@ local function coGui(st)
 	if G.connected and G.session.started and not G.coAsked then
 		G.coAsked = true
 		local now = gameTime()
-		local name = coMyName()
+		local name = G.coMyName()
 		G.oseq = G.oseq + 1
 		local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt and gameSpeed() == 0
 		-- the player's Steam account (written by the native module): the company follows the account, whatever name is typed
-		local sid = coMySid()
+		local sid = G.coMySid()
 		local a = { fn = "mpfCoJoin", origin = G.me, oseq = G.oseq, uid = G.me .. ":" .. G.oseq,
 			at = paused and pausedStamp(now) or stampFor(now), paused = paused or nil,
-			args = { key = coMyKey(), name = name, host = (C.ROLE == "host"), mode = "separate", start = G.coStart, sid = sid,
+			args = { key = G.coMyKey(), name = name, host = (C.ROLE == "host"), mode = "separate", start = G.coStart, sid = sid,
 				owner = C.SERVER and (G.coOwner or "") or nil,
 				cname = C.Tf("Entreprise %s", "%s Company", name) } }
 		a.native = true
@@ -9099,7 +9100,7 @@ local function coGui(st)
 	-- which company is this game's: its interface and tools act as that company from now on
 	local reg = st.co
 	if reg then
-		local c = CO.match(reg, coMyKey(), coMySid(), C.ROLE == "host")
+		local c = CO.match(reg, G.coMyKey(), G.coMySid(), C.ROLE == "host")
 		-- the other companies' player entities (the native module empties their money popups, see ClearOthers)
 		local others = {}
 		for _, o in ipairs(reg.list) do if o.ent and c and o.ent ~= c.ent then others[#others + 1] = o.ent end end
