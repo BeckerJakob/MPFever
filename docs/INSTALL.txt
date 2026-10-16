@@ -70,7 +70,8 @@ Other players, either:
 - accept the host's Steam invitation (Transport Fever 3 and MPFever start by
   themselves if needed), or
 - "Join a game", type the host's address (for example 89.12.34.56 or
-  89.12.34.56:28090), then "Join".
+  89.12.34.56:28090), then "Join". A dedicated server may ask for a password: type it
+  in the "Password" field before "Join".
 In the lobby, wait for the host to start the game: the host's game is sent to you
 (progress shown in the MPFever window) and loads by itself.
 You can also join a game that is already running: then every game pauses and reloads
@@ -88,6 +89,10 @@ During the game:
 
 Developer mode (MPFever.exe --dev) keeps the old window with the Host / Join buttons
 and the local test.
+
+A world can also run on a dedicated server, a PC of its own that nobody plays on
+(MPFever.exe --server): download the separate archive MPFever-<version>-server.zip,
+which adds start-server.bat and SERVER.txt (how to set it up).
 
 
 TROUBLESHOOTING

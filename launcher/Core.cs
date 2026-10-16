@@ -425,6 +425,10 @@ namespace MPFever
 
         public bool GameRunning => proc != null && !proc.HasExited;
 
+        /// <summary>The game of a dedicated server (MPFever.exe --server): the mod knows it from MPFEVER_SERVER=1 and plays
+        /// no company of its own there.</summary>
+        public bool Server;
+
         /// <summary>Name and role chosen in the main menu, read by the mod when the game loads (identity.txt).</summary>
         public void SetIdentity(string name, string role)
         {
@@ -559,6 +563,7 @@ namespace MPFever
             psi.EnvironmentVariables["MPFEVER_NAME"] = Name;
             psi.EnvironmentVariables["MPFEVER_ROLE"] = Role;
             psi.EnvironmentVariables["MPFEVER_LANG"] = L.Code;
+            if (Server) psi.EnvironmentVariables["MPFEVER_SERVER"] = "1";
             WriteLang();
             // application script: starts the host's savegame after a resynchronisation (and loads the autotest save)
             psi.Arguments = "--script mpfever_1::/mpfever_auto.lua";
@@ -635,6 +640,9 @@ namespace MPFever
         public TcpClient Tcp;
         public StreamWriter Writer;
         public readonly object Gate = new object();
+        /// <summary>The player was let in (its "join" accepted): only then does it receive and send session messages.</summary>
+        public volatile bool Admitted;
+        public string Address;
     }
 
     /// <summary>Host side: accepts TCP clients and relays every message to everybody else.</summary>
@@ -648,10 +656,25 @@ namespace MPFever
         public event Action<Peer, Msg> Received;
         public event Action<Peer> Joined, Left;
 
+        /// <summary>Decides whether a player who says "join" may come in (a dedicated server checks its password, its
+        /// version and the number of players): null lets it in, otherwise the payload of the "denied" message it receives
+        /// before its connection is closed. Unset: everybody comes in.</summary>
+        public Func<Peer, Msg, string> Admit;
+
         public int Count { get { lock (peers) return peers.Count; } }
 
+        /// <summary>The players let in, connected right now.</summary>
+        public int AdmittedCount { get { lock (peers) return peers.Count(p => p.Admitted); } }
+
         /// <summary>The players connected right now (name#id), including those whose game is not ready yet.</summary>
-        public string[] PeerNames() { lock (peers) return peers.Where(p => p.Name != null).Select(p => p.Name).ToArray(); }
+        public string[] PeerNames() { lock (peers) return peers.Where(p => In(p) && p.Name != null).Select(p => p.Name).ToArray(); }
+
+        /// <summary>A connection that takes part in the session: every one, unless an Admit rule decides (then the players
+        /// it let in only).</summary>
+        bool In(Peer p) => p.Admitted || Admit == null;
+
+        /// <summary>The players connected right now, with their address.</summary>
+        public Peer[] Admitted() { lock (peers) return peers.Where(p => p.Admitted).ToArray(); }
 
         public void Start(int port)
         {
@@ -683,6 +706,7 @@ namespace MPFever
                     c.NoDelay = true;
                     var p = new Peer { Id = nextId++, Tcp = c, Writer = new StreamWriter(c.GetStream(), new UTF8Encoding(false)) { NewLine = "\n", AutoFlush = true } };
                     p.Name = "Player" + p.Id;
+                    try { p.Address = c.Client.RemoteEndPoint?.ToString(); } catch { }
                     lock (peers) peers.Add(p);
                     Log.Dim(L.F("Connexion entrante de {0} (id {1})", "Incoming connection from {0} (id {1})", c.Client.RemoteEndPoint, p.Id));
                     new Thread(() => ReadLoop(p)) { IsBackground = true, Name = "Relay peer " + p.Id }.Start();
@@ -703,17 +727,44 @@ namespace MPFever
                     if (m == null) continue;
                     if (m.Kind == "join")
                     {
+                        if (p.Admitted) continue;
                         p.Name = Sanitize(m.From) + "#" + p.Id;
+                        string refused = null;
+                        try { refused = Admit?.Invoke(p, m); }
+                        catch (Exception e) { Log.W("admit: " + e.Message); }
+                        if (refused != null) { Deny(p, refused); break; }
+                        p.Admitted = true;
                         Joined?.Invoke(p);
                         continue;
                     }
+                    if (!In(p)) continue;   // nothing counts before the player is let in
                     m.From = p.Name; // the relay decides who is speaking; the host decides who receives it
                     Received?.Invoke(p, m);
                 }
             }
-            catch (Exception e) { if (!stop) Log.W($"{p.Name} : {e.Message}"); }
+            catch (Exception e) { if (!stop && In(p)) Log.W($"{p.Name} : {e.Message}"); }
             lock (peers) peers.Remove(p);
-            Left?.Invoke(p);
+            if (In(p)) Left?.Invoke(p);
+        }
+
+        /// <summary>Tells a player why it may not stay ("denied", payload: { reason = "...", ... }), then closes its
+        /// connection (its MPFever does not reconnect).</summary>
+        public void Deny(Peer p, string payload)
+        {
+            Send(p, Msg.Make("denied", "MPFever", payload));
+            try { p.Tcp.Client.Shutdown(SocketShutdown.Send); } catch { }
+            Thread.Sleep(300);   // (closed at once, the message could be lost with the connection)
+            try { p.Tcp.Close(); } catch { }
+        }
+
+        /// <summary>Closes the connections of a player known by its name (without #id, any case): it is told why first.
+        /// Returns how many connections were closed.</summary>
+        public int Kick(string name, string payload)
+        {
+            string Base(string n) { int i = n.LastIndexOf('#'); return i < 0 ? n : n.Substring(0, i); }
+            var found = Admitted().Where(p => string.Equals(Base(p.Name), name, StringComparison.OrdinalIgnoreCase) || p.Name == name).ToList();
+            foreach (var p in found) new Thread(() => Deny(p, payload)) { IsBackground = true, Name = "Kick " + p.Id }.Start();
+            return found.Count;
         }
 
         static string Sanitize(string s)
@@ -746,7 +797,7 @@ namespace MPFever
         public void Broadcast(Msg m, Peer except = null)
         {
             Peer[] all;
-            lock (peers) all = peers.ToArray();
+            lock (peers) all = peers.Where(In).ToArray();   // (a connection not let in gets nothing, a savegame least of all)
             foreach (var p in all) if (p != except) Send(p, m);
         }
 
@@ -767,12 +818,17 @@ namespace MPFever
         volatile bool stop;
         public event Action<Msg> Received;
         public event Action Closed;
+        /// <summary>The host refused this player (wrong password, server full, other version, kicked): raised with the
+        /// "denied" payload, before Closed.</summary>
+        public event Action<Dictionary<object, object>> Denied;
 
         /// <summary>Connects to the host. host may list several addresses (a Steam invitation gives the host's IPv4 and
         /// IPv6 addresses, "1.2.3.4:28090,[2a02:...]:28090"); each one may carry its port, else port. IPv6 is tried first:
         /// a host behind DS-Lite is only reachable that way. On a PC without IPv6 those attempts fail at once: the error
-        /// then names the other attempts first and ends with one short note on IPv6 (issue #31).</summary>
-        public void Connect(string host, int port, string name)
+        /// then names the other attempts first and ends with one short note on IPv6 (issue #31).
+        /// The password is the one of a dedicated server (none: null); the join also tells this MPFever's version
+        /// (a dedicated server only lets in its own).</summary>
+        public void Connect(string host, int port, string name, string password = null)
         {
             var targets = new List<IPEndPoint>();
             var errors = new List<string>();
@@ -818,7 +874,8 @@ namespace MPFever
                 throw new IOException(errors.Count > 0 ? string.Join("  |  ", errors) : L.T("adresse vide", "empty address"));
             }
             writer = new StreamWriter(tcp.GetStream(), new UTF8Encoding(false)) { NewLine = "\n", AutoFlush = true };
-            Send(Msg.Make("join", name));
+            Send(Msg.Make("join", name, "{[\"v\"]=" + LuaLit.Quote(MainForm.Version)
+                + (string.IsNullOrEmpty(password) ? "" : ",[\"pw\"]=" + LuaLit.Quote(password)) + "}"));
             new Thread(ReadLoop) { IsBackground = true, Name = "Client read" }.Start();
             Log.Ok(L.F("Client : connecté à {0}", "Client: connected to {0}", NetAddr.Show(used.Address.ToString(), used.Port)));
         }
@@ -832,7 +889,13 @@ namespace MPFever
                 while ((line = r.ReadLine()) != null)
                 {
                     var m = Msg.Parse(line);
-                    if (m != null) Received?.Invoke(m);
+                    if (m == null) continue;
+                    if (m.Kind == "denied")
+                    {
+                        Denied?.Invoke(LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>());
+                        continue;
+                    }
+                    Received?.Invoke(m);
                 }
             }
             catch (Exception e) { if (!stop) Log.W("client : " + e.Message); }

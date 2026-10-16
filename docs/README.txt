@@ -65,6 +65,11 @@ WHAT WORKS
     and the game resumes (about 20 seconds).
   - A build one game cannot reproduce makes the host resynchronise at once.
 - If the connection is lost, the player's MPFever reconnects by itself (for 5 minutes).
+- Dedicated server (NEW, in development): a PC of its own can run the world for everybody,
+  without the PC of one of the players (MPFever.exe --server or start-server.bat). The world
+  waits while nobody is connected, is saved every 10 minutes and survives a crash of the
+  game. Players join its address as they join a host, with its password if it has one.
+  It comes as a separate archive, MPFever-<version>-server.zip (see SERVER.txt in it).
 - MPFever window in the game: open the pause menu (Esc) and click the MPFever card. It shows
   the players and their link (connected, behind, not responding, loading the host's game,
   left), whether the games are in sync and, for the host, a button to invite Steam friends.

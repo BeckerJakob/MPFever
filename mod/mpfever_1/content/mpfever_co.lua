@@ -7,6 +7,8 @@
 -- every message carries the company id (1, 2, 3...) and each game maps it to its own entity.
 -- Company 1 is the company of the savegame (the host's); a new player gets a new company the first time its name is seen, and
 -- finds it again under the same name after a reconnection (or a later session on the same savegame).
+-- A dedicated server (MPFever.exe --server) plays no company: it announces itself with an empty key and leaves company 1 to the
+-- player its settings name as the owner (reg.owner, the player's key), or to nobody.
 
 local CO = {}
 
@@ -65,11 +67,16 @@ end
 -- nil when the player has no company yet.
 function CO.match(reg, key, sid, isHost)
 	if not reg then return nil end
+	-- (a dedicated server: its game shows the savegame's company, which it never claims)
+	if isHost and key == "" then return reg.list[1] end
 	for _, c in ipairs(reg.list) do
 		if c.key == key and key ~= "" and (sid == nil or c.sid == nil or c.sid == sid) then return c end
 	end
 	-- (the host plays the savegame's company: CO.join gives it company 1)
 	if isHost then return nil end
+	-- the owner named by a dedicated server takes the savegame's company while nobody has it
+	local first = reg.list[1]
+	if first and first.key == "" and type(reg.owner) == "string" and reg.owner ~= "" and key == reg.owner then return first end
 	if sid then
 		local found, n = nil, 0
 		for _, c in ipairs(reg.list) do
@@ -84,6 +91,8 @@ end
 -- one. Returns the company and whether it is new (its player entity must be created).
 function CO.join(reg, key, name, isHost, newName, sid)
 	local mine = CO.match(reg, key, sid, isHost)
+	-- (a dedicated server: nothing to claim)
+	if mine and key == "" then return mine, false end
 	if mine then
 		-- (a new name for a known account: the company follows it)
 		if mine.key ~= key then mine.key = key end

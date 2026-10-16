@@ -46,6 +46,7 @@ it is stable enough.
   [ ] Rules for shared tracks and depots
 
 Later - Persistent worlds
-  [ ] Dedicated server running the world without the host's PC
+  [x] Dedicated server running the world without the host's PC (0.3.12: MPFever.exe --server, separate archive,
+      see SERVER.txt; to be tested in long real games)
   [ ] Persistent world that players join and leave at any time
   [ ] Larger player counts (MMO-like)

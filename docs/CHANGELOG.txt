@@ -14,6 +14,30 @@ MPFever - Changelog
   - PR #42: a player's dismissed notifications and log filter survive a resynchronisation (kept in the session folder);
     log lines for new notifications and new industries. New autotest scenario notiftest.
 
+next (in development) - dedicated server
+  - NEW: dedicated server, MPFever.exe --server (or start-server.bat): the game of a PC of its own loads one world
+    and hosts it, nobody plays on it, and the players join it as they join a host. The world no longer depends on the
+    PC of one of the players. See SERVER.txt.
+    - Settings in mpfever_server.properties next to MPFever.exe, written with their default values at the first start:
+      world (the savegame), port, password, players at most, company mode, owner of the savegame's company, start
+      money and speed, autosave, backups, restart after a crash, watchdog, message of the day.
+    - As in Satisfactory and Factorio, the world pauses while nobody is connected and resumes when a player is in.
+    - Autosave under the world's name (every 10 minutes by default; the world stops a few seconds), before a restart
+      and when the server stops; a copy of each save in server\backups (the last 10 kept).
+    - The game is started again when it closes, crashes, freezes (no sign of life for 180 s) or does not load the
+      world, at most 3 times in 15 minutes. The players' MPFever reconnects by itself and receives the world again.
+    - A console under the log of the server window: help, status, say, save, pause, resume, speed, kick, resync,
+      restart, stop. Closing the window stops the server properly (the world is saved first).
+    - A player whose game is not in the server's world yet (it reconnected after a restart of the server, still in
+      its old world) only counts once its game has loaded the server's world.
+  - NEW: joining a dedicated server: a "Password" field in the MPFever window of the main menu. A player is told why
+    the server refused it (wrong password, server full, other MPFever version, kicked, server stopped) in the
+    MPFever window and in the chat, and its MPFever does not try to reconnect. A connection that was not let in
+    receives nothing of the session.
+  - NEW (separate companies): a dedicated server plays no company. The savegame's own company goes to the player named
+    by owner= in its settings, else to nobody.
+  - NEW: the in-game MPFever window names the dedicated server above the players.
+
 0.3.10-experimental - faster builds, vehicles bought together, purchases and line assignments in a pause
   - FIX (issue #34): a build appeared about 3 s after the click, and the game stopped at the click and reached the build's
     time in three stopped rounds. Two stop margins were stacked (the hold aimed a few steps before the build's time, and

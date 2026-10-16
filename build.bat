@@ -30,3 +30,13 @@ if exist "release\MPFever-%VERSION%.zip" del "release\MPFever-%VERSION%.zip"
 rem standard zip entries (forward slashes), unlike Compress-Archive of Windows PowerShell 5
 powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path 'release\dist\MPFever'), (Join-Path (Resolve-Path 'release') 'MPFever-%VERSION%.zip'), 'Optimal', $true)" || exit /b 1
 echo BUILD OK: release\MPFever-%VERSION%.zip
+
+rem the dedicated server's archive: the same MPFever, plus start-server.bat and SERVER.txt (players do not need them)
+set "SDIST=release\dist-server\MPFever"
+if exist release\dist-server rmdir /s /q release\dist-server
+xcopy /e /i /q /y "%DIST%" "%SDIST%" >nul || exit /b 1
+copy /y docs\SERVER.txt "%SDIST%\" >nul || exit /b 1
+copy /y launcher\start-server.bat "%SDIST%\" >nul || exit /b 1
+if exist "release\MPFever-%VERSION%-server.zip" del "release\MPFever-%VERSION%-server.zip"
+powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path 'release\dist-server\MPFever'), (Join-Path (Resolve-Path 'release') 'MPFever-%VERSION%-server.zip'), 'Optimal', $true)" || exit /b 1
+echo BUILD OK: release\MPFever-%VERSION%-server.zip
