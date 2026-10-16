@@ -32,26 +32,21 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 - **In-game chat**, from a card in the pause menu. New messages show for a few seconds at the left of the screen.
 - **Host authority.** The games compare their state every 10 seconds. Money is corrected at once. A lasting difference reloads the host's game for everybody (about 20 seconds).
 - **Joining and reconnecting.** Joining a session already running works. A lost connection reconnects by itself for 5 minutes.
-- **Dedicated server** (in development, `MPFever.exe --server`), in the spirit of the Minecraft, Satisfactory and Factorio servers:
+- **Dedicated server** (separate archive, `MPFever.exe --server`), in the spirit of the Minecraft, Satisfactory and Factorio servers:
   - the world runs on a PC of its own, without the PC of a player, and waits while nobody is connected;
   - settings in `mpfever_server.properties`: world, port, password, players at most, company mode, message of the day;
   - autosave with backups, restart of the game after a crash or a freeze, players reconnected by themselves;
   - a console in the server window: `status`, `say`, `save`, `pause`, `speed`, `kick`, `resync`, `restart`, `stop`.
 - **In the game's 13 languages.** The launcher and the in-game windows follow the language of Transport Fever 3.
 
-## What's new in 0.3.11
+## What's new in 0.3.12
 
-Pull requests by Steelworm:
+- **A big street through a town no longer desyncs the games** (#43, Steelworm). Its capture takes seconds, and it used to be given up before it was sent: the other games built it a step late, with other houses taken away.
+- **Experimental: the builder leads** (#44, Steelworm), off by default. With `MPFEVER_BUILDLEAD=1` on every game, a road, track or station appears about 20 frames after the click instead of 100 to 250. Only at speed 1: at higher speeds the builds are held as before.
 
-- **Builds a little faster again** (#40).
-- **A player holding a terrain tool no longer blocks the other player's builds** for 30 seconds (#41).
-- **Dismissed notifications stay dismissed** after a resynchronisation (#42).
-- **The game's release notes window** no longer stays stuck over a game started from MPFever (#37, #38).
-- **The launcher shows your saved player name** (#39).
+### Dedicated server (SlikerDev, #23)
 
-## In development: dedicated server
-
-`MPFever.exe --server` (or `start-server.bat`) turns a PC into a dedicated server for one world. Transport Fever 3 has no server program of its own, so the server is the full game, started and driven by MPFever: it loads the world from `mpfever_server.properties`, hosts it like a player hosts a savegame, and nobody plays on it.
+In the separate archive `MPFever-0.3.12-experimental-server.zip`: `MPFever.exe --server` (or `start-server.bat`) turns a PC into a dedicated server for one world. Transport Fever 3 has no server program of its own, so the server is the full game, started and driven by MPFever: it loads the world from `mpfever_server.properties`, hosts it like a player hosts a savegame, and nobody plays on it.
 
 - **The world without the host's PC.** Players join the server's address from the MPFever window, with a password when the server has one. A player with another MPFever version is refused with a message saying which one the server runs.
 - **Like the servers of Minecraft, Satisfactory and Factorio:**
@@ -63,6 +58,16 @@ Pull requests by Steelworm:
 - **The in-game MPFever window** names the dedicated server above the players.
 
 Set-up, settings and commands: [SERVER](docs/SERVER.txt).
+
+## What's new in 0.3.11
+
+Pull requests by Steelworm:
+
+- **Builds a little faster again** (#40).
+- **A player holding a terrain tool no longer blocks the other player's builds** for 30 seconds (#41).
+- **Dismissed notifications stay dismissed** after a resynchronisation (#42).
+- **The game's release notes window** no longer stays stuck over a game started from MPFever (#37, #38).
+- **The launcher shows your saved player name** (#39).
 
 ## What's new in 0.3.10
 

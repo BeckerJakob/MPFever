@@ -1,23 +1,22 @@
 MPFever - Changelog
 ===================
 
-0.3.11-experimental - pull requests #38 to #42 (Steelworm)
-  - FIX (issue #37, PR #38): the game's release notes window (the thank-you note), left open on the main page, stayed over
-    a game loaded from MPFever's main menu and could no longer be closed. It is now closed as soon as a session starts
-    (lobby, join, Steam invitation), while the main page still exists.
-  - PR #39: the launcher window's name field shows the player name saved by the last host or join.
-  - PR #40: the engine is proven still from the game time component's update counter, about 0.25 s sooner per stopped
-    round (on by default after a two-player test: 150 -> 132 frames from click to build; MPFEVER_FASTSTILL=0 turns it off).
-  - FIX (PR #41): a game kept behind a player holding a terrain tool could not reach the time of its own held build, the
-    leader waited for it, and after 1800 frames the build landed late on the leader (money drift, reloads). That game may
-    now come up to its own held build once the leader stands at its time. New autotest scenario terrainlead.
-  - PR #42: a player's dismissed notifications and log filter survive a resynchronisation (kept in the session folder);
-    log lines for new notifications and new industries. New autotest scenario notiftest.
-
-next (in development) - dedicated server
-  - NEW: dedicated server, MPFever.exe --server (or start-server.bat): the game of a PC of its own loads one world
-    and hosts it, nobody plays on it, and the players join it as they join a host. The world no longer depends on the
-    PC of one of the players. See SERVER.txt.
+0.3.12-experimental - dedicated server (separate archive), pull requests #43 and #44 (Steelworm), #23 (SlikerDev)
+  - FIX (PR #43): a released build counted as refused 150 frames after its release, even while the simulation half was
+    still capturing it. A street through a town takes seconds to capture (1.7 s, 28 town buildings): it was given up,
+    the other games stopped holding for it and built it a step late, with other houses taken away (desync). It now counts
+    as refused after 150 frames and 4 handshakes with the simulation (900 frames in any case), and never while a capture
+    waits to be shipped. Test switch MPFEVER_SLOWCAPTURE=<seconds>. Checked: captures made 3 s slower at 1x, 4x and in a
+    pause, no build given up or late, in sync (before: 3 of 3 builds given up and built 4 steps late).
+  - EXPERIMENTAL (PR #44, off by default, MPFEVER_BUILDLEAD=1 on every game): the builder leads. The builds of the
+    street, track, station and stop tools and of the bulldozer are applied at once on the builder's game while the
+    others stay behind it and replay them at the same step: from sending a road to the engine's answer 19 to 37 frames
+    instead of 100 to 250. Only at 1x: above it, streets through a town released at once let the town development drift
+    (houses placed differently with identical builds, 4 of 5 long runs at 2x and 4x); there the builds are held as usual.
+    New autotest scenarios buildlead, towncross, dozenew.
+  - NEW (PR #23, SlikerDev): dedicated server, MPFever.exe --server (or start-server.bat, in the separate archive
+    MPFever-<version>-server.zip): the game of a PC of its own loads one world and hosts it, nobody plays on it, and
+    the players join it as they join a host. The world no longer depends on the PC of one of the players. See SERVER.txt.
     - Settings in mpfever_server.properties next to MPFever.exe, written with their default values at the first start:
       world (the savegame), port, password, players at most, company mode, owner of the savegame's company, start
       money and speed, autosave, backups, restart after a crash, watchdog, message of the day.
@@ -37,6 +36,21 @@ next (in development) - dedicated server
   - NEW (separate companies): a dedicated server plays no company. The savegame's own company goes to the player named
     by owner= in its settings, else to nobody.
   - NEW: the in-game MPFever window names the dedicated server above the players.
+  - FIX: the main game script stays below Lua's limit of 200 locals with the server's additions (the script did not
+    load at all: no session could start).
+
+0.3.11-experimental - pull requests #38 to #42 (Steelworm)
+  - FIX (issue #37, PR #38): the game's release notes window (the thank-you note), left open on the main page, stayed over
+    a game loaded from MPFever's main menu and could no longer be closed. It is now closed as soon as a session starts
+    (lobby, join, Steam invitation), while the main page still exists.
+  - PR #39: the launcher window's name field shows the player name saved by the last host or join.
+  - PR #40: the engine is proven still from the game time component's update counter, about 0.25 s sooner per stopped
+    round (on by default after a two-player test: 150 -> 132 frames from click to build; MPFEVER_FASTSTILL=0 turns it off).
+  - FIX (PR #41): a game kept behind a player holding a terrain tool could not reach the time of its own held build, the
+    leader waited for it, and after 1800 frames the build landed late on the leader (money drift, reloads). That game may
+    now come up to its own held build once the leader stands at its time. New autotest scenario terrainlead.
+  - PR #42: a player's dismissed notifications and log filter survive a resynchronisation (kept in the session folder);
+    log lines for new notifications and new industries. New autotest scenario notiftest.
 
 0.3.10-experimental - faster builds, vehicles bought together, purchases and line assignments in a pause
   - FIX (issue #34): a build appeared about 3 s after the click, and the game stopped at the click and reached the build's
