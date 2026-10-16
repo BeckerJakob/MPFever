@@ -1,5 +1,5 @@
 MPFever - Multiplayer for Transport Fever 3
-Version 0.3.11-experimental
+Version 0.3.12-experimental
 ===========================================
 
 MPFever lets several players play the same Transport Fever 3 world together, each one
