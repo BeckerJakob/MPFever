@@ -46,7 +46,7 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 
 ### Dedicated server (SlikerDev, #23)
 
-In the separate archive `MPFever-0.3.12-experimental-server.zip`: `MPFever.exe --server` (or `start-server.bat`) turns a PC into a dedicated server for one world. Transport Fever 3 has no server program of its own, so the server is the full game, started and driven by MPFever: it loads the world from `mpfever_server.properties`, hosts it like a player hosts a savegame, and nobody plays on it.
+In the separate archive `MPFever-<version>-server.zip`: `MPFever.exe --server` (or `start-server.bat`) turns a PC into a dedicated server for one world. Transport Fever 3 has no server program of its own, so the server is the full game, started and driven by MPFever: it loads the world from `mpfever_server.properties`, hosts it like a player hosts a savegame, and nobody plays on it.
 
 - **The world without the host's PC.** Players join the server's address from the MPFever window, with a password when the server has one. A player with another MPFever version is refused with a message saying which one the server runs.
 - **Like the servers of Minecraft, Satisfactory and Factorio:**
@@ -206,7 +206,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Experimental (0.3.12). Supported game builds:
+Experimental (0.3.13). Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.

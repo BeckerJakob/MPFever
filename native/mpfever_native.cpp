@@ -2525,11 +2525,14 @@ typedef int (*LuaLoadF)(void* L, LuaReader reader, void* data, const char* chunk
 static u32 RVA_LUA_LOAD = 0x2fbdf70;
 static const u8 P_LUA_LOAD[] = { 0x48, 0x89, 0x5C, 0x24, 0x10, 0x56, 0x48, 0x83, 0xEC, 0x50, 0x49, 0x8B, 0xD9, 0x48, 0x8B, 0xF1 };
 static LuaLoadF g_luaLoadOrig = 0;
-static const char MENU_PREFIX[] = "do local ok, e = pcall(require, \"mpfever_1::/mpfever_menu.lua\") if not ok then print(\"[MPFEVER-MENU] \" .. tostring(e)) end end ";
+// base/init.lua's require pushes the path on _ug_filePathRequireStack before loading it and only pops it when the file ran
+// to its end: a failed load left mpfever_1:: on the stack, and the game's own "::/gui/..." requires then looked in our mod
+// and the menu crashed. The prefix puts the stack (and _currentModIdTr) back as they were when our file fails.
+static const char MENU_PREFIX[] = "do local s, m = _ug_filePathRequireStack, _currentModIdTr local n = s and #s local ok, e = pcall(require, \"mpfever_1::/mpfever_menu.lua\") if not ok then if s then for i = #s, n + 1, -1 do s[i] = nil end end _currentModIdTr = m print(\"[MPFEVER-MENU] \" .. tostring(e)) end end ";
 static volatile long g_menuInjected = 0;
 // the same for the in-game pause menu (gui/main/pause_menu.tl, in a game's UI state): mpfever_1::/mpfever_pause.lua catches
 // the id of its main page as it is registered, so that mpfever_ui.script.lua can put MPFever's card beside it
-static const char PAUSE_PREFIX[] = "do local ok, e = pcall(require, \"mpfever_1::/mpfever_pause.lua\") if not ok then print(\"[MPFEVER-PAUSE] \" .. tostring(e)) end end ";
+static const char PAUSE_PREFIX[] = "do local s, m = _ug_filePathRequireStack, _currentModIdTr local n = s and #s local ok, e = pcall(require, \"mpfever_1::/mpfever_pause.lua\") if not ok then if s then for i = #s, n + 1, -1 do s[i] = nil end end _currentModIdTr = m print(\"[MPFEVER-PAUSE] \" .. tostring(e)) end end ";
 static volatile long g_pauseInjected = 0;
 
 struct MenuReader { LuaReader reader; void* data; int stage; const char* held; size_t heldSize; const char* prefix; size_t prefixSize; };

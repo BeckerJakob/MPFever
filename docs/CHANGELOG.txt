@@ -1,6 +1,15 @@
 MPFever - Changelog
 ===================
 
+0.3.13-experimental - the main menu no longer crashes when MPFever's menu file fails to load
+  - FIX: when mpfever_menu.lua (or mpfever_pause.lua) failed to load, the game crashed at start with "module
+    'mpfever_1::/gui/main/react.lua' not found". The game's require (base/init.lua) puts the file's path on its
+    require stack before loading it and only takes it off when the file ran to its end: our failed file stayed on it,
+    and the game's own "::/gui/..." files were then looked for in MPFever's folder. The line put in front of the menu
+    now restores that stack when our file fails: the game starts, without the Multiplayer button, and the error is
+    printed as [MPFEVER-MENU] in stdout.txt. Reproduced with a menu file that throws (before: 2 Lua errors, game
+    stopped; now: main menu ready).
+
 0.3.12-experimental - dedicated server (separate archive), pull requests #43 and #44 (Steelworm), #23 (SlikerDev)
   - FIX (PR #43): a released build counted as refused 150 frames after its release, even while the simulation half was
     still capturing it. A street through a town takes seconds to capture (1.7 s, 28 town buildings): it was given up,
