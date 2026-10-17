@@ -15,6 +15,13 @@ MPFever - Changelog
   - FIX: airports (runways and taxiways) and rail depots built by another player take the exact native construction
     replay, like stations (an airport was refused in every form). An airport's signs are edge objects on its taxiways:
     the replay now logs whether they are all there too. Not tested yet.
+  - FIX: an airport replayed natively had no signs (9 edge objects on its taxiways, the engine's conversion does not make
+    them): they are now placed afterwards on their segments, as stops are. Seen in a manual test (resynchronisation on
+    edgeObjects 346 / 355).
+  - FIX: a street through a town (town buildings moved) with the tool's replacement maps takes the native street
+    proposal, without the buildings: this game's engine takes the same ones away. Rebuilt by the script forms it was
+    laid otherwise (cost 13.8 M instead of 8.4 M, 44 town buildings taken away instead of 35) and the towns drifted.
+    Checked with the towncross autotest: every street replayed natively, in sync.
   - FIX (issue #47): a vehicle replacement is made when the vehicle reaches a depot; the command was reported as
     refused on every game ("created entity not found") after 10 steps.
   - AUTOTEST: a game that crashed during the test (process closed, or no clock for 120 s: a crashed game can stay open

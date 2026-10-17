@@ -2922,6 +2922,22 @@ local function replayNativeConstruction(a)
 				return
 			end
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction BUILT")
+			-- the edge objects of the tool's build (an airport's signs on its taxiways): the engine's conversion does not make
+			-- them, they are placed afterwards on their segments, as stops are (a manual test: an airport without its 9 signs)
+			if #(m.proposal.edgeObjectsToAdd or {}) > 0 then
+				local groups = {}
+				for _, o in ipairs(m.proposal.edgeObjectsToAdd) do
+					for j, src in ipairs(m.proposal.addedSegments or {}) do
+						if type(src) == "table" and src.entity == o.segmentEntity then
+							groups[j] = groups[j] or { seg = src, objs = {} }
+							groups[j].objs[#groups[j].objs + 1] = o
+						end
+					end
+				end
+				a.stopsAfter = {}
+				for _, g in pairs(groups) do a.stopsAfter[#a.stopsAfter + 1] = g end
+				G.waits[#G.waits + 1] = { at = G.frames + 5, fn = function() G.placeStopsAfter(a) end }
+			end
 			pcall(function()
 				local st = res2.proposal.proposal
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " engine applied: +nodes " .. #st.addedNodes .. " -nodes " .. #st.removedNodes .. " +segments " .. #st.addedSegments .. " -segments " .. #st.removedSegments .. " +constructions " .. #res2.proposal.toAdd)
@@ -2929,7 +2945,7 @@ local function replayNativeConstruction(a)
 			local expected = #(m.proposal.addedSegments or {}) - #(m.proposal.removedSegments or {})
 			-- (an airport's signs are edge objects of the tool's build: are they here too?)
 			local objExpected = #(m.proposal.edgeObjectsToAdd or {}) - #(m.proposal.edgeObjectsToRemove or {})
-			G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
+			G.waits[#G.waits + 1] = { at = G.frames + 10 + 30 * #(a.stopsAfter or {}) + 30, fn = function()
 				local got = #R.allEdges() - edgesBefore
 				local objs = 0
 				pcall(function() for _ in pairs(api.engine.system.streetSystem.getEdgeObject2EdgeMap()) do objs = objs + 1 end end)
@@ -3264,7 +3280,10 @@ local function replayNative(a, formIndex)
 		-- the tool said which new segments and nodes replace which old ones (a track joined to another, a curve reshaped, a
 		-- junction node moved): only a native proposal carries that. Rebuilt without it, the replaced parts were paid again and
 		-- built as new ones on the other games, which then numbered their next entities differently and drifted apart
-		if stp and C.hasReplaceMaps(stp) and #(a.args[1].toAdd or {}) == 0
+		-- (a street through a town moves town buildings: the native proposal without them, this game's engine takes the same
+		-- ones away. Rebuilt by the script forms instead, the street was laid otherwise: 44 town buildings taken away instead of
+		-- 35 and the towns drifted, a manual test on Leawood)
+		if stp and C.hasReplaceMaps(stp) and (#(a.args[1].toAdd or {}) == 0 or a.townAuto)
 			and #(stp.edgeObjectsToAdd or {}) == 0 and os.getenv("MPFEVER_MAPREPLAY") ~= "0" then
 			log("NATIVE REPLAY " .. tostring(a.uid) .. ": the tool's replacement maps" .. C.mapSizes(a.args[1]) .. ": native street proposal")
 			return replayNativeStreet(a)
