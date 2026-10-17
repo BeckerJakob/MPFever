@@ -8,6 +8,15 @@ MPFever - Changelog
     take the exact native construction replay. Checked: the station of the issue's log (modular cargo station, 2 tracks,
     catenary, 48 segments) replayed at 6 places of a large savegame: built 5 times with its 48 segments, refused once
     for a real collision with a road.
+  - FIX: on a large map, the first big builds of a session took their builder's game 4 to 74 s to capture (the first
+    six native proposals were written in full to raw_builds.txt, a diagnostic). Past 900 frames the build counted as
+    refused, the others stopped holding for it, then received it late: drift and a resynchronisation (manual test on
+    Leawood). The dump is now only written with MPFEVER_RAWBUILDS=1.
+  - FIX: airports (runways and taxiways) and rail depots built by another player take the exact native construction
+    replay, like stations (an airport was refused in every form). An airport's signs are edge objects on its taxiways:
+    the replay now logs whether they are all there too. Not tested yet.
+  - FIX (issue #47): a vehicle replacement is made when the vehicle reaches a depot; the command was reported as
+    refused on every game ("created entity not found") after 10 steps.
   - AUTOTEST: a game that crashed during the test (process closed, or no clock for 120 s: a crashed game can stay open
     after writing its crash save) now ends the test as "FAILED (a game closed)" instead of "IN SYNC". replayfile: an act
     with shift = {x, y} is moved there (at the height of the ground) to replay a player's build on another savegame.

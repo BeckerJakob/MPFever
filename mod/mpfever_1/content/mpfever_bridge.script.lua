@@ -580,7 +580,7 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 					-- the engine may create it during the next step: watch for it
 					local seen = {}
 					for e, _ in pairs(beforeSet) do seen[#seen + 1] = e end
-					result.watch = { kind = watch, key = createdKey .. a.uid, before = seen, steps = 0 }
+					result.watch = { kind = watch, key = createdKey .. a.uid, before = seen, steps = 0, fn = a.fn }
 				end
 			end
 			result.data = data
@@ -919,11 +919,15 @@ local function simApplyDue(state)
 					r.data = (w.kind == "LINE") and { resultEntity = created } or { resultVehicleEntity = created }
 					st.bind = st.bind or {}
 					st.bind[w.key] = created
+				elseif w.fn == "makeVehicleReplaceCmd" then
+					-- (a replacement is made when the vehicle reaches a depot, later: not a refusal; issue #47 counted it as one
+					-- on every game)
 				else
 					r.success = false
 					r.err = "created entity not found"
 				end
-				log("action " .. tostring(r.uid) .. " result after " .. w.steps .. " step(s): " .. (created and ("entity " .. created) or "nothing created"))
+				log("action " .. tostring(r.uid) .. " result after " .. w.steps .. " step(s): " .. (created and ("entity " .. created)
+					or (w.fn == "makeVehicleReplaceCmd" and "nothing created yet (the replacement is made at a depot)" or "nothing created")))
 				st.results = st.results or {}
 				st.results[#st.results + 1] = r
 			else
@@ -1520,8 +1524,10 @@ local function captureNativeBuild(state, param)
 		log("native build capture failed at t=" .. now .. ": " .. tostring(compact) .. " (desync)")
 		return
 	end
+	-- (diagnostic, MPFEVER_RAWBUILDS=1: the first native proposals in full. Dumping a big one took the capture 4 to 74 s on a
+	-- large map while the simulation stood still: the build counted as refused, the others ran on and got it late)
 	st.rawLogged = (st.rawLogged or 0) + 1
-	if st.rawLogged <= 6 then
+	if st.rawLogged <= 6 and os.getenv("MPFEVER_RAWBUILDS") == "1" then
 		C.appendFile(C.DIR .. BS .. "raw_builds.txt", "==== t=" .. now .. NL .. C.dump(proposal):sub(1, 60000) .. NL
 			.. "---- compact" .. NL .. C.ser(compact) .. NL)
 	end
@@ -2701,7 +2707,10 @@ end
 -- rail station): they belong to the construction, whose own script makes them
 local function isConstructionSegment(sg)
 	local tpl = tostring(sg and sg.comp and sg.comp.roadTemplate or "")
+	-- (street entrances, the tracks of rail stations (simple, simple_catenary), the runways and taxiways of airports, the
+	-- tracks of rail depots)
 	return tpl:find("/constructions/", 1, true) ~= nil or tpl:find("/track/simple/simple[%w_]*%.street_template") ~= nil
+		or tpl:find("/street/airport/", 1, true) ~= nil or tpl:find("/rail_depot[%w_]*%.street_template") ~= nil
 end
 
 local function hasConstructionSegments(m)
@@ -2825,6 +2834,8 @@ local function replayNativeConstruction(a)
 	if not okc or not dry then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: conversion command " .. shortErr(dry)) return false end
 	toSim("replaying", {})
 	local edgesBefore = #R.allEdges()
+	local objsBefore = 0
+	pcall(function() for _ in pairs(api.engine.system.streetSystem.getEdgeObject2EdgeMap()) do objsBefore = objsBefore + 1 end end)
 	replaySend(dry, function(res, success)
 		if success then
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: the conversion command was built instead of refused (desync)")
@@ -2916,9 +2927,15 @@ local function replayNativeConstruction(a)
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " engine applied: +nodes " .. #st.addedNodes .. " -nodes " .. #st.removedNodes .. " +segments " .. #st.addedSegments .. " -segments " .. #st.removedSegments .. " +constructions " .. #res2.proposal.toAdd)
 			end)
 			local expected = #(m.proposal.addedSegments or {}) - #(m.proposal.removedSegments or {})
+			-- (an airport's signs are edge objects of the tool's build: are they here too?)
+			local objExpected = #(m.proposal.edgeObjectsToAdd or {}) - #(m.proposal.edgeObjectsToRemove or {})
 			G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
 				local got = #R.allEdges() - edgesBefore
-				log("NATIVE REPLAY " .. tostring(a.uid) .. " edges here " .. got .. ", originator " .. expected .. (got == expected and "" or " SEGMENT COUNT DIFFERS"))
+				local objs = 0
+				pcall(function() for _ in pairs(api.engine.system.streetSystem.getEdgeObject2EdgeMap()) do objs = objs + 1 end end)
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " edges here " .. got .. ", originator " .. expected .. (got == expected and "" or " SEGMENT COUNT DIFFERS")
+					.. (objExpected ~= 0 and (", edge objects here " .. (objs - objsBefore) .. ", originator " .. objExpected
+						.. (objs - objsBefore == objExpected and "" or " EDGE OBJECT COUNT DIFFERS")) or ""))
 			end }
 		end)
 	end)
@@ -3192,7 +3209,8 @@ local function replayNative(a, formIndex)
 		if plan then return replayUpgrade(a, plan, 1) end
 		-- stops: the stop tool replaces one existing segment between the same nodes and adds edge objects
 		local stp = probe[1] and probe[1].proposal
-		if stp and (#(stp.edgeObjectsToAdd or {}) > 0 or #(stp.edgeObjectsToRemove or {}) > 0) then
+		-- (the signs of an airport are edge objects on its own taxiways: the airport goes the construction's way below)
+		if stp and (#(stp.edgeObjectsToAdd or {}) > 0 or #(stp.edgeObjectsToRemove or {}) > 0) and not hasConstructionSegments(a.args[1]) then
 			if #missing > 0 then
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " (stop) SKIPPED, unresolved: " .. table.concat(missing, ","))
 				replayFailed(a, "unresolved references")
