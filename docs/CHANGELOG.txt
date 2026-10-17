@@ -1,6 +1,47 @@
 MPFever - Changelog
 ===================
 
+0.3.14-experimental - determinism and tools fixes ported from TPF3-MP; separate companies: stops
+  - FIX (separate companies): a stop another player placed on their own street was rebuilt on the other games with a
+    street segment that belonged to nobody (the replay did not copy the segment's owner, playerOwned), and the stop's
+    builder paid differently: "owners" desync, then a resynchronisation (manual test, Test Multi 3). The replay now gives
+    the segment the owner the stop tool kept. Checked by replaying that test's road and stop on Test Multi 3: the
+    segment belongs to the client's company, as on the client's game.
+  - FIX (issue #47, separate companies): right after a resynchronisation, a player's builds could belong to the savegame's
+    company (the host's). The mod told the native module which company the game plays as soon as the game was loaded, and
+    the native module forgot it a second later, when the new game state applied its first command (on purpose: entity ids
+    of the old game mean nothing in the new one); the mod said it again only 7 to 15 s later. Now it says it every 30 frames
+    during the first 1200 frames of a game. Probably also the cause of objects the bulldozer would not remove (they belonged
+    to the other company).
+  - DETERMINISM (ported from TPF3-MP by Juliansgith, MIT, github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod; the
+    person-order fixes come from silver2127's TPF2 Multiplayer): the native module sorts by entity id six batches the
+    simulation reads in an order that is the engine's history rather than the world's state: the ids freed by each
+    modification before they join the free-id queue (the ids new entities get: in a manual test the same station's
+    segments had other ids on the two games), the vehicles that want track before the seeded shuffle that decides which
+    reserves first, the persons and cargo leaving buildings, the persons arriving on foot, the destination candidates and
+    the vehicles at a line stop. And the simulation's seeds taken from GameTime.tickCount (the shuffle above, a vehicle
+    variant pick, town and street development) now use the step count: tickCount also counts the frames a game stands
+    still, a different number on every game of a session (TPF3-MP's "paused-tick" fix does the same by not counting
+    them; here tickCount itself is kept, the mod's stillness checks read it). MPFEVER_NOORDER=1 turns all of it off (on
+    every game). Checked: an autotest on two games, every check identical, the counters in native.log ("order fixes:").
+  - SEPARATE COMPANIES (ported from TPF3-MP's "The tools' player"): the tools kept the savegame company's player (handed
+    to them once when the game's interface is made), so for a player of another company the bulldozer would not offer the
+    company's own roads, stops and buildings, and the street tool snapped only to the ends of the company's roads (issue
+    #47). At each tool's step a field still holding the savegame company now gets this machine's company: street and track
+    builder, track modifiers, construction, stop/signal/waypoint and module builders, and the bulldozer (its player, its
+    owner list and its filter's). MPFEVER_NOTOOLCO=1 turns it off. Manual test: the client bulldozed its own road and stop.
+  - NOT FIXED YET: demolishing what one just built refunds it on the builder's game only (manual test: a heliport,
+    -2 190 453 on the builder's game, 36 162 on the host's; the host's money is then applied to everyone). The tool puts
+    the interface's refundable entities (api.gui.construction.getRefundableEntities(): {entity, -1} = {revision,
+    updateCount}) in its Context. The list is now shipped with each native build and put into the replay's Context
+    (Context.refundableEntities, with this game's revision when it equals the builder's), but in the refundprobe autotest a
+    scripted removal with that list still cost the same (1244) as without: the engine does not take it from a scripted
+    Context. Left in, without effect; the list is logged ("refundable entities").
+  - The icon of a deleted stop stays about 80 s at x1 (StationGroupSystem: an empty station group expires 20 game days of
+    4000 ms later), as in the game without MPFever; seen in a manual test, gone on both games at the same step.
+  - makeTownDevelopAtCmd (sent by no stock script) is refused in a session: the engine seeds it from the C library's
+    rand(), seeded with the clock, so every game would develop the town differently (TPF3-MP's RNG survey).
+
 0.3.13-experimental - the main menu no longer crashes when MPFever's menu file fails to load; electrified rail stations
   - FIX (issue #46): a rail station with electrified tracks built by another player was refused on the other games
     ("Construction Not Possible" in every form, then a resynchronisation). Its tracks use simple_catenary.street_template,
@@ -22,33 +63,8 @@ MPFever - Changelog
     proposal, without the buildings: this game's engine takes the same ones away. Rebuilt by the script forms it was
     laid otherwise (cost 13.8 M instead of 8.4 M, 44 town buildings taken away instead of 35) and the towns drifted.
     Checked with the towncross autotest: every street replayed natively, in sync.
-  - FIX (issue #47, separate companies): right after a resynchronisation, a player's builds could belong to the savegame's
-    company (the host's). The mod told the native module which company the game plays as soon as the game was loaded, and
-    the native module forgot it a second later, when the new game state applied its first command (on purpose: entity ids
-    of the old game mean nothing in the new one); the mod said it again only 7 to 15 s later. Now it says it every 30 frames
-    during the first 1200 frames of a game. Probably also the cause of objects the bulldozer would not remove (they belonged
-    to the other company).
   - FIX (issue #47): a vehicle replacement is made when the vehicle reaches a depot; the command was reported as
     refused on every game ("created entity not found") after 10 steps.
-  - DETERMINISM (ported from TPF3-MP by Juliansgith, MIT, github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod; the
-    person-order fixes come from silver2127's TPF2 Multiplayer): the native module sorts by entity id six batches the
-    simulation reads in an order that is the engine's history rather than the world's state: the ids freed by each
-    modification before they join the free-id queue (the ids new entities get: in a manual test the same station's
-    segments had other ids on the two games), the vehicles that want track before the seeded shuffle that decides which
-    reserves first, the persons and cargo leaving buildings, the persons arriving on foot, the destination candidates and
-    the vehicles at a line stop. And the simulation's seeds taken from GameTime.tickCount (the shuffle above, a vehicle
-    variant pick, town and street development) now use the step count: tickCount also counts the frames a game stands
-    still, a different number on every game of a session (TPF3-MP's "paused-tick" fix does the same by not counting
-    them; here tickCount itself is kept, the mod's stillness checks read it). MPFEVER_NOORDER=1 turns all of it off (on
-    every game). Checked: an autotest on two games, every check identical, the counters in native.log ("order fixes:").
-  - SEPARATE COMPANIES (ported from TPF3-MP's "The tools' player"): the tools kept the savegame company's player (handed
-    to them once when the game's interface is made), so for a player of another company the bulldozer would not offer the
-    company's own roads, stops and buildings, and the street tool snapped only to the ends of the company's roads (issue
-    #47). At each tool's step a field still holding the savegame company now gets this machine's company: street and track
-    builder, track modifiers, construction, stop/signal/waypoint and module builders, and the bulldozer (its player, its
-    owner list and its filter's). MPFEVER_NOTOOLCO=1 turns it off. Not tested by a player yet.
-  - makeTownDevelopAtCmd (sent by no stock script) is refused in a session: the engine seeds it from the C library's
-    rand(), seeded with the clock, so every game would develop the town differently (TPF3-MP's RNG survey).
   - AUTOTEST: a game that crashed during the test (process closed, or no clock for 120 s: a crashed game can stay open
     after writing its crash save) now ends the test as "FAILED (a game closed)" instead of "IN SYNC". replayfile: an act
     with shift = {x, y} is moved there (at the height of the ground) to replay a player's build on another savegame.

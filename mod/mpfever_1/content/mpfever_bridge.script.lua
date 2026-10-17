@@ -1811,6 +1811,7 @@ local G = {
 -- set (see coGui); the continuations of a replay (command answers, deferred steps) run under the same company.
 local WAITS_MT = { __newindex = function(t, k, v)
 	if type(v) == "table" and v.actor == nil then v.actor = G.actor end
+	if type(v) == "table" and v.refund == nil then v.refund = G.refund end
 	rawset(t, k, v)
 end }
 setmetatable(G.waits, WAITS_MT)
@@ -1822,6 +1823,19 @@ local function withActor(ent, fn, ...)
 	G.actor = prev
 	if not ok then error(r1, 0) end
 	return r1, r2
+end
+
+-- The builder's refundable entities (what that player had just built, see pollNativeEvents), while one of their builds is replayed
+-- (G.refund, carried into the replay's callbacks and deferred steps like G.actor): put into a replay's Context, a demolition gives
+-- the same money back as on the builder's game. Before, it cost money on the other games and the host's money was then imposed
+-- on everyone: the builder lost the refund.
+G.refundInto = function(ctx)
+	if type(G.refund) ~= "table" or ctx == nil then return end
+	local ok, err = pcall(function() ctx.refundableEntities = C.toRefund(G.refund) end)
+	if not ok then
+		G.refundErrors = (G.refundErrors or 0) + 1
+		if G.refundErrors <= 3 then log("refundable entities not put into a replay's context: " .. shortErr(err)) end
+	end
 end
 
 -- the player entity of the company that made an action (nil in the shared mode)
@@ -2322,12 +2336,19 @@ end
 local function replaySend(cmd, cb)
 	G.replayOut = (G.replayOut or 0) + 1
 	G.replaySince = G.frames
-	local who = G.actor
+	local who, rf = G.actor, G.refund
 	O.sendCommand(cmd, function(...)
 		G.replayOut = math.max(0, (G.replayOut or 1) - 1)
 		G.replayQuiet = G.frames + 3   -- room for a follow-up command (next segment, next form)
 		pcall(buildEffects, ...)
-		if cb then return withActor(who, cb, ...) end
+		if cb then
+			local prevRf = G.refund
+			G.refund = rf
+			local ok, r1, r2 = pcall(withActor, who, cb, ...)
+			G.refund = prevRf
+			if not ok then error(r1, 0) end
+			return r1, r2
+		end
 	end)
 end
 
@@ -2424,6 +2445,7 @@ local function replayUpgrade(a, plan, i)
 	ctx.gatherBuildings = true
 	ctx.gatherFields = true
 	ctx.player = api.engine.util.getPlayer()
+	G.refundInto(ctx)
 	toSim("replaying", {})
 	replaySend(api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true), function(res, success)
 		local why = ""
@@ -2503,6 +2525,7 @@ local function engineReplay(a, what, makeP, cons)
 	end
 	ctx.gatherFields = true
 	ctx.player = api.engine.util.getPlayer()
+	G.refundInto(ctx)
 	toSim("replaying", {})
 	replaySend(api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true), function(res, success)
 		local why = ""
@@ -2525,6 +2548,7 @@ local function sContext()
 	c.gatherBuildings = false
 	c.gatherFields = true
 	c.player = api.engine.util.getPlayer()
+	G.refundInto(c)
 	return c
 end
 
@@ -2592,6 +2616,13 @@ local function replayStop(a, plan, variant)
 	for k, o in ipairs(plan.objs) do list[#list + 1] = { -400000000 - (k - 1), (o.category == 2) and 2 or (o.left and 0 or 1) } end
 	cc.objects = list
 	e.comp = cc
+	-- the segment's owner, as the stop tool kept it (else the segment it replaces): without it the new segment belonged to
+	-- nobody here and to its company on the builder's game (separate companies: "owners" desync, then a resynchronisation)
+	local owner = type(plan.seg.playerOwned) == "table" and plan.seg.playerOwned.player or nil
+	if type(owner) ~= "number" then owner = R.ownerOf(plan.E) end
+	if type(owner) == "number" and owner >= 0 then
+		pcall(function() local po = C.newOf("PlayerOwned"); po.player = owner; e.playerOwned = po end)
+	end
 	local se = e.streetEdge
 	se.precedenceNode0 = (plan.seg.streetEdge and plan.seg.streetEdge.precedenceNode0) or 2
 	se.precedenceNode1 = (plan.seg.streetEdge and plan.seg.streetEdge.precedenceNode1) or 2
@@ -2649,7 +2680,15 @@ local function replayStop(a, plan, variant)
 			G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
 				local after = stopCount()
 				local expected = before + #plan.objs - #removeIds
-			log("NATIVE REPLAY " .. tostring(a.uid) .. " stops on the map " .. before .. " -> " .. after .. ((after == expected) and "" or (" (EXPECTED " .. expected .. ")")))
+				local owners = {}
+				pcall(function()
+					for _, sg in ipairs(R.allEdges()) do
+						local c = api.engine.getComponent(sg, api.type.ComponentType.BASE_EDGE)
+						if c and c.node0 == cc.node0 and c.node1 == cc.node1 then owners[#owners + 1] = sg .. ":" .. tostring(R.ownerOf(sg)) end
+					end
+				end)
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " stops on the map " .. before .. " -> " .. after .. ((after == expected) and "" or (" (EXPECTED " .. expected .. ")"))
+				.. ", segment owner " .. tostring(owner) .. " (here " .. table.concat(owners, ",") .. ")")
 			end }
 		end
 	end)
@@ -2830,6 +2869,7 @@ local function replayNativeConstruction(a)
 	ctx.gatherBuildings = true
 	ctx.gatherFields = true
 	ctx.player = api.engine.util.getPlayer()
+	G.refundInto(ctx)
 	local okc, dry = pcall(function() return api.cmd.makeWorldBuildProposalCmd(spCon, ctx, false, true) end)
 	if not okc or not dry then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: conversion command " .. shortErr(dry)) return false end
 	toSim("replaying", {})
@@ -2886,6 +2926,7 @@ local function replayNativeConstruction(a)
 		ctx2.gatherBuildings = true
 		ctx2.gatherFields = true
 		ctx2.player = api.engine.util.getPlayer()
+		G.refundInto(ctx2)
 		local okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx2, false, true) end)
 		if (not okk or not cmd) and os.getenv("MPFEVER_DEPOTEXP") then
 			local oke, erre = pcall(depotExperiments, a, m, conv, rm, ctx2)
@@ -3036,6 +3077,7 @@ local function replayNativeStreet(a)
 	end
 	ctx.gatherFields = true
 	ctx.player = api.engine.util.getPlayer()
+	G.refundInto(ctx)
 	local okk, cmd, label = false, nil, nil
 	for _, variant in ipairs({ {}, { noConfigs = true }, { noConfigs = true, noMaps = true } }) do
 		C.errors = {}
@@ -3135,7 +3177,7 @@ function replayTwoStep(a)
 			end
 		end)
 		local label = (together and "with the construction, " or "") .. form.v .. "/" .. form.ctx
-		local okr, args, n = pcall(C.rebuildArgs, a.fn, sArgs, { seed = 7919, variant = form.v, ctx = form.ctx, raw = form.raw })
+		local okr, args, n = pcall(C.rebuildArgs, a.fn, sArgs, { seed = 7919, variant = form.v, ctx = form.ctx, raw = form.raw, refund = G.refund })
 		if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street " .. label .. " rebuild " .. shortErr(args)) return streetStep(k + 1, together) end
 		-- with the construction: the collisions the engine reports are the construction against its own street connection
 		-- (non-critical errors): the build goes on, as the game's own scripts do (ignoreErrors = true)
@@ -3340,7 +3382,7 @@ local function replayNative(a, formIndex)
 		margs[1].old2new = nil
 		margs[1].old2newByRank = nil
 	end
-	local okr, args, n = pcall(C.rebuildArgs, a.fn, margs, { seed = 7919, variant = form.v, ctx = form.ctx, raw = form.raw, rm = form.rm, exp = a.noStops and "noeo," or nil })
+	local okr, args, n = pcall(C.rebuildArgs, a.fn, margs, { seed = 7919, variant = form.v, ctx = form.ctx, raw = form.raw, rm = form.rm, exp = a.noStops and "noeo," or nil, refund = G.refund })
 	local label = form.v .. (form.raw and "/raw" or "") .. "/" .. form.ctx .. (form.ie and "/ie" or "") .. (form.pi == false and "/pi0" or "")
 		.. (form.rm and ("/rm-" .. form.rm) or "")
 	if not okr then
@@ -3692,6 +3734,15 @@ local function pollNativeEvents()
 			-- the tool's Context flags (1 gatherBuildings, 2 terrain alignment, 4 street graph cleanup; 32 = known), shipped with the build
 			local cbits = tonumber(line:match("^deferred %d+ (%d+)"))
 			if cbits then G.natCtx = G.natCtx or {}; G.natCtx[id] = cbits end
+			-- and the interface's refundable entities as the tool had them (what this player just built, given back when
+			-- demolished): read now, before the build is applied, and shipped with it (see refundInto)
+			pcall(function()
+				local rf = C.refundList(api.gui.construction.getRefundableEntities())
+				G.natRefund = G.natRefund or {}
+				G.natRefund[id] = rf
+				G.refundLogged = (G.refundLogged or 0) + 1
+				if G.refundLogged <= 3 then log("native build " .. id .. ": refundable entities " .. C.ser(rf):sub(1, 300)) end
+			end)
 			local now = gameTime()
 			local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt
 			-- BUILDLEAD: this game leads, and the others stay well behind it: no hold, no circle on the ground, the build goes to the
@@ -3727,6 +3778,8 @@ local function deferredSend(cmd, cb)
 	local now = gameTime()
 	G.autoBuildSeq = G.autoBuildSeq + 1
 	local id = 100000 + G.autoBuildSeq
+	-- (the refundable entities, shipped with it as with a tool's build: see pollNativeEvents)
+	pcall(function() G.natRefund = G.natRefund or {}; G.natRefund[id] = C.refundList(api.gui.construction.getRefundableEntities()) end)
 	-- BUILDLEAD: as a real tool's build when this game leads (see pollNativeEvents)
 	local lead, why = false, nil
 	if G.buildLead then G.leadRefusedCheck(true) end
@@ -4140,7 +4193,11 @@ local function runNativeReplays()
 			if a.fn == "terrainEdit" then okr, errr = pcall(withActor, PL(a), replayTerrain, a)
 			elseif a.fn == "assetBuild" then okr, errr = pcall(withActor, PL(a), replayAssets, a)
 			elseif a.fn == "mpfCoJoin" then G.coBusy = { a = a, phase = "apply", frame = G.frames }; okr = true
-			else okr, errr = pcall(withActor, PL(a), replayNative, a, 1) end
+			else
+				G.refund = a.refund
+				okr, errr = pcall(withActor, PL(a), replayNative, a, 1)
+				G.refund = nil
+			end
 			if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " failed: " .. tostring(errr)) end
 		else
 			keep[#keep + 1] = a
@@ -4527,6 +4584,7 @@ local function shipNativeBuilds(st)
 						.. ((o.at - ek.at) / STEP) .. " step(s) later; this game is at t=" .. tostring(G.clockSeen) .. ", " .. (G.frames - ek.frame) .. " frames after the release)")
 				end
 			if G.natCtx and G.natCtx[a.natId] then a.ctx = G.natCtx[a.natId]; G.natCtx[a.natId] = nil end
+			if G.natRefund and G.natRefund[a.natId] then a.refund = G.natRefund[a.natId]; G.natRefund[a.natId] = nil end
 				local rest = {}
 				for i = k + 1, #G.natShipIds do rest[#rest + 1] = G.natShipIds[i] end
 				G.natShipIds = rest
@@ -6249,6 +6307,71 @@ H.dozenew = function(from, p)
 		G.waits[#G.waits + 1] = { at = G.frames + 5, fn = waitLead }
 	end
 	waitLead()
+end
+
+-- Refund probe (MPFEVER_SCENARIO=refundprobe): what the interface's list of refundable entities holds after a road is marked as just
+-- built, and what a removal costs with that list in its Context (the tool's way) and without it (the replays' way so far)
+H.refundprobe = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("AUTOTEST refundprobe " .. t); AUTO.results[#AUTO.results + 1] = t end
+	local function edgeSet() local s = {} for _, e in ipairs(R.allEdges()) do s[e] = true end return s end
+	local function dumpRefund(tag)
+		local ok, r = pcall(function() return api.gui.construction.getRefundableEntities() end)
+		say(tag .. ": getRefundableEntities " .. (ok and (type(r) .. " " .. C.dump(r):sub(1, 400)) or ("error " .. tostring(r))))
+		return ok and r or nil
+	end
+	dumpRefund("start")
+	pcall(function() local c = api.type.Context.new(); say("new Context.refundableEntities " .. type(c.refundableEntities) .. " " .. C.dump(c.refundableEntities):sub(1, 200)) end)
+	local i = 0
+	local nextOne
+	nextOne = function()
+		if i >= 6 or (p.done or 0) >= 2 then G.waits[#G.waits + 1] = { at = G.frames + 120, fn = autoFinish }; return end
+		i = i + 1
+		local n0 = i
+		local okp, err = pcall(function()
+			local n, info, pn, a = matrixPlace((p.offset or 0) + 60 + n0 * 5)
+			local o = { tlanes = true, template = true, roadType = true, street = true, owner = true, positions = true, sharedIds = true,
+				tmpl = { roadTemplate = info.c.roadTemplate, roadStyle = info.c.roadStyle, roadType = info.c.roadType } }
+			local sp = buildMatrixProposal(o, n, pn, a)
+			local before = edgeSet()
+			deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, playerContext(), false, true), function(res, success)
+				local new = {}
+				for _, e in ipairs(R.allEdges()) do if not before[e] then new[#new + 1] = e end end
+				say("road " .. n0 .. ": " .. (success and "built" or "refused") .. ", new segments " .. table.concat(new, ","))
+				if not success or #new == 0 then G.waits[#G.waits + 1] = { at = G.frames + 40, fn = nextOne }; return end
+				local oku, erru = pcall(function() api.gui.construction.updateRefundableEntities(res.resultEntities, res.proposal.proposal) end)
+				if not oku then say("updateRefundableEntities(resultEntities, proposal.proposal) " .. shortErr(erru)) end
+				dumpRefund("road " .. n0 .. " after update")
+				local withRefund = (p.done or 0) == 0
+				p.done = (p.done or 0) + 1
+				local okl, rf = pcall(function() return C.refundList(api.gui.construction.getRefundableEntities()) end)
+				say("road " .. n0 .. ": shipped form " .. (okl and C.ser(rf) or ("error " .. tostring(rf))))
+				if not okl then rf = nil end
+				G.waits[#G.waits + 1] = { at = G.frames + 60, fn = function()
+					local okr, P = pcall(function() return api.engine.util.proposal.makeSegmentsRemoveProposal(new) end)
+					if not okr or not P then say("road " .. n0 .. ": no removal proposal " .. tostring(P)); return nextOne() end
+					local ctx = playerContext()
+					if withRefund and rf then
+						local okc, errc = pcall(function() ctx.refundableEntities = C.toRefund(rf) end)
+						say("road " .. n0 .. ": Context.refundableEntities written " .. tostring(okc) .. (okc and "" or (" " .. shortErr(errc)))
+							.. ", reads back " .. C.dump(ctx.refundableEntities):sub(1, 300))
+					end
+					deferredSend(api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true), function(res2, success2)
+						local cost = "?"
+						pcall(function() cost = tostring(res2.resultProposalData.costs) end)
+						say("road " .. n0 .. ": " .. (success2 and "demolished" or "demolition refused") .. (withRefund and " WITH" or " without")
+							.. " the refundable list, costs " .. cost)
+						G.waits[#G.waits + 1] = { at = G.frames + 40, fn = nextOne }
+					end)
+				end }
+			end)
+		end)
+		if not okp then say("road " .. n0 .. " failed: " .. shortErr(err)); G.waits[#G.waits + 1] = { at = G.frames + 40, fn = nextOne } end
+	end
+	nextOne()
 end
 
 -- (autotest notiftest: the interface does the work, see N.test in mpfever_ui.script.lua; this game answers once it had the time)
@@ -9347,7 +9470,10 @@ local function guiUpdate(userParams, state, guiState)
 		G.waits = setmetatable({}, WAITS_MT)
 		for _, w in ipairs(current) do
 			if G.frames >= w.at then
+				local prevRf = G.refund
+				G.refund = w.refund
 				local ok, err = pcall(withActor, w.actor, w.fn)
+				G.refund = prevRf
 				if not ok then log("deferred action failed: " .. tostring(err)) end
 			else
 				G.waits[#G.waits + 1] = w

@@ -1390,6 +1390,33 @@ C.ARGS = {
 	makeEntitySetColorCmd = { false, "Vec3f" },
 }
 
+-- The interface's refundable entities (api.gui.construction.getRefundableEntities(): {{entity, n} = {revision, updateCount}}, what
+-- this player just built; the engine gives its cost back when it is demolished while unchanged) as a list that can be shipped
+function C.refundList(raw)
+	local list = {}
+	for k, v in pairs(raw or {}) do
+		local num = v[1] and v[1].num
+		if type(k) == "table" and type(k[1]) == "number" and num then
+			list[#list + 1] = { e = k[1], x = k[2], r = { num[1], num[2], num[3] }, n = v[2] }
+		end
+	end
+	return list
+end
+
+-- ... and back, for a Context's refundableEntities: the revision is this game's own of that entity (no Revision can be made in
+-- Lua), and only when it is the one the builder's game had (the entity unchanged since, as there)
+function C.toRefund(list)
+	local out = {}
+	for _, it in ipairs(list or {}) do
+		local okr, rev = pcall(function() return api.engine.getRevision(it.e) end)
+		local num = okr and rev and rev.num
+		if num and type(it.r) == "table" and num[1] == it.r[1] and num[2] == it.r[2] and num[3] == it.r[3] then
+			out[{ it.e, it.x }] = { rev, it.n }
+		end
+	end
+	return out
+end
+
 function C.rebuildArgs(fn, margs, opts)
 	C.errors = {}
 	local types = C.ARGS[fn] or {}
@@ -1414,6 +1441,8 @@ function C.rebuildArgs(fn, margs, opts)
 				ctx.gatherBuildings = (k == "terrain" or k == "terrainNoCleanup")
 				ctx.gatherFields = true
 				ctx.player = api.engine.util.getPlayer()
+				-- (the builder's refundable entities, see G.refundInto in the bridge)
+				if type(opts.refund) == "table" then pcall(function() ctx.refundableEntities = C.toRefund(opts.refund) end) end
 				args[i] = ctx
 			end
 		elseif tn == "Context" then
