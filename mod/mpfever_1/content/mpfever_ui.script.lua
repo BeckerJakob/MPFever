@@ -83,6 +83,14 @@ local function install()
 			if os.getenv("MPFEVER_NONOTIF") then return end
 			return O.sendCommand(cmd, cb, progress)
 		end
+		-- town development at a position: the engine seeds it from the C library's rand(), seeded with the clock, so every
+		-- game would develop the town differently (found by TPF3-MP, investigation/TPF3_RNG_2026-09-29.md). No stock script
+		-- sends it; a mod's is refused in a session
+		if tag.name == "makeTownDevelopAtCmd" then
+			U.townDevRefused = (U.townDevRefused or 0) + 1
+			if U.townDevRefused <= 5 then log("makeTownDevelopAtCmd refused in a session (its random numbers differ on every game)") end
+			return
+		end
 		if tag.name == "makeGameSetSpeedCmd" then
 			U.stats.speed = U.stats.speed + 1
 			-- the interface repeats its request every frame while the game holds another speed: one per second at most

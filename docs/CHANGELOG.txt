@@ -41,6 +41,14 @@ MPFever - Changelog
     still, a different number on every game of a session (TPF3-MP's "paused-tick" fix does the same by not counting
     them; here tickCount itself is kept, the mod's stillness checks read it). MPFEVER_NOORDER=1 turns all of it off (on
     every game). Checked: an autotest on two games, every check identical, the counters in native.log ("order fixes:").
+  - SEPARATE COMPANIES (ported from TPF3-MP's "The tools' player"): the tools kept the savegame company's player (handed
+    to them once when the game's interface is made), so for a player of another company the bulldozer would not offer the
+    company's own roads, stops and buildings, and the street tool snapped only to the ends of the company's roads (issue
+    #47). At each tool's step a field still holding the savegame company now gets this machine's company: street and track
+    builder, track modifiers, construction, stop/signal/waypoint and module builders, and the bulldozer (its player, its
+    owner list and its filter's). MPFEVER_NOTOOLCO=1 turns it off. Not tested by a player yet.
+  - makeTownDevelopAtCmd (sent by no stock script) is refused in a session: the engine seeds it from the C library's
+    rand(), seeded with the clock, so every game would develop the town differently (TPF3-MP's RNG survey).
   - AUTOTEST: a game that crashed during the test (process closed, or no clock for 120 s: a crashed game can stay open
     after writing its crash save) now ends the test as "FAILED (a game closed)" instead of "IN SYNC". replayfile: an act
     with shift = {x, y} is moved there (at the height of the ground) to replay a player's build on another savegame.

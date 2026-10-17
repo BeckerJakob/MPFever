@@ -2389,11 +2389,88 @@ static void InstallOrderFixes()
     Buf t; t.str("simulation seeds from the step count instead of tickCount: ").dec(moved).str(" of 7 calls"); LogLine(t);
 }
 
+// ---------------------------------------------------------------- the tools' company (ported from TPF3-MP, MIT)
+// Ported from TPF3-MP's "The tools' player" (docs/HOOKS.md, crates/tpf3mp-hook/src/toolplayer.rs, signatures of
+// profiles/tf3_build40420_steam_windows/hooks.toml). UI::CGameUI's constructor reads the save's player once and hands each
+// tool a copy. The builds themselves are given the player's company by OwnerFix, but the tools also use their copy to decide
+// what is "the player's own": the street tool snapped only to the ends of the company's own roads, and the bulldozer would
+// not offer the company's own roads, stops and buildings (its filter's owner list held the save's company: issue #47). At the
+// start of each tool's Step (main thread), a field still holding the savegame company gets this machine's company. Only
+// with separate companies, once this machine's company is known and differs from the savegame's.
+
+static u32 g_bullVtable = 0;           // the bulldozer filter's vtable (rva), checked before its list is written
+static volatile long g_toolWrites = 0;
+
+static void ToolField(u64 obj, u32 off)
+{
+    long canon = g_canon, local = g_localPlayer;
+    if (!canon || !local || canon == local || !Writable((void*)(obj + off), 4)) return;
+    if (*(i32*)(obj + off) == canon) { *(i32*)(obj + off) = (i32)local; _InterlockedIncrement(&g_toolWrites); }
+}
+// a std::vector<Entity> at vec: its savegame-company entries get this machine's company
+static void ToolList(u64 vec)
+{
+    long canon = g_canon, local = g_localPlayer;
+    if (!canon || !local || canon == local || !Readable((void*)vec, 24)) return;
+    u64 b = *(u64*)vec, e = *(u64*)(vec + 8);
+    if (b == e || e < b || ((e - b) & 3) || (e - b) > 4096 || !Writable((void*)b, e - b)) return;
+    for (i32* q = (i32*)b; q < (i32*)e; q++) if (*q == canon) { *q = (i32)local; _InterlockedIncrement(&g_toolWrites); }
+}
+static void ToolStreetBuilder(SavedRegs* r) { ToolField(r->rcx, 0xc0); }
+static void ToolTrackModifier(SavedRegs* r) { ToolField(r->rcx, 0xa0); }
+static void ToolConstructionBuilder(SavedRegs* r) { ToolField(r->rcx, 0xa0); }
+static void ToolStreetTerminalBuilder(SavedRegs* r) { ToolField(r->rcx, 0xa0); }
+static void ToolModuleBuilder(SavedRegs* r) { ToolField(r->rcx, 0xa8); }
+static void ToolBulldozer(SavedRegs* r)
+{
+    u64 self = r->rcx;
+    ToolField(self, 0x28);                 // its own player: the proposals it makes
+    ToolList(self + 0xa8);                 // its owner list: every query it makes
+    if (!Readable((void*)(self + 0xc0), 8)) return;
+    u64 f = *(u64*)(self + 0xc0);          // its BulldozerFilter, when the vtable is the one its constructor puts
+    if (g_bullVtable && f && Readable((void*)f, 0x28) && *(u64*)f == g_base + g_bullVtable) ToolList(f + 0x10);
+}
+
+static void InstallToolCompany()
+{
+    if (GetEnvironmentVariableA("MPFEVER_NOTOOLCO", 0, 0) > 0) { Buf b; b.str("tools' company: off (MPFEVER_NOTOOLCO)"); LogLine(b); return; }
+    u8* mem = AllocNear(0x1000);
+    if (!mem) return;
+    // every field's offset is the one its constructor's code stores (the signatures include the stores)
+    struct Tool { const char* name; const char* step; int steal; const char* store; SpliceFn fn; };
+    static const Tool tools[] = {
+        { "street and track builder", "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 E0 CC FF FF", 5,
+          "48 8B 85 10 01 00 00 48 89 86 B0 00 00 00 48 8B 85 18 01 00 00 48 89 86 B8 00 00 00 8B 85 28 01 00 00 89 86 C0 00 00 00", ToolStreetBuilder },
+        { "track modifiers", "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 50 CC FF FF", 5,
+          "48 8B 85 20 03 00 00 49 89 86 98 00 00 00 8B 85 30 03 00 00 41 89 86 A0 00 00 00", ToolTrackModifier },
+        { "construction builder", "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 C0 D5 FF FF", 5,
+          "49 89 B6 90 00 00 00 48 8B 85 E0 02 00 00 49 89 86 98 00 00 00 8B 85 F0 02 00 00 41 89 86 A0 00 00 00", ToolConstructionBuilder },
+        { "stop, signal and waypoint builder", "40 53 56 57 41 54 41 55 41 56 41 57 B8 80 14 00 00", 6,
+          "49 89 BE 88 00 00 00 49 89 B6 90 00 00 00 48 8B 85 C0 01 00 00 49 89 86 98 00 00 00 8B 85 D0 01 00 00 41 89 86 A0 00 00 00", ToolStreetTerminalBuilder },
+        { "module builder", "40 53 56 57 41 54 41 55 41 56 41 57 B8 A0 10 00 00", 6,
+          "48 8B 85 C8 02 00 00 48 89 87 98 00 00 00 49 8B 04 24 33 C9 49 89 0C 24 48 89 87 A0 00 00 00 8B 85 E0 02 00 00 89 87 A8 00 00 00", ToolModuleBuilder },
+        { "bulldozer", "48 8B C4 48 89 58 20 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 28 F1 FF FF", 7,
+          "48 8D 05 ?? ?? ?? ?? 49 89 06 49 89 76 20 41 89 5E 28 48 8B 85 C8 01 00 00", ToolBulldozer },
+    };
+    u32 filter = FindSigRva("48 8D 05 ?? ?? ?? ?? 48 89 03 48 89 73 08 48 89 7B 10 48 89 7B 18 48 89 7B 20 66 C7 43 28 00 00 EB 03 48 8B DF 48 89 5D D8 49 89 9E C0 00 00 00");
+    bool ownerList = FindSigRva("49 89 BE 98 00 00 00 49 89 BE A0 00 00 00 4D 8D BE A8 00 00 00 49 89 3F 49 89 7F 08 49 89 7F 10") != 0;
+    if (filter) g_bullVtable = (u32)(filter + 7 + *(i32*)(g_base + filter + 3));
+    Buf b; b.str("tools' company (from TPF3-MP):");
+    for (int i = 0; i < (int)(sizeof(tools) / sizeof(tools[0])); i++) {
+        const Tool& t = tools[i];
+        u32 step = FindSigRva(t.step);
+        bool ok = step && FindSigRva(t.store) && !(i == 5 && (!filter || !ownerList)) && Splice(mem, step, t.steal, t.fn);
+        b.str(" ").str(t.name).str(ok ? " on" : " OFF").str(i + 1 < (int)(sizeof(tools) / sizeof(tools[0])) ? "," : "");
+    }
+    LogLine(b);
+}
+
 // the order fixes' counters, at most once a minute in native.log: sorts made, of them reordered, refused
 static void LogOrderCounts()
 {
     Buf b; b.str("order fixes:");
     for (int i = 0; i < ORDER_N; i++) b.str(" ").str(ORDER_FIXES[i].name).str(" ").dec(g_orderSorts[i]).str("/").dec(g_orderReorders[i]).str("/").dec(g_orderRefused[i]);
+    b.str("; tools' company written ").dec(g_toolWrites).str(" time(s)");
     LogLine(b);
 }
 
@@ -2559,6 +2636,7 @@ static DWORD WINAPI Init(void*)
     }
     HookWordReads();
     if (RVA_REPL == 0x255e60) InstallOrderFixes();
+    if (RVA_REPL == 0x255e60) InstallToolCompany();
     { Buf b; b.str(g_luaSeedFixed ? "Lua string hash seed: fixed (same table order on every game)" : "Lua string hash seed: NOT fixed"); LogLine(b); }
     if (RVA_REPL == 0x255e60) InstallDetour(RVA_MONEYCHECK, P_MONEYCHECK, sizeof(P_MONEYCHECK), (void*)&MoneyCheckDetour, (void**)&g_moneyOrig);
     if (RVA_REPL == 0x255e60) InstallDetour(RVA_LINES, P_LINES, sizeof(P_LINES), (void*)&LinesDetour, (void**)&g_linesOrig);
