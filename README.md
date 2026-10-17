@@ -39,122 +39,47 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
   - a console in the server window: `status`, `say`, `save`, `pause`, `speed`, `kick`, `resync`, `restart`, `stop`.
 - **In the game's 13 languages.** The launcher and the in-game windows follow the language of Transport Fever 3.
 
-## What's new in 0.3.12
+## Getting started
 
-- **A big street through a town no longer desyncs the games** (#43, Steelworm). Its capture takes seconds, and it used to be given up before it was sent: the other games built it a step late, with other houses taken away.
-- **Experimental: the builder leads** (#44, Steelworm), off by default. With `MPFEVER_BUILDLEAD=1` on every game, a road, track or station appears about 20 frames after the click instead of 100 to 250. Only at speed 1: at higher speeds the builds are held as before.
+1. Download `MPFever-<version>.zip` from the [releases](https://github.com/dkdknight/MPFever/releases) and unzip it anywhere. Every player needs the same version.
+2. Start `MPFever.exe`: it finds the game, installs the mod and starts Transport Fever 3.
+3. In the game's main menu, click **Multiplayer (MPFever)**. The host opens a lobby with one of their savegames; the others join the host's address or accept a Steam invitation.
+4. The host clicks **Start the game**, and every game loads it.
 
-### Dedicated server (SlikerDev, #23)
+Details, ports and troubleshooting: [INSTALL](docs/INSTALL.txt). Dedicated server: [SERVER](docs/SERVER.txt).
 
-In the separate archive `MPFever-<version>-server.zip`: `MPFever.exe --server` (or `start-server.bat`) turns a PC into a dedicated server for one world. Transport Fever 3 has no server program of its own, so the server is the full game, started and driven by MPFever: it loads the world from `mpfever_server.properties`, hosts it like a player hosts a savegame, and nobody plays on it.
+## Reporting a problem
 
-- **The world without the host's PC.** Players join the server's address from the MPFever window, with a password when the server has one. A player with another MPFever version is refused with a message saying which one the server runs.
-- **Like the servers of Minecraft, Satisfactory and Factorio:**
-  - the world pauses while nobody is connected (`pause-when-empty`) and resumes when a player is in;
-  - autosave every 10 minutes under the world's name, with copies in `server\backups`;
-  - the game is started again after a crash or a freeze (watchdog), and the players' MPFever reconnects by itself;
-  - a console under the log of the server window (`help` lists the commands), a message of the day, a kick.
-- **Separate companies:** the server plays no company. The savegame's own company goes to the player named by `owner=`, else to nobody.
-- **The in-game MPFever window** names the dedicated server above the players.
+Please open an [issue](https://github.com/dkdknight/MPFever/issues) with the files below. **Without logs, a desync or a crash can rarely be found**; with them, most bugs are fixed in the next version.
 
-Set-up, settings and commands: [SERVER](docs/SERVER.txt).
+### 1. Say what happened
 
-## What's new in 0.3.11
+- Your **MPFever version** (shown in the title of the MPFever window) and the **company mode** (one company, or one per player).
+- **What you did** just before: built a station, bulldozed a road, bought a vehicle...
+- **At what time**, on your clock. The logs are timed, so the time lets us find the moment.
+- Who was the host, how many players there were, and whether it happens again.
 
-Pull requests by Steelworm:
+### 2. Send the logs, of every player if you can
 
-- **Builds a little faster again** (#40).
-- **A player holding a terrain tool no longer blocks the other player's builds** for 30 seconds (#41).
-- **Dismissed notifications stay dismissed** after a resynchronisation (#42).
-- **The game's release notes window** no longer stays stuck over a game started from MPFever (#37, #38).
-- **The launcher shows your saved player name** (#39).
+Close the game first, since some files are only complete then. Then zip:
 
-## What's new in 0.3.10
+| What | Where |
+|---|---|
+| **Session folder** of the game in question (the newest one) | `%TEMP%\mpfever\<name>-<time>-<id>\`. Paste `%TEMP%\mpfever` in the Explorer address bar. |
+| **Launcher log** | `logs\launcher-<date>-<time>.log`, in the folder where `MPFever.exe` is. |
+| **Game log** | `C:\Program Files (x86)\Steam\userdata\<number>\3493540\local\crash_dump\stdout.txt`. It is rewritten each time the game starts: copy it **before** starting the game again. |
+| After a **crash** | In the same `crash_dump` folder, the newest `.dmp` file; in `local\save\`, the `crash_<world>_<date>.sav` the game wrote. |
 
-Fixes from the GitHub issues (thanks to Steelworm):
+The host's files matter most: they hold the checks of every game. The files of the player who built or bulldozed something show what that player's game did.
 
-- **Faster builds:** a build used to appear about 3 seconds after the click, with the game stopping three times on the way. It now stops once, about 30 % sooner at 1x and 45 % sooner at 4x (#34).
-- **Vehicles bought together** are created at the same moments on every game. Before, a game standing still could create them at other moments, and the games drifted apart (#35).
-- **In a pause, vehicles bought and put on a line at once** no longer reload every game (#36).
+### 3. Send the savegame, ideally
 
-## What's new in 0.3.9
+With the savegame, we can replay the problem on two games here, which is the fastest way to a fix.
 
-- **Fewer reloads while building railways:** a track that joins another one, reshapes a curve or moves a junction is now rebuilt on the other games exactly as the builder's game built it. Before, the other games paid for it differently and drifted apart a few minutes later.
-- **Street upgrades in towns:** when the game moves town buildings for a wider street, the other games now move the same buildings. Before, they ended up with fewer town buildings and the towns drifted apart.
-- **Joining and reconnecting** (PR #33 by SlikerDev): clearer connection errors on a PC without IPv6 (#31), and a player always loads the host's game it receives, also after the host restarted MPFever (#29).
+- The world you played: `C:\Program Files (x86)\Steam\userdata\<number>\3493540\local\save\<world>.sav`, with its `.jpg`.
+- After a resynchronisation, also `MPFever resync.sav` from the same folder: the world as every game reloaded it.
 
-## What's new in 0.3.8
-
-A lobby, and fixes from the GitHub issues (thanks to Zippo1578 and Steelworm):
-
-- **Lobby in the main menu.** The host opens a lobby, the players join it and see who is there, then the host starts the game and every game loads it at the same time. Joining a game already running still works.
-- **The speed buttons show the session's speed** when another player changes it (#24).
-- **Editing a large station no longer slows the other games down** for seconds per module (#25).
-- **Double slip switches** can be set in a session (#26).
-- **Line waypoints** are kept in a session (#27).
-- **A track build that moves one signal and re-creates another** no longer reloads every game (#28).
-- **Rejoining after the host restarted MPFever** loads the host's game again (#29).
-- **Smaller fixes:** very large numbers and some accented characters in messages (#30), clearer connection errors on a PC without IPv6 (#31), a lighter state check on large maps (#32).
-
-## What's new in 0.3.7
-
-More fixes from the GitHub issues and from our own tests (thanks again to Steelworm), and IPv6 from SlikerDev:
-
-- **No more crash when a street station is bulldozed:** the other games remove the station together with its entrance street (#15).
-- **Rail signals keep the track as it is:** a signal in a tunnel no longer digs the tunnel out on the other games, and a signal no longer causes a reload (#16).
-- **Builds and timing:**
-  - a build made during a reload is dropped on every game, and the chat says so (#17);
-  - builds are no longer released early after several reloads (#18);
-  - quick successive edits of a station are replayed in order (#19);
-  - a bulldozer is replayed with the bulldozer's own settings (#20).
-- **A road joined to a street with bus stops** is now built on the other games too.
-- **Separate companies:** a client's own line routes are drawn on the map.
-- **Line manager:** copying vehicles no longer freezes the game for a second per vehicle part (#21), and "Send To Line" works fully again (#22).
-- **Sessions:**
-  - going back to the main menu ends the session;
-  - a player joining right as the session starts gets the host's game.
-- **The tutorial is not supported in multiplayer:** the chat warns when such a game is hosted.
-- **IPv6** (thanks to SlikerDev): the host also accepts players over IPv6, which helps hosts without a public IPv4 address (DS-Lite).
-
-## What's new in 0.3.6
-
-Fixes from the GitHub issues (thanks to Steelworm and Shog-SC for their detailed analyses):
-
-- **Builds made while the session is paused** (in the tutorial, for example) are sent to the other games again, and an action on a vehicle that was never bought no longer crashes a game (#12).
-- **A difference found while applying an action** (something it refers to is missing) reloads the host's game at once, and the games are checked during a pause too (#12).
-- **Rejoining from the main menu works:** "Cancel" ends the session, and a join or a Steam invitation from the main menu replaces what is left of an earlier session (#13).
-- **Editing an existing street station** (adding a module to a terminal) is reproduced on the other games: its lines keep their stops (#14).
-- **A session starts** even when one game ran a few steps more after loading (#4).
-- **The native module builds** with recent Visual Studio toolsets (#4).
-
-## What's new in 0.3.5
-
-- **Terrain edits land at the same step on every game.** A terrain tool cannot be delayed on the game of the player who uses it, so a game slightly ahead used to apply the edit a few steps late. An edit changes the reputation of the nearest town, so the towns drifted apart and a later demolition could crash a game. While a player has a terrain tool in hand, the other games now stay just behind that player's game.
-- **Actions arriving near a wait point are no longer one step late at x4.**
-- **No more crash when a road is built across a street with another player's bus stops.** Stops are rebuilt with their junction settings, and a road that cuts a street carrying stops is rebuilt as the game's own tool makes it (the stops move to the new pieces of street).
-- **Hosting works at the first click** (the multiplayer window ended the session it had just started), and the window closes again when the game loads.
-- **Separate companies:** a terrain edit is paid by the company of the player who made it, on every game.
-- **A simulation difference now reloads the host's game after 30 seconds** instead of 5 minutes, since the games no longer drift by themselves.
-- **In-game chat** (thanks to SlikerDev).
-- **Known issue (separate companies):** the routes of a client's own lines are not drawn on the map yet (they flash and vanish). The lines themselves work.
-
-## What's new in 0.3.4
-
-- **The main cause of desyncs is found and fixed.** The game's Lua 5.2.2 seeds its string hash with the clock and memory addresses, differently on every PC. So the game's own scripts walked their tables in a different order on each game:
-  1. towns grew differently;
-  2. new industries got their lanes numbered differently;
-  3. then people, cars, pollution and money drifted apart.
-
-  The native module now gives Lua the same seed on every game. Two games left alone now stay identical for 18 minutes of game time, every entity created and removed in the same order; before, they were apart after 6 minutes. See [RESEARCH](docs/RESEARCH.md).
-- **Separate companies stay in sync.** The engine's "local player" is split between the simulation (the same company on every game) and the interface (the player's own company: tools, money checks, Finances window, line tool).
-- **No more crash on resynchronisation, and no more duplicated vehicle purchases.**
-- **New in-game MPFever window**, opened from the pause menu, and a fee list in the station windows.
-- **Stations are shared by default.** The fee per stop is shown next to every other company's station name.
-- **Diagnostic tools for developers:**
-  - a full census of the game state compared between two games;
-  - a watch on entity creation and removal.
-
-The full list since 0.2.10 is in the [CHANGELOG](docs/CHANGELOG.txt).
+Savegames are often larger than GitHub's 25 MB limit. Upload the zip to Google Drive, Dropbox, WeTransfer or similar, and put the link in the issue. If the savegame uses mods, list them.
 
 ## How it works
 
@@ -224,13 +149,14 @@ Testing and reporting problems with your logs helps just as much: thank you!
 ## Credits
 
 - **[dkdknight](https://github.com/dkdknight)** – author and maintainer.
-- **[SlikerDev](https://github.com/SlikerDev)** – contributor:
+- **[Steelworm](https://github.com/Steelworm)** – contributor: build timing fixes and the experimental builder lead, detailed issue analyses.
+- **[SlikerDev](https://github.com/SlikerDev)** – contributor (dedicated server, IPv6, connection fixes):
   - the redesigned launcher window and its icon;
   - the translation of MPFever into the 13 languages of the game (the launcher follows the game's language);
   - the in-game MPFever window (pause-menu card, players, sync state, Steam invites);
   - the in-game chat;
   - the fee list of the station windows.
 
-Thanks to everyone who tests MPFever and reports problems in the [issues](https://github.com/dkdknight/MPFever/issues): every report with logs helped find a bug.
+Thanks to everyone who tests MPFever and reports problems in the [issues](https://github.com/dkdknight/MPFever/issues) (see [Reporting a problem](#reporting-a-problem)): every report with logs helped find a bug.
 
 MPFever is not affiliated with Urban Games. Transport Fever 3 is a trademark of its owners.
