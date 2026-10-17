@@ -890,11 +890,13 @@ static void EntFlush()
     }
 }
 
+static void LogOrderCounts();
 static void AuditFlush(bool force)
 {
     DWORD now = GetTickCount();
     if (!force && now - g_auditTick < 10000) return;
     g_auditTick = now;
+    { static int n = 0; if (force || ++n % 6 == 0) LogOrderCounts(); }
     for (int k = 0; k < 128; k++) {
         u32 tot = g_kcLoop[k] + g_kcDir[k];
         if (tot == g_kcSeen[k]) continue;
@@ -2200,6 +2202,201 @@ extern "C" void RemoveEntityDetour(void* engine, int entity, u8 flag)
     g_remEntOrig(engine, entity, flag);
 }
 
+// ---------------------------------------------------------------- order fixes (ported from TPF3-MP, MIT)
+// Ported from Juliansgith's TPF3-MP (github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod, MIT; docs/HOOKS.md "The order
+// fixes", "The person-order fixes", investigation/TPF3_TRAIN_PRIORITY_2026-09-30.md), whose person-order fixes come from
+// silver2127's TPF2 Multiplayer. Batches the simulation reads in an order that is the engine's history (node lists, removal
+// order), not the world's state, are sorted by entity id right before the engine reads them, so that two games with the
+// same world decide the same way. The sorts change what the simulation decides: every game of a session runs them (the
+// native module is the same everywhere); MPFEVER_NOORDER=1 turns them all off, and must then be set on every game.
+// Each site is found by its bytes (TPF3-MP's signatures for build 40420) and left alone when they differ.
+
+struct SavedRegs { u64 r15, r14, r13, r12, r11, r10, r9, r8, rdi, rsi, rbp, rbx, rdx, rcx, rax, rflags; };
+static inline u64 OrigRsp(const SavedRegs* r) { return (u64)r + sizeof(SavedRegs); }
+typedef void (*SpliceFn)(SavedRegs*);
+static volatile long g_orderSorts[8], g_orderReorders[8], g_orderRefused[8];
+
+static void SortIds(i32* a, u64 n, int which)
+{
+    _InterlockedIncrement(&g_orderSorts[which]);
+    if (n < 2) return;
+    bool sorted = true;
+    for (u64 i = 1; i < n; i++) if (a[i - 1] > a[i]) { sorted = false; break; }
+    if (sorted) return;
+    _InterlockedIncrement(&g_orderReorders[which]);
+    u64 gap = 1;
+    while (gap < n / 3) gap = gap * 3 + 1;
+    for (; gap > 0; gap /= 3)
+        for (u64 i = gap; i < n; i++) { i32 v = a[i]; u64 j = i; while (j >= gap && a[j - gap] > v) { a[j] = a[j - gap]; j -= gap; } a[j] = v; }
+}
+
+// a std::vector<Entity> (begin, end, capacity) at vec: sorted in place when it is one
+static void SortEntityVector(u64 vec, int which)
+{
+    if (!vec || !Readable((void*)vec, 24)) { _InterlockedIncrement(&g_orderRefused[which]); return; }
+    u64 b = *(u64*)vec, e = *(u64*)(vec + 8), c = *(u64*)(vec + 16);
+    if (b == 0 && e == 0) return;
+    if (e < b || c < e || (b & 3) || ((e - b) & 3) || (e - b) > (64u << 20) || !Writable((void*)b, e - b)) { _InterlockedIncrement(&g_orderRefused[which]); return; }
+    SortIds((i32*)b, (e - b) / 4, which);
+}
+
+// 0: each modification's freed ids join the engine's FIFO free-id queue in entity order (the ids new entities get)
+static void FixFreedIds(SavedRegs* r) { if (Readable((void*)r->r12, 8)) SortEntityVector(*(u64*)r->r12, 0); }
+
+// 1: the vehicles that want track, before the engine's seeded shuffle and priority sort decide who reserves first: entries
+// {int node index, float} of [rbp-0x20]..[rbp-0x18], sorted by their vehicle's entity id, read as the engine's own loop does
+static i32 LandKey(u64 records, u64 entry) { return *(i32*)(records + (u64)(i32)(entry & 0xFFFFFFFF) * 20); }
+static void FixLandVehicles(SavedRegs* r)
+{
+    u64 rbp = r->rbp;
+    if (!Readable((void*)(rbp - 0x80), 0x70)) { _InterlockedIncrement(&g_orderRefused[1]); return; }
+    u64 b = *(u64*)(rbp - 0x20), e = *(u64*)(rbp - 0x18), self = *(u64*)(rbp - 0x80);
+    if (b == e) return;
+    if (e < b || ((e - b) & 7) || (e - b) > (8u << 20) || !Writable((void*)b, e - b) || !Readable((void*)(self + 8), 8)) { _InterlockedIncrement(&g_orderRefused[1]); return; }
+    u64 holder = *(u64*)(self + 8);
+    if (!Readable((void*)holder, 16)) { _InterlockedIncrement(&g_orderRefused[1]); return; }
+    u64 rb = *(u64*)holder, re = *(u64*)(holder + 8);
+    u64 n = (e - b) / 8, nrec = re > rb ? (re - rb) / 20 : 0;
+    u64* ent = (u64*)b;
+    for (u64 i = 0; i < n; i++) { i32 idx = *(i32*)(ent + i); if (idx < 0 || (u64)idx >= nrec) { _InterlockedIncrement(&g_orderRefused[1]); return; } }
+    if (!Readable((void*)rb, nrec * 20)) { _InterlockedIncrement(&g_orderRefused[1]); return; }
+    _InterlockedIncrement(&g_orderSorts[1]);
+    bool sorted = true;
+    for (u64 i = 1; i < n; i++) if (LandKey(rb, ent[i - 1]) > LandKey(rb, ent[i])) { sorted = false; break; }
+    if (sorted) return;
+    _InterlockedIncrement(&g_orderReorders[1]);
+    for (u64 i = 1; i < n; i++) { u64 v = ent[i]; i32 kv = LandKey(rb, v); u64 j = i; while (j > 0 && LandKey(rb, ent[j - 1]) > kv) { ent[j] = ent[j - 1]; j--; } ent[j] = v; }
+}
+// 2: the PersonCapacity candidates (a vector at [rsp+0x70], in rbx) before their capacities are summed for one draw
+static void FixCandidates(SavedRegs* r) { if (r->rbx == OrigRsp(r) + 0x70) SortEntityVector(r->rbx, 2); else _InterlockedIncrement(&g_orderRefused[2]); }
+// 3: the persons and cargo leaving buildings (two vectors at [rbp+7], [rbp+0x1f]) before they are signalled
+static void FixDepartures(SavedRegs* r) { SortEntityVector(r->rbp + 7, 3); SortEntityVector(r->rbp + 0x1f, 3); }
+// 4: the persons arriving on foot ([rbp-0x78]) before their stay draws
+static void FixArrivals(SavedRegs* r) { SortEntityVector(r->rbp - 0x78, 4); }
+// 5: the vehicles at a line stop (the vector the getter returned, in rax) before the boarding loop
+static void FixVehiclesAtStop(SavedRegs* r) { SortEntityVector(r->rax, 5); }
+
+// A mid-function splice: steal whole instructions at the site (no branch, call or rip-relative operand, nothing jumping
+// inside them), jump to a stub that saves every register and xmm0-5, calls fn with the saved registers, restores them,
+// runs the stolen bytes and jumps back.
+static bool Splice(u8*& mem, u32 rva, int steal, SpliceFn fn)
+{
+    u8* site = (u8*)(g_base + rva);
+    Asm a{ mem };
+    a.b(0x9C);                                                     // pushfq
+    { const u8 t_[] = { 0x50, 0x51, 0x52, 0x53, 0x55, 0x56, 0x57, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57 }; a.bn(t_, (int)sizeof(t_)); }
+    // mov rcx,rsp; mov rbx,rsp; and rsp,-16; sub rsp,0x80
+    { const u8 t_[] = { 0x48, 0x89, 0xE1, 0x48, 0x89, 0xE3, 0x48, 0x83, 0xE4, 0xF0, 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00 }; a.bn(t_, (int)sizeof(t_)); }
+    for (int x = 0; x < 6; x++) { const u8 t_[] = { 0xF3, 0x0F, 0x7F, (u8)(0x44 | (x << 3)), 0x24, (u8)(0x20 + 16 * x) }; a.bn(t_, 6); }      // movdqu [rsp+..],xmmN
+    a.b(0x48); a.b(0xB8); a.imm64((u64)fn);                        // mov rax,fn
+    a.b(0xFF); a.b(0xD0);                                          // call rax
+    for (int x = 0; x < 6; x++) { const u8 t_[] = { 0xF3, 0x0F, 0x6F, (u8)(0x44 | (x << 3)), 0x24, (u8)(0x20 + 16 * x) }; a.bn(t_, 6); }      // movdqu xmmN,[rsp+..]
+    // mov rsp,rbx; pop r15..r8, rdi, rsi, rbp, rbx, rdx, rcx, rax; popfq
+    { const u8 t_[] = { 0x48, 0x89, 0xDC, 0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5F, 0x5E, 0x5D, 0x5B, 0x5A, 0x59, 0x58, 0x9D }; a.bn(t_, (int)sizeof(t_)); }
+    a.bn(site, steal);                                             // the stolen instructions
+    a.b(0xFF); a.b(0x25); a.b(0); a.b(0); a.b(0); a.b(0); a.imm64((u64)(site + steal));   // jmp back
+    u8* stub = mem;
+    mem = (u8*)(((u64)a.p + 15) & ~15ull);
+    DWORD old;
+    if (!VirtualProtect(site, steal, PAGE_EXECUTE_READWRITE, &old)) return false;
+    u8 patch[16];
+    patch[0] = 0xE9; *(i32*)(patch + 1) = (i32)(stub - (site + 5));
+    for (int k = 5; k < steal; k++) patch[k] = 0x90;
+    memcpy(site, patch, steal);
+    VirtualProtect(site, steal, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, steal);
+    return true;
+}
+
+static int HexVal(char c) { return c <= '9' ? c - '0' : (c | 32) - 'a' + 10; }
+
+// a signature ("48 8B ?? ..."): its rva when it is found once in the code, else 0
+static u32 FindSigRva(const char* sig)
+{
+    u8 pat[96]; bool any[96]; int n = 0;
+    for (const char* q = sig; *q && n < 96; ) {
+        while (*q == ' ') q++;
+        if (!*q) break;
+        if (q[0] == '?') { any[n] = true; pat[n++] = 0; q += 2; continue; }
+        any[n] = false; pat[n++] = (u8)(HexVal(q[0]) * 16 + HexVal(q[1])); q += 2;
+    }
+    auto dos = (IMAGE_DOS_HEADER_*)g_base;
+    u8* ntp = (u8*)(g_base + dos->e_lfanew);
+    auto fh = (IMAGE_FILE_HEADER_*)(ntp + 4);
+    auto sec = (IMAGE_SECTION_HEADER_*)(ntp + 4 + sizeof(IMAGE_FILE_HEADER_) + fh->SizeOfOptionalHeader);
+    u32 found = 0; int count = 0;
+    for (int i = 0; i < fh->NumberOfSections; i++) {
+        if (!(sec[i].Name[0] == '.' && sec[i].Name[1] == 't' && sec[i].Name[2] == 'e' && sec[i].Name[3] == 'x')) continue;
+        u8* start = (u8*)(g_base + sec[i].VirtualAddress);
+        u64 size = sec[i].VirtualSize;
+        for (u64 k = 0; k + n <= size; k++) {
+            if (start[k] != pat[0]) continue;
+            int j = 1;
+            while (j < n && (any[j] || start[k + j] == pat[j])) j++;
+            if (j == n) { if (!count) found = (u32)(sec[i].VirtualAddress + k); count++; }
+        }
+    }
+    return count == 1 ? found : 0;
+}
+
+struct OrderFix { const char* name; const char* sig; int offset; int steal; SpliceFn fn; };
+static const OrderFix ORDER_FIXES[] = {
+    { "freed ids", "49 8D 8D D8 00 00 00 4D 8B 0C 24 49 8B 41 08 48 89 44 24 20 4D 8B 09 4D 8B 85 F8 00 00 00 48 8D 55 87 E8", 0, 7, FixFreedIds },
+    { "land vehicles", "45 0F 44 C4 41 BE 40 00 00 00 49 C7 C3 FF FF FF FF 0F 1F 80 00 00 00 00 4D 8D 76 FF 49 D1 EB 49 81 FB FD FF FF 7F 77 F0 4C 8B 6D E0 48 8B 75 E8 4C 3B EE", 40, 8, FixLandVehicles },
+    { "destination candidates", "C7 44 24 60 01 00 00 00 E8 ?? ?? ?? ?? 4C 8B D0 48 8B 54 24 78 48 8B 4C 24 70 48 2B D1 48 C1 FA 02", 0, 8, FixCandidates },
+    { "departures", "48 8B C8 E8 ?? ?? ?? ?? 48 8B 4D 07 48 3B 4D 0F 74 1A 48 8B 47 30", 8, 8, FixDepartures },
+    { "arrivals", "E8 ?? ?? ?? ?? 48 8B 45 90 48 39 45 88 74 17 49 8B 4F 68 48 85 C9 74 0E", 5, 8, FixArrivals },
+    { "vehicles at stop", "49 8B 4F 28 E8 ?? ?? ?? ?? 48 89 84 24 48 02 00 00 41 8B 7F 50 48 8B 4C 24 58", 9, 8, FixVehiclesAtStop },
+};
+static const int ORDER_N = (int)(sizeof(ORDER_FIXES) / sizeof(ORDER_FIXES[0]));
+
+static void InstallOrderFixes()
+{
+    if (GetEnvironmentVariableA("MPFEVER_NOORDER", 0, 0) > 0) { Buf b; b.str("order fixes: off (MPFEVER_NOORDER)"); LogLine(b); return; }
+    u8* mem = AllocNear(0x2000);
+    if (!mem) { Buf b; b.str("order fixes: no memory near the game's code"); LogLine(b); return; }
+    // the land vehicles' sort reads the records the way the engine's reservation loop does: refused unless that loop is there
+    bool recordsOk = FindSigRva("4C 8B 45 80 49 8B 50 08 49 63 45 00 48 8D 0C 80 48 8B 02 4C 8D 24 88 49 8B 50 18") != 0;
+    Buf b; b.str("order fixes (from TPF3-MP):");
+    for (int i = 0; i < ORDER_N; i++) {
+        const OrderFix& f = ORDER_FIXES[i];
+        u32 at = FindSigRva(f.sig);
+        bool ok = at && !(i == 1 && !recordsOk) && Splice(mem, at + f.offset, f.steal, f.fn);
+        b.str(" ").str(f.name).str(ok ? " on" : " OFF").str(i + 1 < ORDER_N ? "," : "");
+    }
+    LogLine(b);
+    // the simulation's seeds from GameTime.tickCount (the land vehicles' shuffle, a vehicle variant pick, town and street
+    // development...): tickCount also counts the frames a game stands still, a different number on every game of a session;
+    // those calls now read updateCount (the simulation step, the same everywhere). TPF3-MP's "paused-tick" fix does the same by
+    // not counting the paused frames; this keeps tickCount itself as it is (the mod's stillness checks read it). The two calls
+    // from the interface's tools (0x577e0b, 0x5a51f1) are left as they are.
+    u32 getTick = FindSigRva("48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 3C 48 83 C4 28 C3");
+    u32 getUpd = FindSigRva("48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 40 48 83 C4 28 C3");
+    static const u32 simCalls[] = { 0x900170, 0x90edc0, 0x96ad13, 0xa38dda, 0xa7db6d, 0xac2dd3, 0x2698385 };
+    int moved = 0;
+    if (getTick && getUpd) {
+        for (u32 c : simCalls) {
+            u8* site = (u8*)(g_base + c);
+            if (site[0] != 0xE8 || (u32)(c + 5 + *(i32*)(site + 1)) != getTick) continue;
+            DWORD old;
+            if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &old)) continue;
+            *(i32*)(site + 1) = (i32)(getUpd - (c + 5));
+            VirtualProtect(site, 5, old, &old);
+            FlushInstructionCache(GetCurrentProcess(), site, 5);
+            moved++;
+        }
+    }
+    Buf t; t.str("simulation seeds from the step count instead of tickCount: ").dec(moved).str(" of 7 calls"); LogLine(t);
+}
+
+// the order fixes' counters, at most once a minute in native.log: sorts made, of them reordered, refused
+static void LogOrderCounts()
+{
+    Buf b; b.str("order fixes:");
+    for (int i = 0; i < ORDER_N; i++) b.str(" ").str(ORDER_FIXES[i].name).str(" ").dec(g_orderSorts[i]).str("/").dec(g_orderReorders[i]).str("/").dec(g_orderRefused[i]);
+    LogLine(b);
+}
+
 static void HookWordReads()
 {
     if (RVA_REPL != 0x255e60) return;
@@ -2361,6 +2558,7 @@ static DWORD WINAPI Init(void*)
         if (RVA_REPL) InstallDetour(RVA_REPL, P_REPL, sizeof(P_REPL), (void*)&ReplDetour, (void**)&g_replOrig);
     }
     HookWordReads();
+    if (RVA_REPL == 0x255e60) InstallOrderFixes();
     { Buf b; b.str(g_luaSeedFixed ? "Lua string hash seed: fixed (same table order on every game)" : "Lua string hash seed: NOT fixed"); LogLine(b); }
     if (RVA_REPL == 0x255e60) InstallDetour(RVA_MONEYCHECK, P_MONEYCHECK, sizeof(P_MONEYCHECK), (void*)&MoneyCheckDetour, (void**)&g_moneyOrig);
     if (RVA_REPL == 0x255e60) InstallDetour(RVA_LINES, P_LINES, sizeof(P_LINES), (void*)&LinesDetour, (void**)&g_linesOrig);
