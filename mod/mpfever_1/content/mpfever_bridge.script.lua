@@ -9155,8 +9155,12 @@ local function coGui(st)
 		for _, o in ipairs(reg.list) do if o.ent and c and o.ent ~= c.ent then others[#others + 1] = o.ent end end
 		table.sort(others)
 		local osig = table.concat(others, " ")
-		-- (said again every few seconds: the native module forgets the value when a game is loaded, see ApplyLocalPlayer)
-		if c and c.ent and (G.myCo ~= c.id or G.myEnt ~= c.ent or osig ~= G.coOthers or G.frames - (G.coAsserted or 0) > 400) then
+		-- (said again every few seconds: the native module forgets the value when a game is loaded, see ApplyLocalPlayer. Said
+		-- right after a load, it was forgotten a second later when the new game state applied its first command, and the
+		-- tools built for the savegame's company until the next time, 7 to 15 s later: a client's stop belonged to the host's
+		-- company, issue #47. So every 30 frames during the first 1200 frames of a game)
+		if c and c.ent and (G.myCo ~= c.id or G.myEnt ~= c.ent or osig ~= G.coOthers
+			or G.frames - (G.coAsserted or 0) > (G.frames < 1200 and 30 or 400)) then
 			if G.myCo ~= c.id or G.myEnt ~= c.ent then
 				log("companies: this game plays company " .. c.id .. " (player entity " .. c.ent .. ")")
 				G.waits[#G.waits + 1] = { at = G.frames + 90, fn = function()

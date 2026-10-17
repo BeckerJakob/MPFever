@@ -22,6 +22,12 @@ MPFever - Changelog
     proposal, without the buildings: this game's engine takes the same ones away. Rebuilt by the script forms it was
     laid otherwise (cost 13.8 M instead of 8.4 M, 44 town buildings taken away instead of 35) and the towns drifted.
     Checked with the towncross autotest: every street replayed natively, in sync.
+  - FIX (issue #47, separate companies): right after a resynchronisation, a player's builds could belong to the savegame's
+    company (the host's). The mod told the native module which company the game plays as soon as the game was loaded, and
+    the native module forgot it a second later, when the new game state applied its first command (on purpose: entity ids
+    of the old game mean nothing in the new one); the mod said it again only 7 to 15 s later. Now it says it every 30 frames
+    during the first 1200 frames of a game. Probably also the cause of objects the bulldozer would not remove (they belonged
+    to the other company).
   - FIX (issue #47): a vehicle replacement is made when the vehicle reaches a depot; the command was reported as
     refused on every game ("created entity not found") after 10 steps.
   - AUTOTEST: a game that crashed during the test (process closed, or no clock for 120 s: a crashed game can stay open
