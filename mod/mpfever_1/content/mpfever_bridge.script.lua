@@ -3131,21 +3131,15 @@ local function replayNativeConstruction(a)
 				return
 			end
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction BUILT")
-			-- the edge objects of the tool's build (an airport's signs on its taxiways): the engine's conversion does not make
-			-- them, they are placed afterwards on their segments, as stops are (a manual test: an airport without its 9 signs)
+			-- the edge objects of the tool's build (an airport's or an airfield's signs on its runways and taxiways) are not
+			-- made by the engine's conversion. 0.3.13 placed them afterwards as stops are, by rebuilding each segment: those
+			-- segments are the construction's own (frozen) edges, the construction kept the removed ones, and the game crashed
+			-- as soon as the construction was selected or demolished (assertion 'it != components.end()', BaseEdge; issue
+			-- #49). Never rebuilt now: the host's game is reloaded for everybody at once (the airport as the host has it).
 			if #(m.proposal.edgeObjectsToAdd or {}) > 0 then
-				local groups = {}
-				for _, o in ipairs(m.proposal.edgeObjectsToAdd) do
-					for j, src in ipairs(m.proposal.addedSegments or {}) do
-						if type(src) == "table" and src.entity == o.segmentEntity then
-							groups[j] = groups[j] or { seg = src, objs = {} }
-							groups[j].objs[#groups[j].objs + 1] = o
-						end
-					end
-				end
-				a.stopsAfter = {}
-				for _, g in pairs(groups) do a.stopsAfter[#a.stopsAfter + 1] = g end
-				G.waits[#G.waits + 1] = { at = G.frames + 5, fn = function() G.placeStopsAfter(a) end }
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: " .. #m.proposal.edgeObjectsToAdd
+					.. " edge object(s) of the construction (an airport's signs) cannot be replayed: resynchronisation")
+				replayFailed(a, "construction edge objects (airport signs)")
 			end
 			pcall(function()
 				local st = res2.proposal.proposal
@@ -3197,6 +3191,13 @@ G.placeStopsAfter = function(a)
 		if not found then
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: their new segment is not here")
 			replayFailed(a, "stops' segment not found")
+			return
+		end
+		-- (a construction's own segment is never rebuilt: the construction would keep the removed one, issue #49)
+		local okC, con = pcall(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForEdge(found) end)
+		if okC and type(con) == "number" and con >= 0 then
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: segment " .. found .. " belongs to construction " .. con .. ": not rebuilt, resynchronisation")
+			replayFailed(a, "stops on a construction's segment")
 			return
 		end
 		local objs = {}
@@ -4367,7 +4368,11 @@ local function runNativeReplays()
 				okr, errr = pcall(withActor, PL(a), replayNative, a, 1)
 				G.refund = nil
 			end
-			if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " failed: " .. tostring(errr)) end
+			if not okr then
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " failed: " .. tostring(errr))
+				-- (the engine threw: this game did not build what the others did, issue #49)
+				replayFailed(a, "error: " .. shortErr(errr))
+			end
 		else
 			keep[#keep + 1] = a
 		end

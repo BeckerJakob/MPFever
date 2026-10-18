@@ -2,6 +2,15 @@ MPFever - Changelog
 ===================
 
 0.3.15-experimental - refunds, automatic updates, problem reports, smooth pacing, port opening, ranks per company
+  - FIX (issue #49, crashes): an airport or an airfield built by another player was replayed, then its 9 signs (edge
+    objects on its runways and taxiways) were placed again by rebuilding each of those segments, as 0.3.13 did. They are the
+    construction's own segments: the construction kept the removed ones, and the game crashed as soon as it was selected
+    (assertion 'it != components.end()' in ecs::Engine::GetComponentDataIndex, BaseEdge, UI::CSelector) or demolished
+    (the engine's removal threw). The signs were also placed over 6 steps (a desync). A construction's segment is never
+    rebuilt now: the host's game is reloaded for everybody at once instead, and a replay the engine throws on does the
+    same. Known limit: an airport built by a client loses its signs in that reload; build airports as the host for now.
+    A savegame written after such a replay (a crash save, MPFever resync.sav) keeps the broken construction: go back to an
+    earlier one.
   - FIX (issues #46, #47): demolishing what one has just built refunded it on the builder's game only (a heliport: -2 190 453
     there, +36 162 on the host's); the host's money then went to everyone. What a native build cost its builder is now
     shipped with it; every replaying game adds up what its replay cost and books the difference on the builder's company
