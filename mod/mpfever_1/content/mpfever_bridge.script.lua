@@ -27,6 +27,9 @@ local BS, NL, CR, TAB = C.BS, C.NL, C.CR, C.TAB
 
 local STEP = 200          -- game time units per simulation step
 local STAMP_AHEAD = 3     -- steps between an action and its application on every game (barrier slack + 1)
+-- constants and counters of the main chunk, in one table: the chunk is close to the game's limit of local variables (0.3.16
+-- went over it and the mod did not load at all)
+local K = {}
 
 local function gameTime()
 	local gt = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME)
@@ -96,9 +99,8 @@ end
 -- the same game time can be compared line by line. Kept for the last 12 checks (sdump_ring_<n>.txt, the game time on the
 -- first line), so that a drift of script:towns... reported by a player comes with both games' states (MPFEVER_SDUMP=0:
 -- off; =1: the first 40 checks, each in its own file)
-local SDUMP = os.getenv("MPFEVER_SDUMP") ~= "0"
-local SDUMP_ALL = os.getenv("MPFEVER_SDUMP") == "1"
-local sdumps = 0
+-- (one table: the main chunk is close to the game's limit of local variables, 0.3.16 went over it and did not load)
+local SDUMP = { on = os.getenv("MPFEVER_SDUMP") ~= "0", all = os.getenv("MPFEVER_SDUMP") == "1", n = 0 }
 local function flatten(v, path, out, d)
 	if type(v) == "table" and d < 16 then
 		for k, x in pairs(v) do flatten(x, path .. "." .. tostring(k), out, d + 1) end
@@ -108,7 +110,7 @@ local function flatten(v, path, out, d)
 end
 
 local function extendedParts(parts)
-	local dump = SDUMP and (not SDUMP_ALL or sdumps < 40) and {}
+	local dump = SDUMP.on and (not SDUMP.all or SDUMP.n < 40) and {}
 	for name, res in pairs(GAME_SCRIPTS) do
 		local ok, v = pcall(function()
 			local e = api.engine.system.gameScriptSystem.getEntityForGameScript(res)
@@ -157,10 +159,10 @@ local function extendedParts(parts)
 				dump[#dump + 1] = "~station " .. (type(sg) == "number" and sg >= 0 and R.nameOf(sg) or "-") .. " = " .. f .. "@" .. tostring(p)
 			end
 		end)
-		sdumps = sdumps + 1
+		SDUMP.n = SDUMP.n + 1
 		table.sort(dump)
 		pcall(function()
-			local name = SDUMP_ALL and ("sdump_" .. string.format("%012d", gameTime()) .. ".txt") or ("sdump_ring_" .. (sdumps % 12) .. ".txt")
+			local name = SDUMP.all and ("sdump_" .. string.format("%012d", gameTime()) .. ".txt") or ("sdump_ring_" .. (SDUMP.n % 12) .. ".txt")
 			local f = C.IO.open(C.DIR .. BS .. name, "wb")
 			f:write("t = " .. tostring(gameTime()), NL, table.concat(dump, NL), NL)
 			f:close()
@@ -309,18 +311,18 @@ end
 -- The terrain edits applied, for the checks: a note per edit (its time and the checksum of its cells) reaches the simulation when
 -- the interface sends it, a little after the edit's time and not at the same moment on every game. A check at time T counts the
 -- edits older than T by more than a note can take to arrive (they are then known everywhere), folded into st.terrainSig.
-local TERRAIN_SIG_LAG = 150 * STEP
+K.TERRAIN_SIG_LAG = 150 * STEP
 local function terrainSigAt(st, now)
 	local sig, keep = st.terrainSig or 0, {}
 	for _, n in ipairs(st.terrainNotes or {}) do
-		if n.at <= now - TERRAIN_SIG_LAG then sig = (sig + n.v) % 4294967296 else keep[#keep + 1] = n end
+		if n.at <= now - K.TERRAIN_SIG_LAG then sig = (sig + n.v) % 4294967296 else keep[#keep + 1] = n end
 	end
 	st.terrainSig, st.terrainNotes = sig, keep
 	return sig
 end
 
 local hashShown = false
-local hashCostsShown = 0
+K.hashCostsShown = 0
 local function simHash(terrainSig, reg, n)
 	local tStart = os.clock()
 	-- the expensive parts take turns (issue #32: the whole check held the simulation step about 0.3 s every 10 s): every
@@ -403,8 +405,8 @@ local function simHash(terrainSig, reg, n)
 	local okx, errx = pcall(extendedParts, parts)
 	if not okx then parts.extended = "ERR " .. tostring(errx):sub(1, 80) end
 	costs.extended = os.clock() - tMark
-	if hashCostsShown < 3 then
-		hashCostsShown = hashCostsShown + 1
+	if K.hashCostsShown < 3 then
+		K.hashCostsShown = K.hashCostsShown + 1
 		local t = {}
 		for k, v in pairs(costs) do t[#t + 1] = string.format("%s=%.3f", k, v) end
 		table.sort(t)
@@ -1114,9 +1116,10 @@ end
 -- (81 draws before a player's three loans at one game time, issue #51), and every later draw of that game time, the loans'
 -- delays among them, differed between games. math.randomseed(n) (the construction scripts seed from their parameters) starts
 -- that place's draws from n until the game time changes.
-local detRandom, detSeed, detOrigSeed
+-- (one table: see SDUMP)
+local DET = {}
 local function installRandom()
-	if detRandom and math.random == detRandom then return end
+	if DET.random and math.random == DET.random then return end
 	local lastT, counts, seeds = -1, {}, {}
 	local function mix(h)
 		for _ = 1, 3 do
@@ -1133,7 +1136,7 @@ local function installRandom()
 		if t ~= lastT then lastT, counts, seeds = t, {}, {} end
 		return t
 	end
-	-- (the caller's file and line; level 3: this function, detRandom or detSeed, their caller. The file's name only: the folders
+	-- (the caller's file and line; level 3: this function, DET.random or DET.seed, their caller. The file's name only: the folders
 	-- of the game and of the mods differ between machines)
 	local getinfo = type(debug) == "table" and debug.getinfo or nil
 	local function where()
@@ -1147,7 +1150,7 @@ local function installRandom()
 		for i = 1, #s do h = ((h % 16777216) * 16777619 + s:byte(i) * 4099) % 4294967296 end
 		return h
 	end
-	detRandom = function(m, k)
+	DET.random = function(m, k)
 		local t = now()
 		local key = where()
 		local file = key:match("^(.*):%-?%d+$") or key
@@ -1168,9 +1171,9 @@ local function installRandom()
 		if k == nil then m, k = 1, m end
 		return m + math.floor(x * (k - m + 1))
 	end
-	local origSeed = (detSeed and math.randomseed == detSeed) and detOrigSeed or math.randomseed
-	detOrigSeed = origSeed
-	detSeed = function(s)
+	local origSeed = (DET.seed and math.randomseed == DET.seed) and DET.origSeed or math.randomseed
+	DET.origSeed = origSeed
+	DET.seed = function(s)
 		now()
 		local key = where()
 		local file = key:match("^(.*):%-?%d+$") or key
@@ -1178,8 +1181,8 @@ local function installRandom()
 		seeds[file] = { seed = mix(math.floor(s) % 4294967296), n = 0 }
 		pcall(origSeed, s)
 	end
-	math.random = detRandom
-	math.randomseed = detSeed
+	math.random = DET.random
+	math.randomseed = DET.seed
 	log("deterministic math.random installed")
 end
 
@@ -1351,7 +1354,7 @@ local function update(userParams, state, dt)
 	-- generator, which is not part of the savegame and differs between games: reseeded from the game time at every
 	-- simulation step, every game draws the same numbers.
 	-- (scripts that kept the engine's own function draw from it: reseeded every step)
-	pcall(function() if detSeed and math.randomseed == detSeed then detOrigSeed(gameTime()) else math.randomseed(gameTime()) end end)
+	pcall(function() if DET.seed and math.randomseed == DET.seed then DET.origSeed(gameTime()) else math.randomseed(gameTime()) end end)
 	installRandom()
 	if not SIM.subscribed then
 		SIM.subscribed = true
@@ -2155,21 +2158,21 @@ end
 -- game may overshoot a stop point, and get every edit before its time. It lasts a while after the tool was last seen or an edit
 -- last made (the menu says when a terrain tool is picked, not when it is put away). Level 2 for a tool picked or used in the last
 -- seconds, 1 for one picked a while ago: the higher level leads; two players at the same level: normal barrier between them.
-local TERRAIN_LEAD_SECONDS = 60
-local TERRAIN_ACTIVE_SECONDS = 10
+K.TERRAIN_LEAD_SECONDS = 60
+K.TERRAIN_ACTIVE_SECONDS = 10
 local function terrainLead(why, what)
 	-- (what: BUILDLEAD says it is a construction tool, whose lead has its own times and ranks below a terrain tool's, see
 	-- leadLevel; the terrain tools' callers give nothing)
 	if what ~= nil then
 		local firstB = not G.buildLeadUntil or os.clock() >= G.buildLeadUntil
-		G.buildLeadUntil = os.clock() + TERRAIN_LEAD_SECONDS
-		G.buildActiveUntil = os.clock() + TERRAIN_ACTIVE_SECONDS
+		G.buildLeadUntil = os.clock() + K.TERRAIN_LEAD_SECONDS
+		G.buildActiveUntil = os.clock() + K.TERRAIN_ACTIVE_SECONDS
 		if firstB then log(what .. " in hand (" .. tostring(why) .. "): the other games stay behind this one") end
 		return
 	end
 	local first = not G.terrainLeadUntil or os.clock() >= G.terrainLeadUntil
-	G.terrainLeadUntil = os.clock() + TERRAIN_LEAD_SECONDS
-	G.terrainActiveUntil = os.clock() + TERRAIN_ACTIVE_SECONDS
+	G.terrainLeadUntil = os.clock() + K.TERRAIN_LEAD_SECONDS
+	G.terrainActiveUntil = os.clock() + K.TERRAIN_ACTIVE_SECONDS
 	if first then log("terrain tool in hand (" .. tostring(why) .. "): the other games stay behind this one") end
 end
 
@@ -3784,7 +3787,7 @@ end
 -- Players announcing themselves at the same game time (every game announces itself again after a reload) must be taken in the same
 -- order everywhere (a new company gets the next number): an announcement is kept this many frames, so that those of the others arrive
 -- too, then they are taken in a fixed order (see before)
-local JOIN_GATHER = 120
+K.JOIN_GATHER = 120
 -- The engine has really stopped: its speed is 0 AND its clock has not moved for a while (the speed component reads 0 while the
 -- simulation thread still finishes the steps it had started)
 -- (in real time: the interface sees the simulation's clock only at the 200 ms handshake, so a clock still for a few frames
@@ -3957,7 +3960,7 @@ local function nativeHoldAt()
 	if (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0) or G.terrainBusy or G.coBusy then return now end
 	-- (a player joining waits until the others announced at the same time have arrived too, see runNativeReplays)
 	for _, a in ipairs(G.nativeQueue or {}) do
-		if a.fn == "mpfCoJoin" and a.at <= now and G.frames - (a.recvFrame or 0) < JOIN_GATHER then return now end
+		if a.fn == "mpfCoJoin" and a.at <= now and G.frames - (a.recvFrame or 0) < K.JOIN_GATHER then return now end
 	end
 	for _, a in ipairs(G.nativeQueue or {}) do
 		if a.at > now then local t = approach(a.at) if m == nil or t < m then m = t end end
@@ -4429,7 +4432,7 @@ end
 -- Trees, plants and rocks another player placed with the brush (see captureNativeBuild): the same models at the same places, in the
 -- mod's own construction; what the brush removed is removed too.
 -- (the name a mod's construction is known by: tried once)
-local ASSET_CON = "mpfever_1::/mpfever_asset.con"
+K.ASSET_CON = "mpfever_1::/mpfever_asset.con"
 local function assetConName()
 	if G.assetConName == nil then
 		G.assetConName = false
@@ -4439,7 +4442,7 @@ local function assetConName()
 			if ok and type(id) == "number" and id >= 0 and not G.assetConName then G.assetConName = n end
 		end
 	end
-	return G.assetConName or ASSET_CON
+	return G.assetConName or K.ASSET_CON
 end
 local function replayAssets(a)
 	local args = C.deser(C.ser(a.args or {}))
@@ -4494,7 +4497,7 @@ local function runNativeReplays()
 	-- before the first was built, issue #19). Not forever: an engine that never answers lets the queue go after 20 s.
 	local function replayBusy() return ((G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0)) and G.frames - (G.replaySince or 0) < 1200 end
 	for _, a in ipairs(G.nativeQueue) do
-		if a.at <= now and ((a.fn == "terrainEdit" and G.terrainBusy) or (a.fn == "mpfCoJoin" and (G.coBusy or G.frames - (a.recvFrame or 0) < JOIN_GATHER))
+		if a.at <= now and ((a.fn == "terrainEdit" and G.terrainBusy) or (a.fn == "mpfCoJoin" and (G.coBusy or G.frames - (a.recvFrame or 0) < K.JOIN_GATHER))
 			or (a.fn ~= "terrainEdit" and a.fn ~= "mpfCoJoin" and replayBusy())) then
 			keep[#keep + 1] = a      -- the previous one is still being handed to the engine
 		elseif a.at <= now then
@@ -4985,7 +4988,7 @@ end
 -- second road from the new node, a bus stop on the second road. The other games must replicate everything.
 
 local AUTO = { running = false, results = {}, points = {} }
-local STOP_MODEL = "stations/street/small_stops/small_old.con"
+K.STOP_MODEL = "stations/street/small_stops/small_old.con"
 
 local function vec(p) return api.type.Vec3f.new(p.x, p.y, p.z) end
 local function pos3(v) return { x = v.x, y = v.y, z = v.z } end
@@ -5074,7 +5077,7 @@ local function stopProposal(edge)
 	eo.param = 0.5
 	eo.oneWay = false
 	eo.left = true
-	eo.model = STOP_MODEL
+	eo.model = K.STOP_MODEL
 	eo.playerEntity = api.engine.util.getPlayer()
 	eo.name = "MPF " .. C.ROLE
 	sp.streetProposal.edgeObjectsToAdd[1] = eo
@@ -6711,7 +6714,7 @@ local function stopForms(E)
 		o.param = 0.5
 		o.oneWay = false
 		o.left = true
-		o.model = STOP_MODEL
+		o.model = K.STOP_MODEL
 		o.playerEntity = api.engine.util.getPlayer()
 		o.name = "MPF stop"
 		return o
@@ -6971,7 +6974,7 @@ local function runTramStop(p)
 			local se = e.streetEdge; se.precedenceNode0 = 2; se.precedenceNode1 = 2; e.streetEdge = se
 			local o = api.type.SimpleStreetProposal.EdgeObject.new()
 			o.edgeEntity = -1; o.param = 0.5; o.oneWay = false; o.left = true
-			o.model = STOP_MODEL
+			o.model = K.STOP_MODEL
 			o.playerEntity = api.engine.util.getPlayer(); o.name = "MPF stop"
 			ssp.edgesToRemove = { T }; ssp.edgesToAdd = { e }; ssp.edgeObjectsToAdd = { o }
 			sp.streetProposal = ssp
@@ -7049,7 +7052,7 @@ local function runTramStop(p)
 		local se = e.streetEdge; se.precedenceNode0 = 2; se.precedenceNode1 = 2; e.streetEdge = se
 		local eo = api.type.SimpleStreetProposal.EdgeObject.new()
 		eo.edgeEntity = -1; eo.param = 0.5; eo.oneWay = false; eo.left = true
-		eo.model = STOP_MODEL
+		eo.model = K.STOP_MODEL
 		eo.playerEntity = api.engine.util.getPlayer()
 		eo.name = "MPF stop"
 		local ncr = {}
@@ -7340,8 +7343,8 @@ local function runStops2(p)
 		pcall(function() eo.name = "MPF stop" end)
 		pcall(function() eo.playerEntity = api.engine.util.getPlayer() end)
 		pcall(function() eo.param = 0.5 end)
-		pcall(function() eo.edgeObjectConstruction = STOP_MODEL end)
-		pcall(function() eo.model = STOP_MODEL end)
+		pcall(function() eo.edgeObjectConstruction = K.STOP_MODEL end)
+		pcall(function() eo.model = K.STOP_MODEL end)
 		sp.edgeObjectsToAdd = { eo }
 		P.proposal = sp
 		log("STOPS2 stop object: " .. C.ser(C.marshal(eo)):sub(1, 400))
@@ -9102,7 +9105,7 @@ H.splitstop = function(from, p)
 			eo.param = (h == 1) and par * 2 or (par - 0.5) * 2
 			eo.oneWay = false
 			eo.left = side == 0
-			eo.model = STOP_MODEL
+			eo.model = K.STOP_MODEL
 			eo.playerEntity = api.engine.util.getPlayer()
 			adds[#adds + 1] = eo
 			half[h][#half[h] + 1] = { -400000000 - (#adds - 1), side }
@@ -9531,7 +9534,7 @@ local function coPatchProgression()
 	if not CO.patchPermits(coReq, log) then log("companies: the permit modules are not reachable from here (unique buildings stay shared)") end
 end
 
-local coCtlSeq = 0
+K.coCtlSeq = 0
 local function coGui(st)
 	if G.cmode ~= "separate" then return end
 	R.CO = st.co
@@ -9635,9 +9638,9 @@ local function coGui(st)
 			end
 			G.myCo, G.myEnt = c.id, c.ent
 			G.coAsserted = G.frames
-			coCtlSeq = coCtlSeq + 1
+			K.coCtlSeq = K.coCtlSeq + 1
 			local okT, tm = pcall(os.time)
-			local tok = ((okT and tm or 0) % 1000000) * 100 + coCtlSeq % 100
+			local tok = ((okT and tm or 0) % 1000000) * 100 + K.coCtlSeq % 100
 			if not os.getenv("MPFEVER_NOSETLOCAL") then nativeCtl("setlocal " .. c.ent .. " " .. tok) end
 			G.coOthers = osig
 			if osig ~= "" and not os.getenv("MPFEVER_NOCLEAR") then nativeCtl("setothers " .. tok .. " " .. osig) end

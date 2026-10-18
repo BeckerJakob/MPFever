@@ -1,6 +1,13 @@
 MPFever - Changelog
 ===================
 
+0.3.17-experimental - 0.3.16 did not start a game
+  - FIX (issue #56): in 0.3.16 the game never started: both games loaded the savegame, then nobody was ready. The mod's main
+    file had two local variables more than the game allows (Lua's 200 in a file's main chunk, of which the game takes
+    about 8): it did not load at all ("too many local variables"). Constants and counters of the file are now in tables (17
+    locals free instead of 6), and tests/test_locals.py checks every file of the mod keeps at least 12 free. Everything
+    0.3.16 fixed (issues #51, #53, #54) comes with it.
+
 0.3.16-experimental - desyncs and a crash after reloads, frozen station edits
   - FIX (issue #53, crash of every game): what a replicated action creates (a line, a vehicle) is known on every game by a
     key, which was the action's uid alone; the uid's counter starts again from 0 at every load and every resynchronisation,
