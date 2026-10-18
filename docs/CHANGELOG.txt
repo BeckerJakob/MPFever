@@ -11,8 +11,8 @@ MPFever - Changelog
     has them once per converted copy: 30 for an airport's 10 in the third report), matched by segment id and model, then
     model, place and side, then model, then by rank within the first copy (the fourth report: model, place and side
     matched none; the replay now logs both objects when none matches). If
-    that fails, or the count differs, the host's game is reloaded as before. Not tested in a real
-    game yet. MPFEVER_CONEO=0 turns it off.
+    that fails, or the count differs, the host's game is reloaded as before. Checked by two players: airports built by the
+    host and by the client, replayed with their signs, no resynchronisation. MPFEVER_CONEO=0 turns it off.
   - NOTE (issue #50, refunds): a resynchronisation reloads the game, and the game forgets what can be refunded: an airport
     built just before one (the second report: built at 09:30:00, resynchronisation at 09:30:02, demolished at 09:30:51)
     is no longer refunded. Fewer resynchronisations after airports means fewer lost refunds. A removal that refunds
@@ -29,8 +29,7 @@ MPFever - Changelog
     (assertion 'it != components.end()' in ecs::Engine::GetComponentDataIndex, BaseEdge, UI::CSelector) or demolished
     (the engine's removal threw). The signs were also placed over 6 steps (a desync). A construction's segment is never
     rebuilt now: the host's game is reloaded for everybody at once instead, and a replay the engine throws on does the
-    same. Known limit: an airport built by a client loses its signs in that reload; build airports as the host for now.
-    A savegame written after such a replay (a crash save, MPFever resync.sav) keeps the broken construction: go back to an
+    same (and since the fix of issue #50 above, the signs are replayed with the construction). A savegame written after such a replay (a crash save, MPFever resync.sav) keeps the broken construction: go back to an
     earlier one.
   - FIX (issues #46, #47): demolishing what one has just built refunded it on the builder's game only (a heliport: -2 190 453
     there, +36 162 on the host's); the host's money then went to everyone. What a native build cost its builder is now
