@@ -3125,7 +3125,7 @@ local function replayNativeConstruction(a)
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: with its " .. nEO .. " edge object(s)")
 			else
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: not made with its " .. nEO .. " edge object(s) ("
-					.. shortErr(okw and cmd or PW) .. "): without them, then resynchronisation")
+					.. (okw and shortErr(cmd) or tostring(PW):gsub("^.*%.lua" .. string.char(34) .. "%]:%d+: ", ""):sub(1, 700)) .. "): without them, then resynchronisation")
 				okk, cmd, withObjects = false, nil, false
 			end
 		end

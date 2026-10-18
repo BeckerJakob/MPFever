@@ -1133,24 +1133,42 @@ end
 -- (and resynchronises)
 function C.nativeEdgeObjects(list, native)
 	local out = {}
-	-- (matched by model, place and side, in case the engine orders them otherwise; else by rank)
+	-- Matched, in this order: same segment id (the conversion of the first copy numbers its segments as the tool did) and
+	-- model; same model, place and side; same model; else by rank within the first copy (the conversion lists each copy's
+	-- objects in turn, as the tool lists its own). Issue #50: model, place and side alone matched nothing.
+	native = type(native) == "table" and native or {}
 	local used = {}
+	local function norm(v) return (tostring(v):gsub("^::/", ""):gsub("^/", "")) end
+	local function field(x, k) local ok, v = pcall(function() return x[k] end) if ok then return v end return nil end
+	local tests = {
+		function(x, o) return field(x, "segmentEntity") == o.segmentEntity and norm(field(x, "model")) == norm(o.model) end,
+		function(x, o) return norm(field(x, "model")) == norm(o.model) and math.abs((tonumber(field(x, "param")) or -9) - (tonumber(o.param) or 0)) < 1e-3
+			and (field(x, "left") == true) == (o.left == true) end,
+		function(x, o) return norm(field(x, "model")) == norm(o.model) end,
+	}
 	local function find(o, i)
-		for j, x in ipairs(type(native) == "table" and native or {}) do
-			if not used[j] then
-				local okx, same = pcall(function()
-					return tostring(x.model):gsub("^::/", "") == tostring(o.model):gsub("^::/", "")
-						and math.abs((tonumber(x.param) or 0) - (tonumber(o.param) or 0)) < 1e-3 and (x.left == true) == (o.left == true)
-				end)
-				if okx and same then used[j] = true return x end
+		for _, t in ipairs(tests) do
+			for j, x in ipairs(native) do
+				if not used[j] then
+					local okx, same = pcall(t, x, o)
+					if okx and same then used[j] = true return x end
+				end
 			end
 		end
-		if type(native) == "table" and #native == #list and native[i] and not used[i] then used[i] = true return native[i] end
+		if #list > 0 and #native >= #list and #native % #list == 0 and native[i] and not used[i] then used[i] = true return native[i] end
 		return nil
+	end
+	-- (what the engine's objects look like, for the log when nothing matches)
+	local function show(x)
+		local t = {}
+		for _, k in ipairs({ "model", "segmentEntity", "param", "left", "category" }) do t[#t + 1] = k .. "=" .. tostring(field(x, k)) end
+		return table.concat(t, " ")
 	end
 	for i, o in ipairs(list or {}) do
 		local eo = type(o) == "table" and find(o, i) or nil
-		if type(o) ~= "table" or type(o.segmentEntity) ~= "number" or eo == nil then error("edge object " .. i .. " not converted") end
+		if type(o) ~= "table" or type(o.segmentEntity) ~= "number" or eo == nil then
+			error("edge object " .. i .. " not converted (" .. show(o) .. "; the engine's first: " .. (native[1] and show(native[1]) or "none") .. ")")
+		end
 		eo.segmentEntity = o.segmentEntity
 		local pl = o.playerEntity
 		if type(pl) ~= "number" or pl < 0 then pl = api.engine.util.getPlayer() end
@@ -1256,7 +1274,7 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 	-- the tool's new edge objects (an airport's signs on its own runways and taxiways), as the tool's proposal has them
 	if opts.withObjects and #(st.edgeObjectsToAdd or {}) > 0 then
 		local okn, en = pcall(function() sp.edgeObjectsToAdd = C.nativeEdgeObjects(st.edgeObjectsToAdd, opts.withObjects) end)
-		if not okn then error("edge objects: " .. tostring(en):sub(1, 120)) end
+		if not okn then error("edge objects: " .. tostring(en):gsub("^.-:%d+: ", ""):sub(1, 700)) end
 	end
 	-- the node configurations (lane connections...) the tool removed: only those this game has (removing one that does not
 	-- exist is an engine assertion), and those it added, with the native ids

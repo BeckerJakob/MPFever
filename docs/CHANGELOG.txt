@@ -8,7 +8,9 @@ MPFever - Changelog
     them (the segments keep the tool's placeholders, the objects name their segments by the tool's ids); the count is
     checked once built. A script cannot write a native edge object's model ("no writable member 'model'", second report):
     the objects are the engine's own, from its conversion of the construction (the dry run the replay already makes, which
-    has them once per converted copy: 30 for an airport's 10 in the third report), matched by model, place and side. If
+    has them once per converted copy: 30 for an airport's 10 in the third report), matched by segment id and model, then
+    model, place and side, then model, then by rank within the first copy (the fourth report: model, place and side
+    matched none; the replay now logs both objects when none matches). If
     that fails, or the count differs, the host's game is reloaded as before. Not tested in a real
     game yet. MPFEVER_CONEO=0 turns it off.
   - NOTE (issue #50, refunds): a resynchronisation reloads the game, and the game forgets what can be refunded: an airport
