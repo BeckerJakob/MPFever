@@ -109,8 +109,12 @@ KNOWN LIMITATIONS
 - Windows only. Made for the current Steam version of Transport Fever 3 (builds 40408 and 40420).
   After a game update, the mod still runs but synchronisation may be worse until
   MPFever is updated.
-- Without port forwarding on the host's box, players need a virtual LAN (Radmin VPN,
-  ZeroTier, Tailscale) or Steam invitations will not reach the host.
+- The host's port is opened on its router by itself (UPnP, else NAT-PMP) while a session
+  runs, and closed again afterwards: the launcher's log says whether it worked. When the
+  router has no public address of its own (CGNAT: the log says so), nobody outside can
+  reach the host over IPv4: use IPv6, a dedicated server elsewhere, or a virtual LAN
+  (Radmin VPN, ZeroTier, Tailscale, Porthole). Write  upnp=0  in mpfever_settings.txt to
+  leave the router alone.
 - IPv6: the host also accepts players over IPv6, and Steam invitations carry its IPv6
   address as well. A host behind DS-Lite (no public IPv4 address of its own, as on many
   cable connections) is reached that way when the joining player has IPv6 too and the
@@ -133,12 +137,16 @@ WHAT MPFEVER CHANGES ON YOUR PC
 - It installs the mod files in your Transport Fever 3 user mods folder.
 MPFever connects to the address you type (or the one of the Steam invitation you accept).
 The only other connections:
-- At startup, before the game starts, it asks GitHub (api.github.com) for the newest
-  MPFever release. When there is a newer one, the launcher shows "New update available":
-  "Update" downloads it from github.com/dkdknight/MPFever/releases, checks it, replaces
-  MPFever's files (your mpfever_settings.txt and logs are kept) and restarts MPFever;
-  "Continue without updating" starts the game with the version you have. Write
-  autoupdate=0  in mpfever_settings.txt (next to MPFever.exe) to disable this check.
+- At startup, before the game starts, and every 30 minutes, it asks GitHub
+  (api.github.com) for the newest MPFever release. A newer one is installed by itself:
+  at startup at once (downloaded from github.com/dkdknight/MPFever/releases, checked,
+  MPFever's files replaced, your mpfever_settings.txt and logs kept, MPFever started
+  again); found later, when you close the game; a dedicated server installs it and
+  restarts once nobody is connected. Every player needs the same version, so everybody
+  gets it this way. Write  autoupdate=ask  in mpfever_settings.txt (next to MPFever.exe)
+  to be asked first, or  autoupdate=0  to disable the check.
+- When the host's router supports UPnP or NAT-PMP, it asks the router to open the
+  session's port, and to close it again afterwards (upnp=0 to disable).
 - When you host, it asks api.ipify.org (a public service that answers with your public IP
   address, nothing else is sent) so that the address given to Steam invitations works from
   the internet. Write  lookupip=0  in mpfever_settings.txt (next to MPFever.exe) to disable
@@ -151,7 +159,14 @@ folder. The full source code is public (see the mod page).
 
 REPORTING A PROBLEM
 -------------------
-Please describe what you did, what you expected and what happened, and attach:
+The easiest: "Report a problem (logs)" in the MPFever window of the game (pause menu), or
+"Report a problem" in the launcher window. MPFever puts every log into a zip file (folder
+"reports" next to MPFever.exe), shows it in the Explorer and opens a new GitHub issue with
+its text filled in: describe what you did and when, drag the zip into the issue, send.
+After a crash of the game MPFever offers it by itself. The other players can send theirs
+the same way. The game rewrites its own log at every start: MPFever keeps a copy (in the
+session folder when the game closes, and logs\stdout-previous.txt before it starts it).
+By hand, attach:
 1. the newest file from the "logs" folder next to MPFever.exe (launcher-....log);
 2. the folders %TEMP%\mpfever\Host-... or Client-... of that session (zip them);
 3. if the game crashed: the newest files of

@@ -44,8 +44,15 @@ namespace MPFever
         public static string AppDir => AppDomain.CurrentDomain.BaseDirectory;
         static string TempDir => Path.Combine(Path.GetTempPath(), "mpfever_update");
 
-        /// <summary>Off with autoupdate=0 in mpfever_settings.txt.</summary>
-        public static bool Enabled => !(MainForm.LoadSettings().TryGetValue("autoupdate", out var v) && v.Trim() == "0");
+        /// <summary>How often a launcher that stays open asks GitHub again (a release published meanwhile is installed when the
+        /// game closes, or by a dedicated server once nobody is connected).</summary>
+        public const int RecheckMinutes = 30;
+
+        /// <summary>autoupdate in mpfever_settings.txt: 1 (default) installs a new release by itself, "ask" offers it in a
+        /// window first, 0 turns the check off.</summary>
+        static string Setting => MainForm.LoadSettings().TryGetValue("autoupdate", out var v) ? v.Trim().ToLowerInvariant() : "1";
+        public static bool Enabled => Setting != "0";
+        public static bool Ask => Setting == "ask";
 
         /// <summary>MPFever.exe runs from an unpacked release (mod\mpfever_1 next to it), not from a build folder.</summary>
         public static bool InReleaseFolder => File.Exists(Path.Combine(AppDir, "mod", "mpfever_1", "mod.json"));
@@ -78,7 +85,7 @@ namespace MPFever
 
         /// <summary>From GitHub's list of releases: the newest published one (no draft, no pre-release) that has an
         /// MPFever zip, when it is newer than <paramref name="current"/>; else null.</summary>
-        public static UpdateInfo Newest(string json, string current)
+        public static UpdateInfo Newest(string json, string current, bool server = false)
         {
             var cur = ParseVersion(current) ?? new[] { 0 };
             if (!(Json.Parse(json) is List<object> releases)) return null;
@@ -88,9 +95,13 @@ namespace MPFever
             {
                 if (Get(r, "draft") is bool draft && draft) continue;
                 if (Get(r, "prerelease") is bool pre && pre) continue;
-                var zip = (Get(r, "assets") as List<object> ?? new List<object>()).OfType<Dictionary<string, object>>().FirstOrDefault(a =>
+                var zips = (Get(r, "assets") as List<object> ?? new List<object>()).OfType<Dictionary<string, object>>().Where(a =>
                     Str(a, "name").StartsWith("MPFever", StringComparison.OrdinalIgnoreCase) && Str(a, "name").EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
-                    && Str(a, "browser_download_url").StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+                    && Str(a, "browser_download_url").StartsWith("https://", StringComparison.OrdinalIgnoreCase)).ToList();
+                // the players' archive, or the dedicated server's (MPFever-<version>-server.zip, the same files plus the
+                // server's) for a server; GitHub lists the server's first ("-" sorts before ".")
+                Func<Dictionary<string, object>, bool> isServer = a => Str(a, "name").EndsWith("-server.zip", StringComparison.OrdinalIgnoreCase);
+                var zip = (server ? zips.FirstOrDefault(isServer) : null) ?? zips.FirstOrDefault(a => !isServer(a));
                 if (zip == null) continue;
                 // the version of the tag (0.3.10, MPFever0.2.0), else of the title or of the zip's name
                 var v = ParseVersion(Str(r, "tag_name")) ?? ParseVersion(Str(r, "name")) ?? ParseVersion(Str(zip, "name"));
@@ -131,7 +142,7 @@ namespace MPFever
             req.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
             using (var resp = req.GetResponse())
             using (var r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
-                return Newest(r.ReadToEnd(), MainForm.Version);
+                return Newest(r.ReadToEnd(), MainForm.Version, MainForm.ServerMode);
         }
 
         /// <summary>Downloads the update, puts its files into MPFever's folder (see <see cref="Install"/>).
@@ -297,6 +308,7 @@ namespace MPFever
     sealed class UpdateDialog : Form
     {
         readonly UpdateInfo update;
+        readonly bool auto;
         readonly ModernButton updateBtn = new ModernButton(ButtonKind.Primary);
         readonly ModernButton skipBtn = new ModernButton(ButtonKind.Secondary);
         readonly ProgressLine bar = new ProgressLine { Visible = false };
@@ -305,9 +317,12 @@ namespace MPFever
         bool busy;
         int shownPercent = -1;
 
-        public UpdateDialog(UpdateInfo u)
+        /// <summary><paramref name="auto"/>: the download starts as soon as the window shows (autoupdate=1); the player can
+        /// still go on without the update when it fails.</summary>
+        public UpdateDialog(UpdateInfo u, bool auto = false)
         {
             update = u;
+            this.auto = auto;
             var S = (Func<int, int>)Theme.S;
             Text = "MPFever";
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -323,7 +338,7 @@ namespace MPFever
             ClientSize = new Size(S(540), S(250));
 
             var card = new Card { Dock = DockStyle.Fill, Padding = new Padding(S(22), S(18), S(22), S(18)) };
-            var title = new Label { Text = T("Nouvelle mise à jour disponible", "New update available"), AutoSize = false, Height = S(34), Font = Theme.Semibold(13f), ForeColor = Theme.Text };
+            var title = new Label { Text = auto ? T("Mise à jour de MPFever", "Updating MPFever") : T("Nouvelle mise à jour disponible", "New update available"), AutoSize = false, Height = S(34), Font = Theme.Semibold(13f), ForeColor = Theme.Text };
             var text = new Label
             {
                 Text = F("MPFever {0} est disponible. Version installée : {1}.", "MPFever {0} is available. Installed version: {1}.", u.Version, MainForm.Version),
@@ -369,6 +384,7 @@ namespace MPFever
             CancelButton = skipBtn;
             skipBtn.Click += (s, e) => DialogResult = DialogResult.Cancel;
             updateBtn.Click += (s, e) => StartUpdate();
+            if (auto) Shown += (s, e) => StartUpdate();
             // no closing while the files are being replaced
             FormClosing += (s, e) => { if (busy) e.Cancel = true; };
             FormClosed += (s, e) => tip.Dispose();

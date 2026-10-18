@@ -563,6 +563,9 @@ namespace MPFever
             psi.EnvironmentVariables["MPFEVER_NAME"] = Name;
             psi.EnvironmentVariables["MPFEVER_ROLE"] = Role;
             psi.EnvironmentVariables["MPFEVER_LANG"] = L.Code;
+            // the native module's places by signature, for a game build it does not know (made by tools/mksigs.py)
+            var sigs = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mpfever_sigs.txt");
+            if (File.Exists(sigs)) psi.EnvironmentVariables["MPFEVER_SIGS"] = sigs;
             if (Server) psi.EnvironmentVariables["MPFEVER_SERVER"] = "1";
             WriteLang();
             // application script: starts the host's savegame after a resynchronisation (and loads the autotest save)

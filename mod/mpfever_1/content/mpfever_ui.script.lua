@@ -177,7 +177,11 @@ local function patchGameModules()
 	CO.patchProgression(req, function(entity)
 		if U.coMap and U.coMap[entity] and U.canon then return U.canon end
 		return nil
-	end, log)
+	end, log, function(entity)
+		-- (each company's own rank, written by the bridge into companies.txt when there is more than one company)
+		local id = U.coMap and U.coMap[entity]
+		return id and U.ranks and U.ranks[id] or nil
+	end)
 	CO.patchPermits(req, log)
 end
 local function pollCompanies()
@@ -187,8 +191,10 @@ local function pollCompanies()
 	f:close()
 	if txt == U.coTxt then return end
 	U.coTxt = txt
-	local map, names = {}, {}
+	local map, names, ranks, nRanks = {}, {}, {}, 0
 	for line in txt:gmatch("[^" .. C.NL .. "]+") do
+		local rid, rx, rl, rp = line:match("^rank" .. C.TAB .. "(%d+)" .. C.TAB .. "([%d%.%-]+)" .. C.TAB .. "(%d+)" .. C.TAB .. "(%d+)")
+		if rid then ranks[tonumber(rid)] = { experience = tonumber(rx), level = tonumber(rl), potentialLevel = tonumber(rp) }; nRanks = nRanks + 1 end
 		local a, b, n = line:match("^(%d+)" .. C.TAB .. "(%d+)" .. C.TAB .. "?([^" .. C.TAB .. "]*)")
 		if a then map[tonumber(b)] = tonumber(a); names[tonumber(b)] = n end
 		local me = line:match("^me" .. C.TAB .. "(%d+)")
@@ -196,6 +202,7 @@ local function pollCompanies()
 	end
 	U.coMap = map
 	U.coNames = names
+	U.ranks = nRanks > 1 and ranks or nil
 	for e, id in pairs(map) do if id == 1 then U.canon = e end end
 	if U.canon and not U.coPatched then
 		U.coPatched = true
@@ -689,11 +696,39 @@ local function requestInvite()
 	f:close()
 end
 
+-- "Report a problem": MPFever.exe puts the logs into a zip and opens a new GitHub issue (see Reporter.cs); it says where
+-- the zip is in report.txt, shown under the button
+local function requestReport()
+	U.reqSeq = (U.reqSeq or 0) + 1
+	local f = C.IO.open(C.DIR .. C.BS .. "menu_req.txt", "wb")
+	if not f then log("session: cannot write menu_req.txt") return end
+	f:write(tostring(os.time()) .. ".ui" .. U.reqSeq .. C.TAB .. "report" .. C.TAB .. C.TAB .. (C.NAME or "") .. C.TAB .. C.NL)
+	f:close()
+	U.reportAsked = os.time()
+	U.reportMsg = T("Rapport en préparation…", "Preparing the report…")
+	U.statusVersion = (U.statusVersion or 0) + 1
+end
+
+-- the answer of MPFever.exe to the last report asked (report.txt: "<ticks> TAB <text>")
+local function pollReport()
+	if not U.reportAsked or os.time() - U.reportAsked > 120 then return end
+	local f = C.IO.open(C.DIR .. C.BS .. "report.txt", "rb")
+	if not f then return end
+	local line = f:read("*l")
+	f:close()
+	local text = line and line:match("^%d+\t(.*)$")
+	if text and text ~= U.reportMsg then
+		U.reportMsg = text
+		U.statusVersion = (U.statusVersion or 0) + 1
+	end
+end
+
 -- re-renders its recipe when the status changes, and once more when it gets old
 local function useStatus(react)
 	local key = function() return tostring(U.statusVersion or 0) .. (statusStale(U.status) and "s" or "") end
 	local ver = react.useState(key())
 	react.onStepTimer(function()
+		pcall(pollReport)
 		local k = key()
 		if ver:old() ~= k then ver:set(k) end
 	end, 0.5)
@@ -941,6 +976,9 @@ local function installSession(react, builtin)
 		rows[#rows + 1] = text(" ")
 		rows[#rows + 1] = builtin.Button { meta = { class = "secondary" }, content = row { icon(ICON_CHAT, 22), text("  " .. T("Ouvrir la discussion", "Open the chat")) },
 			onClick = function() if U.openChat then U.openChat() end end }
+		rows[#rows + 1] = text(" ")
+		rows[#rows + 1] = builtin.Button { meta = { class = "secondary" }, content = text(T("Signaler un problème (journaux)", "Report a problem (logs)")), onClick = requestReport }
+		if U.reportMsg and U.reportAsked and os.time() - U.reportAsked <= 120 then rows[#rows + 1] = muted(U.reportMsg) end
 		return builtin.Window {
 			title = "MPFever – " .. T("Multijoueur", "Multiplayer"),
 			id = "window.mpfever.session",

@@ -465,6 +465,39 @@ namespace MPFever
             }) { IsBackground = true, Name = "Server stop" }.Start();
         }
 
+        double updateEmptySince = -1;
+
+        /// <summary>A new release while nobody is connected: the world is saved, the game closes, the update is installed and
+        /// MPFever starts again with the same arguments (--server), which loads the world again. If the update fails, the
+        /// same version starts again.</summary>
+        void ServerSelfUpdate(UpdateInfo u)
+        {
+            if (serverStopping) return;
+            serverStopping = true;
+            pendingUpdate = null;
+            new Thread(() =>
+            {
+                Log.W(F("=== Mise à jour du serveur vers MPFever {0} ===", "=== The server updates to MPFever {0} ===", u.Version));
+                try
+                {
+                    bool st; lock (sessionGate) st = started;
+                    if (st) SaveWorld(T("mise à jour", "update"), true, false, 600);
+                    var r = relay;
+                    if (r != null) foreach (var p in r.Admitted()) r.Deny(p, "{[\"reason\"]=\"stopped\"}");
+                    EndSession(T("=== Serveur arrêté pour la mise à jour ===", "=== Server stopped for the update ==="));
+                }
+                catch (Exception e) { Log.Err(e.Message); }
+                menuGame?.Kill();
+                Thread.Sleep(1500);
+                try { Updater.Run(u, null, null); }
+                catch (Exception e) { Log.Err(F("Échec de la mise à jour : {0}", "Update failed: {0}", Updater.Describe(e))); }
+                try { Updater.Restart(Program.Args); }
+                catch (Exception e) { Log.Err(e.Message); }
+                serverClosed = true;
+                try { BeginInvoke((Action)Close); } catch { }
+            }) { IsBackground = true, Name = "Server update" }.Start();
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             // closing the window of a running server stops it properly (the world is saved first)
@@ -532,14 +565,23 @@ namespace MPFever
                 }
             }
 
-            // 2. autosave
+            // 2. a release published meanwhile: installed once nobody has been connected for 2 minutes (the players' MPFever
+            // installs it at its next start; a player with the old version is refused, "other MPFever version")
+            if (connected > 0) updateEmptySince = -1; else if (updateEmptySince < 0) updateEmptySince = Now;
+            if (pendingUpdate != null && connected == 0 && Now - updateEmptySince >= 120 && !serverStopping)
+            {
+                ServerSelfUpdate(pendingUpdate);
+                return;
+            }
+
+            // 3. autosave
             if (server.AutosaveMinutes > 0 && Now - lastAutosave >= server.AutosaveMinutes * 60.0)
             {
                 lastAutosave = Now;
                 new Thread(() => SaveWorld(T("sauvegarde automatique", "autosave"), false)) { IsBackground = true, Name = "Autosave" }.Start();
             }
 
-            // 3. watchdog: a game that stopped sending its clock is frozen
+            // 4. watchdog: a game that stopped sending its clock is frozen
             if (server.WatchdogSeconds > 0)
             {
                 PlayerClock hc; lock (clocks) clocks.TryGetValue(hostName ?? "", out hc);

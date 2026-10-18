@@ -1,6 +1,51 @@
 MPFever - Changelog
 ===================
 
+0.3.15-experimental - refunds, automatic updates, problem reports, smooth pacing, port opening, ranks per company
+  - FIX (issues #46, #47): demolishing what one has just built refunded it on the builder's game only (a heliport: -2 190 453
+    there, +36 162 on the host's); the host's money then went to everyone. What a native build cost its builder is now
+    shipped with it; every replaying game adds up what its replay cost and books the difference on the builder's company
+    at its next step, so every game charged what the builder's game charged. Until the booking is applied it counts as
+    booked in the checks (no false money difference). Logged as "refund:". MPFEVER_NOREFUND=1 turns it off (on every game).
+  - NEW: automatic updates (from PR #45, SlikerDev): at startup, and every 30 minutes, the launcher asks GitHub for the
+    newest release. Found at startup it is installed at once (downloaded, checked against GitHub's SHA-256, MPFever's
+    files replaced, settings and logs kept, MPFever started again); found later, when the game closes; a dedicated server
+    saves its world, installs it and starts again once nobody has been connected for 2 minutes. The host tells its players
+    in the chat. A server takes the server archive, a player the players' one. autoupdate=ask asks first, autoupdate=0
+    turns it off.
+  - NEW: "Report a problem (logs)" in the in-game MPFever window, "Report a problem" in the launcher, and offered after a
+    crash of the game: every log (session folders, launcher logs, the game's stdout.txt and the previous one, the newest
+    crash dump, the session's state) in one zip (reports\ next to MPFever.exe), shown in the Explorer, and a new GitHub
+    issue opened with its text filled in (version, game build, company mode, players, sync state, processor). The player
+    drags the zip into it and sends: GitHub creates no issue and takes no file without an account of the player's own (a
+    key shipped in MPFever would let anyone post in the project's name). The game's stdout.txt is now kept: copied into the
+    session folder when the game closes, the previous one into logs\stdout-previous.txt before the game starts.
+  - NEW: smooth pacing (ported from TPF3-MP's batch interval, MIT): a game that came up to the slowest player's clock used
+    to stand still until that clock moved, then run at full speed again (vehicles moved, stopped, moved: issue #47's
+    dedicated server). The native module now redirects CGame::Step's call of CGame::Sync and, right after each Sync,
+    scales the engine's batch interval (guiFrameTime) by a factor the mod writes in native_pace.txt: up to 2 (half speed)
+    as the game comes within a batch and a half of the barrier, 1 otherwise. Only the real time between batches changes:
+    every game runs the same steps at the same game times. On a model of two games (the other 15 to 50 % slower, 50 to
+    300 ms apart) no stop was left at 1x and 2x up to 30 % slower, and fewer at 4x. MPFEVER_SMOOTH=0 turns it off.
+  - NEW: the host's port is opened on the router by itself while a session runs (UPnP, else NAT-PMP), and closed again
+    when it ends; the launcher's log says whether it worked, and when the router has no public address (CGNAT, as in issue
+    #47) it says that nobody outside can reach it over IPv4. upnp=0 turns it off.
+  - NEW: the native module's engine places by signature. On a game build it does not know (a game update), every place is
+    found again by its signature (mpfever_sigs.txt next to MPFever.exe, made by tools/mksigs.py from the last known build;
+    each must match exactly once, each feature needs all of its own and stays off without them, native.log lists what was
+    found). Lua's string hash seed fix, the game scripts' pool, the menu page, the order fixes, the tools' company and the
+    smooth pacing are found by their own signatures whatever the build. MPFEVER_SIGTEST=1 resolves by signature on a known
+    build too (to check the file). The structure offsets inside the engine are still those of build 40420.
+  - SEPARATE COMPANIES (ported from TPF3-MP's companies.mayTouch, mayBuyAtDepot and progression, MIT):
+    - what belongs to another company is refused the same on every game, naming its owner: selling, sending to a line or a
+      depot, editing or deleting its vehicles and lines, renaming or recolouring them or its stations, buying a vehicle in
+      its depot. What belongs to no company (towns' streets) stays everyone's. MPFEVER_NOOWNERGUARD=1 turns it off.
+    - each company has its own rank: its score is the sum over the towns of population x its share of what was carried
+      there (cargo delivered, passengers) x its rating there, taken four times a game month at the same game time on every
+      game, from the simulation's state; experience is the highest score, the rank the game's own thresholds. The company
+      window shows each company's own rank and permits, and takes a rank reached for that company ("ranks:" in mod.log).
+      Before, every company read the savegame company's rank.
+
 0.3.14-experimental - determinism and tools fixes ported from TPF3-MP; separate companies: stops
   - FIX (separate companies): a stop another player placed on their own street was rebuilt on the other games with a
     street segment that belonged to nobody (the replay did not copy the segment's owner, playerOwned), and the stop's

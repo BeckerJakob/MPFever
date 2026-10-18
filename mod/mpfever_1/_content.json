@@ -12,6 +12,7 @@
         "mpfever_menu.lua",
         "mpfever_pause.lua",
         "mpfever_co.lua",
+        "mpfever_progression.lua",
         "mpfever_asset.con.lua",
         "mpfever_asset.script.lua",
         "mpfever_chat@2x.tga"

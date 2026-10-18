@@ -52,7 +52,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.3.14-experimental";
+        public const string Version = "0.3.15-experimental";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -302,7 +302,9 @@ namespace MPFever
             var clearBtn = new ModernButton(ButtonKind.Ghost) { Text = T("Effacer", "Clear") }.Fit();
             var copyBtn = new ModernButton(ButtonKind.Ghost) { Text = T("Copier", "Copy") }.Fit();
             var folderBtn = new ModernButton(ButtonKind.Ghost) { Text = T("Dossier des journaux", "Logs folder") }.Fit();
-            foreach (var b in new[] { folderBtn, copyBtn, clearBtn }) { b.Margin = new Padding(S(6), 0, 0, 0); tools.Controls.Add(b); }
+            var reportBtn = new ModernButton(ButtonKind.Ghost) { Text = T("Signaler un problème", "Report a problem") }.Fit();
+            reportBtn.Click += (s, e) => new Thread(() => Report(false)) { IsBackground = true, Name = "Report" }.Start();
+            foreach (var b in new[] { reportBtn, folderBtn, copyBtn, clearBtn }) { b.Margin = new Padding(S(6), 0, 0, 0); tools.Controls.Add(b); }
             logHead.Controls.Add(logTitle);
             logHead.Controls.Add(tools);
             logCard.Controls.Add(logBox);
@@ -585,7 +587,7 @@ namespace MPFever
         void CheckUpdateThenInit()
         {
             Updater.CleanUp(JustUpdated);
-            if (autotest || Dev || JoinAtStart != null || !Updater.Enabled) { Init(); return; }
+            if (autotest || Dev || JoinAtStart != null || !Updater.Enabled) { Init(); StartUpdateWatch(); return; }
             if (!Updater.InReleaseFolder)
             {
                 Log.Dim(T("Mises à jour non vérifiées : MPFever.exe n'est pas dans un dossier de version (mod\\mpfever_1 absent)", "Updates not checked: MPFever.exe is not in a release folder (no mod\\mpfever_1)"));
@@ -607,7 +609,8 @@ namespace MPFever
                 {
                     Log.Ok(F("Nouvelle version disponible : MPFever {0}", "New version available: MPFever {0}", u.Version));
                     DialogResult choice;
-                    using (var dlg = new UpdateDialog(u)) choice = dlg.ShowDialog(this);
+                    // (autoupdate=1, the default: installed at once; autoupdate=ask: offered first)
+                    using (var dlg = new UpdateDialog(u, !Updater.Ask)) choice = dlg.ShowDialog(this);
                     if (choice == DialogResult.OK)
                     {
                         try { Updater.Restart(Program.Args); }
@@ -623,6 +626,7 @@ namespace MPFever
                     Log.W(F("Mise à jour ignorée : MPFever {0} reste installé", "Update skipped: MPFever {0} stays installed", Version));
                 }
                 Init();
+                StartUpdateWatch();
             };
             timeout.Tick += (s, e) => answer(null, T("pas de réponse de GitHub", "no answer from GitHub"));
             timeout.Start();
@@ -634,6 +638,108 @@ namespace MPFever
                 catch (Exception e) { error = Updater.Describe(e); }
                 try { BeginInvoke((Action)(() => answer(u, error))); } catch { }
             }) { IsBackground = true, Name = "Update check" }.Start();
+        }
+
+        /// <summary>A release published on GitHub while this launcher is open (checked every 30 minutes): installed when the
+        /// game closes (a player's launcher), or by a dedicated server once nobody is connected (see ServerTick).</summary>
+        volatile UpdateInfo pendingUpdate;
+        DateTime gameStartedAt = DateTime.Now;
+        System.Threading.Timer updateWatch;
+
+        void StartUpdateWatch()
+        {
+            if (updateWatch != null || autotest || Dev || !Updater.Enabled || !Updater.InReleaseFolder) return;
+            var period = TimeSpan.FromMinutes(Updater.RecheckMinutes);
+            updateWatch = new System.Threading.Timer(_ =>
+            {
+                try
+                {
+                    var u = Updater.Check();
+                    if (u == null) return;
+                    var known = pendingUpdate;
+                    if (known != null && Updater.CompareVersions(Updater.ParseVersion(u.Version), Updater.ParseVersion(known.Version)) <= 0) return;
+                    pendingUpdate = u;
+                    if (ServerMode)
+                        Log.Ok(F("MPFever {0} est publié : le serveur l'installera et redémarrera dès que personne n'est connecté.", "MPFever {0} is published: the server installs it and restarts as soon as nobody is connected.", u.Version));
+                    else
+                    {
+                        Log.Ok(F("MPFever {0} est publié : il sera installé à la fermeture du jeu.", "MPFever {0} is published: it is installed when the game closes.", u.Version));
+                        // (the host tells every player of its session, in the chat)
+                        if (hostGame != null)
+                            HostChat("msg", "MPFever", F("MPFever {0} est disponible : il s'installera à la fermeture du jeu (tous les joueurs doivent avoir la même version).", "MPFever {0} is available: it installs when you close the game (every player needs the same version).", u.Version));
+                    }
+                }
+                catch (Exception e) { Log.Dim(F("Recherche de mises à jour impossible : {0}", "Could not check for updates: {0}", Updater.Describe(e))); }
+            }, null, period, period);
+        }
+
+        /// <summary>The game closed: its log is kept in the session folder; after a crash a problem report is offered; a
+        /// release found meanwhile is installed now (no restart: it starts with the next launch).</summary>
+        void InstallPendingUpdateThenClose()
+        {
+            if (menuGame != null) Reporter.KeepGameLog(menuGame.Dir);
+            if (!ServerMode && !autotest && Reporter.CrashedSince(gameStartedAt))
+            {
+                Log.Err(T("Transport Fever 3 s'est arrêté brutalement (fichier de crash écrit).", "Transport Fever 3 crashed (a crash dump was written)."));
+                // (the window was minimised while the game ran: the question must be seen)
+                try { WindowState = FormWindowState.Normal; Activate(); } catch { }
+                var answer = MessageBox.Show(this, T("Transport Fever 3 s'est arrêté brutalement.\n\nPréparer un rapport de problème ? MPFever rassemble les journaux dans un fichier zip et ouvre la page d'une nouvelle issue GitHub, où il suffit de glisser ce fichier.",
+                    "Transport Fever 3 crashed.\n\nPrepare a problem report? MPFever puts the logs into a zip file and opens a new GitHub issue, where you just drag that file."),
+                    "MPFever", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (answer == DialogResult.Yes) Report(true);
+            }
+            var u = pendingUpdate;
+            if (u != null && !ServerMode && Updater.Enabled)
+            {
+                pendingUpdate = null;
+                try
+                {
+                    using (var dlg = new UpdateDialog(u, true))
+                        if (dlg.ShowDialog(this) == DialogResult.OK)
+                            Log.Ok(F("MPFever {0} installé : il démarrera la prochaine fois.", "MPFever {0} installed: it starts next time.", u.Version));
+                }
+                catch (Exception e) { Log.Err(e.Message); }
+            }
+            Close();
+        }
+
+        /// <summary>A problem report: the logs in a zip (reports\), shown in the Explorer, and a new GitHub issue opened in
+        /// the browser with what the session was (see Reporter). The in-game window is told where the zip is.</summary>
+        void Report(bool crashed)
+        {
+            try
+            {
+                var sb = new System.Text.StringBuilder();
+                bool st; lock (sessionGate) st = started;
+                string role = server != null ? "dedicated server" : hostGame != null ? "host" : clients.Count > 0 ? "client" : "no session";
+                string[] ready; lock (players) ready = players.ToArray();
+                sb.AppendLine("MPFever " + Version + ", game build " + Reporter.GameBuild(gameDir));
+                sb.AppendLine("Company mode: " + (companyMode == "separate" ? "one company per player" : "one company for everybody") + "; role: " + role
+                    + (hostName != null ? " (host " + BaseName(hostName) + ")" : ""));
+                sb.AppendLine("Players: " + (ready.Length > 0 ? string.Join(", ", ready.Select(BaseName)) : "-") + "; game running: " + (st ? "yes" : "no"));
+                sb.AppendLine("Sync: " + syncText + "; desyncs " + desyncs + ", resynchronisations " + resyncId + ", actions relayed " + actsRelayed + ", refused " + actRefused);
+                sb.AppendLine("Processor: " + Reporter.Processor() + "; Windows " + Environment.OSVersion.Version);
+                sb.AppendLine("Report made " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + (crashed ? " after a crash of the game" : ""));
+                var summary = sb.ToString();
+                List<string> left;
+                var dirs = games.Select(g => g.Dir).ToList();
+                var zip = Reporter.Collect(dirs, summary, out left);
+                long size = new FileInfo(zip).Length;
+                Log.Ok(F("Rapport de problème : {0} ({1:0.0} Mo)", "Problem report: {0} ({1:0.0} MB)", zip, size / 1048576.0));
+                if (left.Count > 0) Log.W(F("Laissés de côté (trop gros) : {0}", "Left out (too large): {0}", string.Join(", ", left)));
+                var body = Reporter.IssueBody(Path.GetFileName(zip), size, summary, crashed);
+                var title = (crashed ? "Crash" : "Problem") + " (MPFever " + Version + ", " + (companyMode == "separate" ? "separate companies" : "shared company") + ")";
+                try { BeginInvoke((Action)(() => { try { Clipboard.SetText(body); } catch { } })); } catch { }
+                Reporter.ShowInExplorer(zip);
+                Reporter.OpenIssue(title, body);
+                if (menuGame != null)
+                    try { File.WriteAllText(Path.Combine(menuGame.Dir, "report.txt"), DateTime.Now.Ticks + "\t" + F("Rapport prêt : {0}. La page de l'issue GitHub est ouverte dans le navigateur : glissez-y ce fichier.", "Report ready: {0}. The GitHub issue page is open in your browser: drag that file into it.", Path.GetFileName(zip)) + "\n"); } catch { }
+            }
+            catch (Exception e)
+            {
+                Log.Err(F("Rapport de problème impossible : {0}", "Could not make the problem report: {0}", e.Message));
+                if (menuGame != null) try { File.WriteAllText(Path.Combine(menuGame.Dir, "report.txt"), DateTime.Now.Ticks + "\t" + F("Rapport impossible : {0}", "Could not make the report: {0}", e.Message) + "\n"); } catch { }
+            }
         }
 
         void Init()
@@ -693,8 +799,11 @@ namespace MPFever
             hostBtn.Enabled = joinBtn.Enabled = localBtn.Enabled = false;
             menuGame = new GameLink(SavedName(), "menu");
             games.Add(menuGame);
-            menuGame.Exited += () => { Log.W(T("Transport Fever 3 fermé : fin de MPFever.", "Transport Fever 3 closed: MPFever exits.")); try { BeginInvoke((Action)Close); } catch { } };
+            menuGame.Exited += () => { Log.W(T("Transport Fever 3 fermé : fin de MPFever.", "Transport Fever 3 closed: MPFever exits.")); try { BeginInvoke((Action)InstallPendingUpdateThenClose); } catch { } };
             MenuStatus();
+            // (the game rewrites its log at its start: the previous run's is kept for a report)
+            if (JoinAtStart == null) Reporter.KeepPreviousGameLog();
+            gameStartedAt = DateTime.Now;
             menuGame.Launch(gameDir);
             WindowState = FormWindowState.Minimized;
             Log.W(T("Le jeu démarre : choisissez « Multijoueur (MPFever) » dans son menu principal.", "The game is starting: choose « Multiplayer (MPFever) » in its main menu."));
@@ -910,6 +1019,11 @@ namespace MPFever
             {
                 if (steamConnect != null) SteamCtl("invite", steamConnect);
             }
+            else if (cmd == "report")
+            {
+                // "Report a problem" in the in-game MPFever window
+                new Thread(() => Report(false)) { IsBackground = true, Name = "Report" }.Start();
+            }
             else if (cmd == "dropnet")
             {
                 // test only: cuts the connection to the host as a network failure would
@@ -950,7 +1064,7 @@ namespace MPFever
             foreach (var cl in clients.ToList()) try { cl.Dispose(); } catch { }
             lock (clients) clients.Clear();
             var r = relay; relay = null;
-            if (r != null) try { r.Dispose(); } catch { }
+            if (r != null) { try { r.Dispose(); } catch { } PortMap.Close(); }
             if (hostGame != null && hostFromGame != null) hostGame.FromGame -= hostFromGame;
             if (menuGame != null && clientFromGame != null) menuGame.FromGame -= clientFromGame;
             hostFromGame = clientFromGame = null;
@@ -1266,7 +1380,15 @@ namespace MPFever
                 if (server != null) ServerPlayerLeft(p);
             };
             relay.Received += (p, m) => OnHostMessage(m, p);
-            relay.Start(server != null ? server.Port : (int)portBox.Value);
+            int listenPort = server != null ? server.Port : (int)portBox.Value;
+            relay.Start(listenPort);
+            // the port opened on the router by itself (UPnP / NAT-PMP), not for a local test
+            if (!autotest && !Dev) PortMap.OpenAsync(listenPort, r =>
+            {
+                if (r.Method == null || !lobbyOpen) return;
+                menuText += " " + T("Le port a été ouvert automatiquement sur votre box (UPnP).", "The port was opened on your router by itself (UPnP).");
+                MenuStatus();
+            });
 
             hostGame = existing ?? new GameLink(name, "host");
             if (!games.Contains(hostGame)) games.Add(hostGame);
@@ -2213,6 +2335,7 @@ namespace MPFever
             foreach (var g in games) g.Dispose();
             foreach (var c in clients) c.Dispose();
             relay?.Dispose();
+            PortMap.Close();
             base.OnFormClosed(e);
         }
     }

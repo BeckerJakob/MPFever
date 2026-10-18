@@ -1,0 +1,74 @@
+# The engine places the native module (native/mpfever_native.cpp) uses, in TransportFever3.exe build 40420 (Steam,
+# link timestamp 6ac50427). tools/mksigs.py makes a signature of each one from that executable (native/mpfever_sigs.txt);
+# on a game build the native module does not know, it finds them again by those signatures.
+#
+#   <key> <rva> [offset]     a place: the signature starts at <rva> - <offset> (offset: bytes of context before it)
+#   rule <rva> <rule>        the rule of a reading of the local-player word (sites20c.h) other than the default
+#
+# The readings of the local-player word themselves come from native/sites20c.h. Keep this list in step with the
+# known build tables of mpfever_native.cpp (BUILDS, UI_SITES_40420, the RVA_ constants).
+
+# deferral of native builds
+add          0x9d4040     # CommandList::Add(list, out, cmd, done, progress)
+move         0x9d0430     # Command move constructor
+dtor         0x9d0670     # Command destructor
+handleDtor   0x3040c90    # destructor of Add's out handle
+apply        0x9e33b0     # "Simulation Thread: Apply Command"
+loopRet      0x11ebdb     # return address of RunGameSimLoop's call of apply
+preIter      0x1578a0     # the simulation's pre-iteration function
+swap         0x9d43a0     # CommandList::Swap (timing probe only)
+sync         0x11f690     # CGame::Sync
+uisite       0x4d396f     # UI::Bulldozer::Apply (return address of its Add call)
+uisite       0x51b56c     # UI::ConstructionBuilder::MousePressed
+uisite       0x528504     # tool (unnamed)
+uisite       0x537ee5     # UI::LaneModifier::Apply
+uisite       0x538649     # UI::LaneModifier::Apply
+uisite       0x5387cd     # UI::LaneModifier::Apply
+uisite       0x542eba     # UI::ModuleBuilder::MousePressed
+uisite       0x5891b4     # UI::StreetBuilder::UpdateEngine
+uisite       0x5948dd     # UI::StreetTerminalBuilder (stops, signals, waypoints)
+uisite       0x5bf08d     # UI::TrackModifier::Build
+uisite       0x28a3024    # entity window builtins
+uisite       0x28a3871    # entity window builtins
+
+# separate companies
+repl         0x255e60     # GameState::Replicate
+replLoop     0x11ea9f     # return address of the simulation loop's call of Replicate
+lines        0x7f5c60     # the line viewers' list of the player's lines
+moneycheck   0xccfbd0     # the tools' money check
+playerA      0x24f0a18    # api.engine.util.getPlayer's reading of the word
+playerB      0x24da741    # the other binding's reading
+playerC      0x67b955     # a worker job's reading
+playerD      0x86917c     # an interface reading (function 0x8690be)
+playerE      0x24e7d66    # an interface reading (function 0x24e7cb0)
+rule         0x255ed9  0  # the copy between the two game states: counted only
+rule         0x648f18  20 # interface objects (RULE_SIMTHREAD | RULE_UIOBJ)
+rule         0x65b1f4  20
+rule         0x529da2  20
+rule         0x52a01d  20
+rule         0x537734  20
+rule         0x53aa67  20
+rule         0x6568f6  20
+rule         0x656a31  20
+rule         0x7354e0  20
+rule         0x86917c  20
+rule         0x67b955  20
+rule         0x29f9f14 20
+
+# determinism
+makeseed     0x2fc8fe0    # Lua's makeseed (lstate.c)
+simcall      0x900170     # calls of CGameTime's tickCount getter from the simulation
+simcall      0x90edc0
+simcall      0x96ad13
+simcall      0xa38dda
+simcall      0xa7db6d
+simcall      0xac2dd3
+simcall      0x2698385
+
+# smooth pacing (the batch interval, from TPF3-MP's profile of this build)
+cgameStep    0x11f3b0     # CGame::Step
+syncCall     0x11f446     # CGame::Step's call of CGame::Sync
+
+# diagnostics
+addEntity    0x2bb8940    # ecs::Engine::AddEntity
+removeEntity 0x2bbc700    # ecs::Engine::RemoveEntity

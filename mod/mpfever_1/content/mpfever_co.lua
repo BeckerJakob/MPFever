@@ -127,18 +127,30 @@ end
 -- states; this is called in each one that needs it (the module tables are shared by the state, so it is done once per state).
 -- `req(name)` returns a game module by its file name (company_util.tl...), `logf` writes a line of the log.
 
--- Level, experience and permits of a company: the game keeps them for the savegame's company only, so every company of the
--- registry reads that one. `canonOf(entity)` answers the savegame company's entity when `entity` is one of the registry, else nil.
-function CO.patchProgression(req, canonOf, logf)
+-- Level, experience and permits of a company: the game keeps them for the savegame's company only. With a rank of its own
+-- (mpfever_progression.lua, `viewOf(entity)` answers { experience, level, potentialLevel } for a company of the registry)
+-- each company shows that one, on top of the savegame company's other fields; else every company of the registry reads the
+-- savegame company's. `canonOf(entity)` answers the savegame company's entity when `entity` is one of the registry, else nil.
+function CO.patchProgression(req, canonOf, logf, viewOf)
 	if CO.progPatched then return true end
 	local M = req("company_progression_util.tl")
 	if not (M and M.getCompanyProgressionState) then return false end
 	local orig = M.getCompanyProgressionState
-	M.getCompanyProgressionState = function(entity)
-		return orig(canonOf(entity) or entity)
+	M.getCompanyProgressionState = function(entity, ...)
+		local base = orig(canonOf(entity) or entity, ...)
+		if viewOf then
+			local ok, v = pcall(viewOf, entity)
+			if ok and type(v) == "table" then
+				local out = {}
+				if type(base) == "table" then for k, x in pairs(base) do out[k] = x end end
+				for k, x in pairs(v) do out[k] = x end
+				return out
+			end
+		end
+		return base
 	end
 	CO.progPatched = true
-	if logf then logf("companies: other companies read the savegame company's progression") end
+	if logf then logf(viewOf and "companies: each company shows its own rank (the savegame company's progression otherwise)" or "companies: other companies read the savegame company's progression") end
 	return true
 end
 

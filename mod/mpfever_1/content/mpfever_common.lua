@@ -1478,6 +1478,25 @@ C.FACTORIES = {
 	"makeWorldReplaceTerrainCmd", "makeWorldSetBulldozableCmd",
 }
 
+-- the ranks of the companies (mpfever_progression.lua), loaded once per Lua state; false when it cannot be loaded
+function C.progression()
+	if C.PG == nil then
+		local ok, m = pcall(ug_require, "mpfever_progression.lua")
+		if not (ok and type(m) == "table") then ok, m = pcall(ug_require, "mpfever_1::/mpfever_progression.lua") end
+		C.PG = (ok and type(m) == "table") and m or false
+	end
+	return C.PG or nil
+end
+
+-- Companies mode: the arguments of a command that name something its company must own (see the bridge's executeAction):
+-- the vehicle, the line, the depot a vehicle is bought in, the entity renamed or recoloured
+C.OWNER_ARGS = {
+	makeVehicleSellCmd = { 1 }, makeVehicleSetLineCmd = { 1, 2 }, makeVehicleSendToDepotCmd = { 1, 2 }, makeVehicleReverseCmd = { 1 },
+	makeVehicleReplaceCmd = { 1 }, makeVehicleSetStoppedByUserCmd = { 1 }, makeVehicleSetManualDepartureCmd = { 1 },
+	makeVehicleTryToDepartCmd = { 1 }, makeVehicleSetModifiersCmd = { 1 }, makeVehicleBuyCmd = { 2 },
+	makeLineUpdateCmd = { 1 }, makeLineDestroyCmd = { 1 }, makeEntitySetNameCmd = { 1 }, makeEntitySetColorCmd = { 1 },
+}
+
 -- Companies mode: a station built by a player is shared with the other companies from the start, at the smallest fee; its
 -- company may change the fee or stop sharing it (fee 0, kept in the registry: a station absent from it is shared by default)
 C.SHARE_DEFAULT = 100

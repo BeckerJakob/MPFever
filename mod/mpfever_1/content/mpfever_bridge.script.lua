@@ -152,6 +152,79 @@ local function extendedParts(parts)
 	end)
 end
 
+-- Refunds: the engine gives back what a player has just built when that player demolishes it (the tool's refundable
+-- entities, api.gui.construction), on the builder's game only: a replay pays the full removal (a heliport: -2 190 453 on the
+-- builder's game, +36 162 on the host's). What a native build cost its builder (the proposal data's costs) is shipped with
+-- it; each replaying game adds up what its replay of it cost (every proposal applied for it at its time) and, at its next
+-- update, books the difference on the builder's company: every game charged what the builder's game charged. Until the
+-- booking is applied the amount counts as booked in the checks (REFUND.pending): the builder's game has it already.
+-- MPFEVER_NOREFUND=1 turns it off (on every game).
+-- (one table: the main chunk is close to Lua's 200 locals)
+local REFUND = { pending = {}, on = os.getenv("MPFEVER_NOREFUND") ~= "1" }
+function REFUND.costOf(param)
+	local c = nil
+	pcall(function() c = tonumber(param[2].costs) end)
+	return c
+end
+
+function REFUND.key(reg, co)
+	if reg and reg.mode == "separate" then return "b" .. tostring(co) end
+	return "balance"
+end
+
+-- what is booked for a refund and not applied yet, by REFUND.key (see authValues and the money part of the checks)
+function REFUND.pendingOf(key)
+	local sum = 0
+	for _, p in ipairs(REFUND.pending or {}) do if p.key == key then sum = sum + p.amount end end
+	return sum
+end
+
+function REFUND.book(st, now)
+	-- (a booking whose answer never came is not counted for ever)
+	if #REFUND.pending > 0 then
+		local live = {}
+		for _, p in ipairs(REFUND.pending) do
+			if p.till >= now then live[#live + 1] = p else log("refund booking of " .. p.amount .. " (" .. p.key .. ") not answered by the engine within two steps: no longer counted") end
+		end
+		REFUND.pending = live
+	end
+	if not st.rcost or #st.rcost == 0 then return false end
+	local keep = {}
+	for _, rc in ipairs(st.rcost) do
+		if rc.at >= now then
+			keep[#keep + 1] = rc
+		elseif (rc.n or 0) > 0 and type(rc.cost) == "number" then
+			local d = math.floor((rc.got or 0) - rc.cost + 0.5)
+			if d ~= 0 then
+				local ent = nil
+				if st.co and st.co.mode == "separate" then ent = rc.co and CO.entityOf(st.co, rc.co) or nil else ent = api.engine.util.getPlayer() end
+				if ent then
+					local entry = api.type.JournalEntry.new()
+					entry.amount = d
+					entry.time = -1
+					entry.category.type = api.type.JournalEntry.Type.OTHER
+					-- (applied with the next iteration's commands; counted until its answer, at most two steps)
+					local p = { key = REFUND.key(st.co, rc.co), amount = d, till = now + 2 * STEP }
+					REFUND.pending[#REFUND.pending + 1] = p
+					local cmd = api.cmd.makeJournalBookAssetCmd(ent, entry, api.type.Vec3f.new(0, 0, 0))
+					local okcb = pcall(api.cmd.sendCommand, cmd, function()
+						for i, q in ipairs(REFUND.pending or {}) do if q == p then table.remove(REFUND.pending, i); break end end
+					end)
+					if not okcb then api.cmd.sendCommand(cmd) end
+					log("refund: build " .. tostring(rc.uid) .. " cost its builder " .. rc.cost .. ", its replay here " .. rc.got .. " (" .. rc.n
+						.. " proposal(s)): " .. d .. " booked on company " .. tostring(rc.co or "-") .. " at t=" .. now)
+				else
+					log("refund: build " .. tostring(rc.uid) .. ": company " .. tostring(rc.co) .. " unknown here, difference " .. d .. " not booked")
+				end
+			end
+		elseif (rc.n or 0) == 0 then
+			log("refund: build " .. tostring(rc.uid) .. " (cost " .. tostring(rc.cost) .. " for its builder) was not applied here: nothing booked")
+		end
+	end
+	st.rcost = #keep > 0 and keep or nil
+	return true
+end
+
 -- values the host imposes on the other games (corrected at every checkpoint)
 local function authValues(reg)
 	if reg and reg.mode == "separate" then
@@ -159,12 +232,12 @@ local function authValues(reg)
 		local t = {}
 		for _, c in ipairs(reg.list) do
 			local okc, acc = pcall(function() return api.engine.getComponent(c.ent, api.type.ComponentType.ACCOUNT) end)
-			if okc and acc then t["b" .. c.id] = acc.balance; t["l" .. c.id] = acc.loan end
+			if okc and acc then t["b" .. c.id] = acc.balance + REFUND.pendingOf("b" .. c.id); t["l" .. c.id] = acc.loan end
 		end
 		return t
 	end
 	local acc = api.engine.getComponent(api.engine.util.getPlayer(), api.type.ComponentType.ACCOUNT)
-	return { balance = acc.balance, loan = acc.loan }
+	return { balance = acc.balance + REFUND.pendingOf("balance"), loan = acc.loan }
 end
 
 -- a client brings its money to the host's value at checkpoint n: the difference measured at the same game time
@@ -323,12 +396,12 @@ local function simHash(terrainSig, reg, n)
 			local t = {}
 			for _, c in ipairs(reg.list) do
 				local acc = api.engine.getComponent(c.ent, api.type.ComponentType.ACCOUNT)
-				t[#t + 1] = c.id .. ":" .. acc.balance .. "/" .. acc.loan
+				t[#t + 1] = c.id .. ":" .. (acc.balance + REFUND.pendingOf("b" .. c.id)) .. "/" .. acc.loan
 			end
 			return table.concat(t, "|")
 		end
 		local acc = api.engine.getComponent(api.engine.util.getPlayer(), api.type.ComponentType.ACCOUNT)
-		return acc.balance .. "/" .. acc.loan
+		return (acc.balance + REFUND.pendingOf("balance")) .. "/" .. acc.loan
 	end)
 	parts.money = okm and money or "?"
 	if reg and reg.mode == "separate" then log("companies check at t=" .. tostring(parts.time) .. ": owners {" .. tostring(parts.owners) .. "} money " .. tostring(parts.money)) end
@@ -476,6 +549,29 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 		result.err = "DESYNC missing entities: " .. table.concat(missing, ",")
 		log("action " .. tostring(a.uid) .. " " .. tostring(a.fn) .. " SKIPPED, " .. result.err)
 		return result
+	end
+	-- companies mode: what belongs to another company is not touched by this one, the same on every game (ported from TPF3-MP's
+	-- companies.mayTouch and mayBuyAtDepot): its vehicles, lines, depots and stations (selling, sending to a line or a depot,
+	-- editing, renaming, recolouring, buying a vehicle in its depot). What belongs to no company (the towns' streets, the
+	-- savegame's objects without an owner) stays everyone's. MPFEVER_NOOWNERGUARD=1 turns it off (on every game).
+	if a.co and R.CO and R.CO.mode == "separate" and type(a.args) == "table" and C.OWNER_ARGS[a.fn] and os.getenv("MPFEVER_NOOWNERGUARD") ~= "1" then
+		local refused = nil
+		pcall(function()
+			for _, i in ipairs(C.OWNER_ARGS[a.fn]) do
+				local e = a.args[i]
+				local owner = type(e) == "number" and CO.idOfEntity(R.CO, R.ownerOf(e)) or nil
+				if owner and owner ~= a.co then
+					local c = CO.find(R.CO, owner)
+					refused = "it belongs to company " .. owner .. ((c and c.name ~= "") and (" (" .. c.name .. ")") or "")
+					break
+				end
+			end
+		end)
+		if refused then
+			result.err = refused
+			log("action " .. tostring(a.uid) .. " " .. tostring(a.fn) .. " of company " .. tostring(a.co) .. " refused on every game: " .. refused)
+			return result
+		end
 	end
 	-- companies mode: a line stops only at its company's stations and at the stations another company shares
 	if (a.fn == "makeLineCreateCmd" or a.fn == "makeLineUpdateCmd") and a.co and R.CO and R.CO.mode == "separate" and type(a.args) == "table" then
@@ -806,6 +902,13 @@ local function simApplyDue(state)
 	R.CO = st.co
 	local now = gameTime()
 	local changed = false
+	if REFUND.on and REFUND.book(st, now) then changed = true end
+	-- each company's rank, four times a game month (mpfever_progression.lua)
+	if st.co and st.co.mode == "separate" then
+		local PG = C.progression()
+		local okG, ch = pcall(function() return PG and PG.update(st, api, ug_require, log) end)
+		if okG and ch then changed = true elseif not okG then log("ranks: " .. tostring(ch)) end
+	end
 	local q = st.q or {}
 	if #q > 0 then
 		table.sort(q, before)
@@ -849,6 +952,23 @@ local function simApplyDue(state)
 				elseif a.fn == "mpfCoJoin" then
 					local okc, errc = pcall(coApply, st, a)
 					if not okc then log("companies: " .. tostring(a.fn) .. " failed: " .. tostring(errc)) end
+				elseif a.fn == "makeScriptingSendEventCmd" and type(a.args) == "table" and a.args[3] == "applyLevel"
+					and (a.args[2] == "Companies" or a.args[2] == "Company") and st.co and C.progression() and C.progression().multi(st.co) then
+					-- a company takes a rank in the company window: its own rank (mpfever_progression.lua), the same on every
+					-- game; the savegame's company also takes it in the game's own state (kept when it is alone again)
+					local PG = C.progression()
+					local co = a.co or 1
+					local level = type(a.args[4]) == "table" and tonumber(a.args[4].level) or nil
+					local okR, why = PG.take(st.prog, st.co, co, level)
+					log("ranks: company " .. tostring(co) .. " takes rank " .. tostring(level) .. ": " .. (okR and "done" or tostring(why)))
+					st.results = st.results or {}
+					st.results[#st.results + 1] = { tok = a.tok, id = a.id, uid = a.uid, fn = a.fn, success = okR, err = (not okR) and why or nil, at = now }
+					while #st.results > 40 do table.remove(st.results, 1) end
+					if okR and co == 1 then
+						state:set(st)
+						pcall(executeAction, a, api.cmd.sendCommand, false, st.bind)
+						st = state:get() or st
+					end
 				elseif coIsLoanEvent(st, a) then
 					local okc, errc = pcall(coApply, st, a)
 					if not okc then log("companies: loan event failed: " .. tostring(errc)) end
@@ -1347,6 +1467,10 @@ local function captureNativeBuild(state, param)
 	end)
 	if st.replay and st.replay.at == now and st.replay.n > 0 then
 		st.replay.n = st.replay.n - 1     -- our own replay of a shipped action
+		-- (what it costs here, for the refund of a shipped native build: see REFUND.book)
+		local rc = st.rcost and st.rcost[#st.rcost]
+		local cl = REFUND.costOf(param)
+		if rc and rc.at == now and cl then rc.got = (rc.got or 0) + cl; rc.n = (rc.n or 0) + 1 end
 		-- (BUILDLEAD: a build this game released at once may land at this step too: taken for the replay, it would never be
 		-- shipped. The interface avoids it (buildLeadState); this says when it happened anyway)
 		if st.leadOut and #st.leadOut > 0 then
@@ -1600,7 +1724,7 @@ local function captureNativeBuild(state, param)
 	log("capture: checked " .. string.format("%.3f", os.clock() - c0) .. " s")
 	local hasObjects = #((compact.proposal or {}).edgeObjectsToAdd or {}) > 0
 	st.out[#st.out + 1] = { n = st.outSeq, at = now, paused = (st.pauseAt ~= nil and now >= st.pauseAt) or nil,
-		fn = "makeWorldBuildProposalCmd", args = args, captured = now, ready = not hasObjects }
+		fn = "makeWorldBuildProposalCmd", args = args, captured = now, ready = not hasObjects, cost = REFUND.on and REFUND.costOf(param) or nil }
 	if st.leadOut and #st.leadOut > 0 then table.remove(st.leadOut, 1) end   -- (BUILDLEAD: the released build, captured)
 	st.lastCapture = hasObjects and { n = st.outSeq, at = now } or nil
 	while #st.out > 50 do table.remove(st.out, 1) end
@@ -1769,6 +1893,11 @@ local function handleEvent(userParams, state, src, id, name, param)
 		elseif name == "lead_gone" then
 			-- (BUILDLEAD: the oldest of them was refused, it will not be captured)
 			if st.leadOut and #st.leadOut > 0 then table.remove(st.leadOut, 1) end
+		elseif name == "replay_cost" then
+			-- (a shipped native build about to be replayed here, with what it cost its builder: see REFUND.book)
+			st.rcost = st.rcost or {}
+			st.rcost[#st.rcost + 1] = { at = gameTime(), uid = param.uid, cost = tonumber(param.cost), co = param.co, got = 0, n = 0 }
+			while #st.rcost > 8 do table.remove(st.rcost, 1) end
 		elseif name == "replaying" then
 			st.replay = { at = gameTime(), n = ((st.replay and st.replay.at == gameTime()) and st.replay.n or 0) + 1 }
 			-- (what it builds, when known: see C.buildSig)
@@ -2196,6 +2325,45 @@ local function pacing()
 		if want > 1 and stopAt - now < want * STEP then return slowed(1) end   -- do not overshoot a stop point inside a batch
 	end
 	return want
+end
+
+-- Smooth pacing: instead of running at full speed into the barrier and standing there until the slowest player's clock moves
+-- (vehicles moved, stopped, moved: issue #47, a dedicated server on the same PC), this game's batches are shown a little
+-- longer as it comes close to the barrier, and a little shorter when it is behind: the native module scales the engine's
+-- batch interval by the factor written in native_pace.txt (see SyncCallWrap in mpfever_native.cpp; TPF3-MP's batch
+-- interval). Only the real time between batches changes, every game still runs the same steps at the same game times. The
+-- factor keeps a batch and a half of room before the barrier: 1 with that room or more, up to 2 (half speed) at the
+-- barrier; the game that is behind never runs faster than the session's speed. (Tuned on a model of two games, one of them
+-- 15 to 50 % slower, 50 to 300 ms apart: no stop left at 1x and 2x up to 30 % slower, fewer at 4x.) MPFEVER_SMOOTH=0 turns
+-- it off.
+G.smooth = { on = os.getenv("MPFEVER_SMOOTH") ~= "0", trim = 1, written = 1, frame = -1000, seq = 0 }
+G.smoothPace = function(sp)
+	local S = G.smooth
+	if not S.on then return end
+	local s = G.session
+	local target = 1
+	local okT, now = pcall(gameTime)
+	-- (running at the session's speed, nothing held or stepped exactly: the stop points keep their own logic)
+	if okT and s.started and s.pauseAt == nil and sp > 0 and sp == s.speed and G.holdAt == nil and not G.stepTarget and G.lastBarrier then
+		local per = math.max(1, sp)                                  -- steps per batch
+		local margin = (G.lastBarrier - now) / STEP / per            -- batches left before the barrier
+		target = 1 + 2 * (1.5 - margin)
+		if target < 1 then target = 1 elseif target > 2 then target = 2 end
+	end
+	if target == 1 and sp == 0 then S.trim = 1 else S.trim = S.trim + (target - S.trim) * 0.15 end
+	if math.abs(S.trim - 1) < 0.02 and math.abs(target - 1) < 0.02 then S.trim = 1 end
+	-- (written when it moved by 3 %, at most every 6 frames, and every 2 s while it is not 1: the native module goes back to 1
+	-- when it is not refreshed for 5 s)
+	local due = math.abs(S.trim - S.written) >= 0.03 or (S.trim == 1 and S.written ~= 1) or (S.trim ~= 1 and G.frames - S.frame >= 120)
+	if due and (G.frames - S.frame >= 6 or S.trim == 1) then
+		S.written, S.frame, S.seq = S.trim, G.frames, S.seq + 1
+		local f = C.IO.open(C.DIR .. BS .. "native_pace.txt", "wb")
+		if f then f:write(tostring(math.floor(S.trim * 1000 + 0.5)) .. " " .. S.seq .. NL); f:close() end
+		if S.trim ~= 1 and (S.logged or 0) < 5 then
+			S.logged = (S.logged or 0) + 1
+			log("smooth pacing: batches shown at " .. string.format("%.2f", S.trim) .. " times their interval (barrier " .. tostring(G.lastBarrier) .. ", t=" .. tostring(now) .. ") [frame " .. G.frames .. "]")
+		end
+	end
 end
 
 local H = {}
@@ -4194,6 +4362,7 @@ local function runNativeReplays()
 			elseif a.fn == "assetBuild" then okr, errr = pcall(withActor, PL(a), replayAssets, a)
 			elseif a.fn == "mpfCoJoin" then G.coBusy = { a = a, phase = "apply", frame = G.frames }; okr = true
 			else
+				if type(a.cost) == "number" then toSim("replay_cost", { uid = a.uid, cost = a.cost, co = a.co }) end
 				G.refund = a.refund
 				okr, errr = pcall(withActor, PL(a), replayNative, a, 1)
 				G.refund = nil
@@ -4561,7 +4730,7 @@ local function shipNativeBuilds(st)
 				if not oke then log("edge object enrichment failed: " .. tostring(erre)) end
 			end
 			local a = { fn = o.fn, args = o.args, at = o.at, origin = G.me, oseq = G.oseq, uid = G.me .. ":" .. G.oseq,
-				native = true, paused = o.paused, co = G.myCo }
+				native = true, paused = o.paused, co = G.myCo, cost = o.cost }
 			if G.natShipIds and #G.natShipIds > 0 then
 				-- the released build that was built at this time; the ones released before it and not shipped were refused
 				-- (BUILDLEAD: a build released at once lands at some step at or after the time it was released at, the first of
@@ -9201,7 +9370,13 @@ local function coPatchProgression()
 	local okP = CO.patchProgression(coReq, function(entity)
 		if R.coIdOf and R.coIdOf(entity) and R.CO and R.CO.canon then return R.CO.canon end
 		return nil
-	end, log)
+	end, log, function(entity)
+		-- (each company's own rank, see mpfever_progression.lua)
+		local PG = C.progression()
+		local id = R.coIdOf and R.coIdOf(entity)
+		if not (PG and id and R.CO and PG.multi(R.CO)) then return nil end
+		return PG.view(G.prog, id)
+	end)
 	if not okP then log("companies: the progression module is not reachable from here (rank of other companies stays empty)") end
 	if not CO.patchPermits(coReq, log) then log("companies: the permit modules are not reachable from here (unique buildings stay shared)") end
 end
@@ -9210,6 +9385,7 @@ local coCtlSeq = 0
 local function coGui(st)
 	if G.cmode ~= "separate" then return end
 	R.CO = st.co
+	G.prog = st.prog
 	if not G.gpWrapped then
 		G.gpWrapped = true
 		local real = api.engine.util.getPlayer
@@ -9220,6 +9396,10 @@ local function coGui(st)
 	if st.co then
 		local lines = { "me	" .. tostring(G.myCo or 0) }
 		for _, c in ipairs(st.co.list) do if c.ent then lines[#lines + 1] = c.id .. "	" .. c.ent .. "	" .. tostring(c.name or ""):gsub("[%c]", " ") end end
+		-- (each company's rank, when there is more than one company: see mpfever_progression.lua)
+		for _, r in ipairs((st.prog and st.prog.records) or {}) do
+			lines[#lines + 1] = "rank	" .. tostring(r.company) .. "	" .. tostring(r.experience) .. "	" .. tostring(r.level) .. "	" .. tostring(r.potential)
+		end
 		local txt = table.concat(lines, NL) .. NL
 		if txt ~= G.coFile then
 			G.coFile = txt
@@ -9407,6 +9587,7 @@ local function guiUpdate(userParams, state, guiState)
 		if okp then
 			if gameSpeed() ~= sp then G.lastSet = -1 end
 			setSpeed(sp)
+			pcall(G.smoothPace, sp)
 			-- exact steps up to the stop point (once the engine is stopped, one request at a time)
 			local now = gameTime()
 			-- (the engine may take seconds for many steps, in batches: a request is given up only when the clock stopped moving,

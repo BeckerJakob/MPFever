@@ -32,6 +32,9 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 - **In-game chat**, from a card in the pause menu. New messages show for a few seconds at the left of the screen.
 - **Host authority.** The games compare their state every 10 seconds. Money is corrected at once. A lasting difference reloads the host's game for everybody (about 20 seconds).
 - **Joining and reconnecting.** Joining a session already running works. A lost connection reconnects by itself for 5 minutes.
+- **No port to forward, most of the time.** The host's port is opened on the router by itself (UPnP / NAT-PMP) while a session runs. The launcher's log says when the provider shares one address among several customers (CGNAT): then only IPv6, a dedicated server elsewhere or a tunnel work.
+- **Automatic updates.** A new release on GitHub is installed by itself: at startup, when the game closes, or by a dedicated server once nobody is connected.
+- **Smooth game speed.** A game close to the slowest player slows down a little instead of stopping, so vehicles no longer move, stop and move again.
 - **Dedicated server** (separate archive, `MPFever.exe --server`), in the spirit of the Minecraft, Satisfactory and Factorio servers:
   - the world runs on a PC of its own, without the PC of a player, and waits while nobody is connected;
   - settings in `mpfever_server.properties`: world, port, password, players at most, company mode, message of the day;
@@ -51,6 +54,8 @@ Details, ports and troubleshooting: [INSTALL](docs/INSTALL.txt). Dedicated serve
 ## Reporting a problem
 
 Please open an [issue](https://github.com/dkdknight/MPFever/issues) with the files below. **Without logs, a desync or a crash can rarely be found**; with them, most bugs are fixed in the next version.
+
+**The easy way:** click **Report a problem (logs)** in the MPFever window of the game (pause menu), or **Report a problem** in the launcher. MPFever puts every file below (except the savegame) into one zip, shows it in the Explorer and opens a new issue with its text filled in: describe what you did and when, drag the zip into the issue, send. After a crash of the game it offers it by itself. Every player can send theirs the same way.
 
 ### 1. Say what happened
 
@@ -87,7 +92,7 @@ Savegames are often larger than GitHub's 25 MB limit. Upload the zip to Google D
 |---|---|---|
 | Launcher | `launcher/` (C#, .NET Framework 4.8, WinForms) | Hosts or joins a session over TCP and starts the game. It installs the mod and the native module, relays player actions and the session status, compares the games' state and runs resynchronisations from the host's savegame. With `--server` it runs a dedicated server (`Server.cs`): it hosts one world by itself, saves it, restarts the game when needed and has a console. |
 | Game mod | `mod/mpfever_1/` (Lua) | Game script and UI hook. It captures player actions and replays them in every game at the same game time (barrier lockstep). It computes state checksums, corrects money, manages the companies and shared stations, and saves or loads for resynchronisation. It draws the multiplayer page of the main menu and the in-game MPFever window. It does nothing unless the game was started by the launcher. |
-| Native module | `native/` (freestanding C++, no CRT) | Built as `winhttp.dll` and placed in the game folder, where the game loads it itself (the game imports `WINHTTP.dll`). Every WinHTTP call is passed unchanged to the system library. With an MPFever session only, it does three things: it holds construction commands so they run at the same step in every game, it copies terrain edits, and it splits the "local player" between the simulation and the interface. It also fixes the Lua hash seed. It stays inert on any unknown game build. |
+| Native module | `native/` (freestanding C++, no CRT) | Built as `winhttp.dll` and placed in the game folder, where the game loads it itself (the game imports `WINHTTP.dll`). Every WinHTTP call is passed unchanged to the system library. With an MPFever session only, it does three things: it holds construction commands so they run at the same step in every game, it copies terrain edits, and it splits the "local player" between the simulation and the interface. It also fixes the Lua hash seed and smooths the game's pacing. On a game build it does not know, it finds its places in the game's code again by their signatures (`mpfever_sigs.txt`, see below) and leaves off whatever it cannot find. |
 | Tests | `tests/` (Python + lupa) | Language file check (`test_lang.py`), and two simulated games running the real Lua bridge (`test_lockstep.py`). |
 
 The launcher and the game talk through files in a per-session folder (`%TEMP%\mpfever\...`): `in.log` and `out.log`, plus control and status files. No process injection is used.
@@ -115,6 +120,18 @@ It builds:
 
 The release archive contains the launcher, `winhttp.dll`, the mod folder and the player documentation, exactly as published.
 
+## After a game update: the native module's signatures
+
+The native module knows builds 40408 and 40420 by their addresses. For any other build (a game update) it looks for every place it patches by a signature, in `mpfever_sigs.txt` (shipped next to `MPFever.exe`, built from `native/mpfever_sigs.txt`). A place counts only when its signature matches exactly once; a feature whose places are not all found stays off, and `native.log` lists what was found ("game build ...: signatures from ...").
+
+The signatures are made from the last build the module knows, with Python (`pip install pefile capstone`):
+
+```bat
+python tools\mksigs.py make "C:\Program Files (x86)\Steam\steamapps\common\Transport Fever 3\TransportFever3.exe"
+```
+
+It writes `native/mpfever_sigs.txt` (the places are listed in `tools/targets_40420.txt` and `native/sites20c.h`). Commit it with the release. After a game update, `python tools\mksigs.py check "<the new TransportFever3.exe>"` says which places the new build still has. `MPFEVER_SIGTEST=1` makes the module use the signatures on a known build too, to check the file in a real game.
+
 ## Running the tests
 
 ```bat
@@ -131,7 +148,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Experimental (0.3.14). Supported game builds:
+Experimental (0.3.15). Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.
