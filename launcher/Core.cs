@@ -304,9 +304,11 @@ namespace MPFever
             char c = s[i];
             if (c == '{') return Table(s, ref i);
             if (c == '"') return Str(s, ref i);
-            if (s.Substring(i).StartsWith("true")) { i += 4; return true; }
-            if (s.Substring(i).StartsWith("false")) { i += 5; return false; }
-            if (s.Substring(i).StartsWith("nil")) { i += 3; return null; }
+            // (compared in place: a copy of the rest of the text at every value made a station's 850 KB build take 30 s to read,
+            // and the reader of that player's messages, their clock among them, stood still meanwhile: issue #54)
+            if (string.CompareOrdinal(s, i, "true", 0, 4) == 0) { i += 4; return true; }
+            if (string.CompareOrdinal(s, i, "false", 0, 5) == 0) { i += 5; return false; }
+            if (string.CompareOrdinal(s, i, "nil", 0, 3) == 0) { i += 3; return null; }
             int st = i;
             while (i < s.Length && "+-0123456789.eE".IndexOf(s[i]) >= 0) i++;
             double.TryParse(s.Substring(st, i - st), NumberStyles.Float, CultureInfo.InvariantCulture, out var d);
