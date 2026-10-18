@@ -3051,43 +3051,6 @@ local function replayNativeConstruction(a)
 	G.refundInto(ctx)
 	local okc, dry = pcall(function() return api.cmd.makeWorldBuildProposalCmd(spCon, ctx, false, true) end)
 	if not okc or not dry then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: conversion command " .. shortErr(dry)) return false end
-	-- the construction's edge objects (an airport's signs): a script cannot write a native edge object's model ("no writable
-	-- member 'model'", issue #50), the engine's conversion of a script proposal makes them. First a dry run of the
-	-- construction twice (guaranteed collision) with its street part and its edge objects in script form: the native
-	-- objects of its result go in the replay (C.nativeEdgeObjects)
-	if a.eoNative == nil and #(m.proposal.edgeObjectsToAdd or {}) > 0 and os.getenv("MPFEVER_CONEO") ~= "0" then
-		local okd, dryObj = pcall(function()
-			local spObj = C.rebuildProposal(m, { seed = 7919 })
-			local two = {}
-			two[1] = spObj.constructionsToAdd[1]
-			two[2] = C.rebuildProposal(m, { noStreet = true, seed = 7919 }).constructionsToAdd[1]
-			spObj.constructionsToAdd = two
-			return api.cmd.makeWorldBuildProposalCmd(spObj, ctx, false, true)
-		end)
-		if okd and dryObj then
-			replaySend(dryObj, function(resO, successO)
-				if successO then
-					log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: the edge objects' conversion was built instead of refused (desync)")
-					replayFailed(a, "conversion built")
-					return
-				end
-				local list = nil
-				pcall(function()
-					local eo = resO.proposal.proposal.edgeObjectsToAdd
-					list = {}
-					for i = 1, #eo do list[i] = eo[i] end
-				end)
-				a.eoNative = list or false
-				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: the engine converted " .. tostring(list and #list or "no")
-					.. " of its " .. #m.proposal.edgeObjectsToAdd .. " edge object(s)")
-				local okr, errr = pcall(replayNativeConstruction, a)
-				if not okr then replayFailed(a, "error: " .. shortErr(errr)) end
-			end)
-			return true
-		end
-		log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: edge objects' conversion command " .. shortErr(dryObj))
-		a.eoNative = false
-	end
 	toSim("replaying", {})
 	local edgesBefore = #R.allEdges()
 	local objsBefore = 0
@@ -3099,6 +3062,19 @@ local function replayNativeConstruction(a)
 			return
 		end
 		local conv = res.proposal
+		-- the construction's edge objects (an airport's signs) as the engine converts them: a script cannot write a native
+		-- edge object's model ("no writable member 'model'", issue #50). The conversion has them once per converted copy
+		-- of the construction (C.nativeEdgeObjects matches them by model, place and side)
+		local eoNative = nil
+		if #(m.proposal.edgeObjectsToAdd or {}) > 0 and os.getenv("MPFEVER_CONEO") ~= "0" then
+			pcall(function()
+				local eo = conv.proposal.edgeObjectsToAdd
+				eoNative = {}
+				for i = 1, #eo do eoNative[i] = eo[i] end
+			end)
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: the engine's conversion has " .. tostring(eoNative and #eoNative or "no")
+				.. " edge object(s), the tool's build " .. #m.proposal.edgeObjectsToAdd)
+		end
 		local okn, nconv = pcall(function() return #conv.toAdd end)
 		if not okn or nconv < 1 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: no converted construction in the result (" .. tostring(nconv) .. ")") replayFailed(a, "no converted construction") return end
 		-- the removed segments as the engine's own removal proposal makes them
@@ -3132,7 +3108,7 @@ local function replayNativeConstruction(a)
 		-- proposal, as the tool's; if this game cannot make it so, the replay goes without them and the host's game is
 		-- reloaded once built (they are never placed afterwards: issue #49)
 		local nEO = #(m.proposal.edgeObjectsToAdd or {})
-		local withObjects = nEO > 0 and type(a.eoNative) == "table" and #a.eoNative == nEO
+		local withObjects = nEO > 0 and type(eoNative) == "table" and #eoNative >= nEO
 		local ctx2 = api.type.Context.new()
 		ctx2.checkTerrainAlignment = true
 		ctx2.cleanupStreetGraph = false
@@ -3143,7 +3119,7 @@ local function replayNativeConstruction(a)
 		local okk, cmd = false, nil
 		if withObjects then
 			C.errors = {}
-			local okw, PW = pcall(C.rebuildNativeWithConstruction, m, conv, rm, { toolNodes = toolNodes, withObjects = a.eoNative })
+			local okw, PW = pcall(C.rebuildNativeWithConstruction, m, conv, rm, { toolNodes = toolNodes, withObjects = eoNative })
 			if okw and PW then okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(PW, ctx2, false, true) end) end
 			if okk and cmd then
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: with its " .. nEO .. " edge object(s)")

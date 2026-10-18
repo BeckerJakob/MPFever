@@ -598,8 +598,27 @@ namespace MPFever
                     }
                     catch (Exception e) { Log.Warn(L.F("[{0}] lecture {1} : {2}", "[{0}] reading {1}: {2}", Name, Path.GetFileName(src.Path), e.Message)); Thread.Sleep(500); }
                 }
+                LogMemory();
                 Thread.Sleep(5);
             }
+        }
+
+        DateTime memAt = DateTime.MinValue;
+        /// <summary>Every 5 minutes, the game's memory in the launcher's log: the frame rate of a long session fell by
+        /// three quarters after the fifth resynchronisation (two games on one PC, issue #50), each reload of a 165 MB
+        /// savegame may keep some of the game's memory.</summary>
+        void LogMemory()
+        {
+            if ((DateTime.UtcNow - memAt).TotalMinutes < 5) return;
+            memAt = DateTime.UtcNow;
+            try
+            {
+                if (proc == null || proc.HasExited) return;
+                proc.Refresh();
+                Log.W(L.F("[{0}] mémoire du jeu : {1} Mo privés, {2} Mo en mémoire vive (pointe {3} Mo)", "[{0}] game memory: {1} MB private, {2} MB in RAM (peak {3} MB)",
+                    Name, proc.PrivateMemorySize64 >> 20, proc.WorkingSet64 >> 20, proc.PeakWorkingSet64 >> 20));
+            }
+            catch { }
         }
 
         sealed class Tail

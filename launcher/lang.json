@@ -5213,6 +5213,19 @@
       "ko": "문제 신고(로그)",
       "zh-CN": "报告问题（日志）",
       "zh-TW": "回報問題（記錄檔）"
+    },
+    "[{0}] game memory: {1} MB private, {2} MB in RAM (peak {3} MB)": {
+      "de": "[{0}] Speicher des Spiels: {1} MB privat, {2} MB im RAM (Spitze {3} MB)",
+      "es": "[{0}] memoria del juego: {1} MB privados, {2} MB en RAM (pico {3} MB)",
+      "it": "[{0}] memoria del gioco: {1} MB privati, {2} MB in RAM (picco {3} MB)",
+      "nl": "[{0}] geheugen van het spel: {1} MB privé, {2} MB in RAM (piek {3} MB)",
+      "pl": "[{0}] pamięć gry: {1} MB prywatnej, {2} MB w RAM (szczyt {3} MB)",
+      "pt-BR": "[{0}] memória do jogo: {1} MB privados, {2} MB na RAM (pico {3} MB)",
+      "ru": "[{0}] память игры: {1} МБ частной, {2} МБ в ОЗУ (пик {3} МБ)",
+      "ja": "[{0}] ゲームのメモリ：プライベート {1} MB、RAM {2} MB（ピーク {3} MB）",
+      "ko": "[{0}] 게임 메모리: 전용 {1} MB, RAM {2} MB (최대 {3} MB)",
+      "zh-CN": "[{0}] 游戏内存：专用 {1} MB，物理内存 {2} MB（峰值 {3} MB）",
+      "zh-TW": "[{0}] 遊戲記憶體：私有 {1} MB，實體記憶體 {2} MB（峰值 {3} MB）"
     }
   }
 }

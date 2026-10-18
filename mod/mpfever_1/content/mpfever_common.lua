@@ -1128,7 +1128,7 @@ function C.frozenNodesOf(m, i)
 end
 
 -- The edge objects of a native proposal for a construction's signs: the engine's own native objects (native, from its
--- conversion of the same objects in script form, in the same order: a script cannot write a native object's model), each
+-- conversion of the construction: a script cannot write a native object's model), matched by model, place and side, each
 -- put on its segment by the tool's native id. A missing one is an error: the caller then replays without them
 -- (and resynchronises)
 function C.nativeEdgeObjects(list, native)
@@ -1145,7 +1145,7 @@ function C.nativeEdgeObjects(list, native)
 				if okx and same then used[j] = true return x end
 			end
 		end
-		if type(native) == "table" and native[i] and not used[i] then used[i] = true return native[i] end
+		if type(native) == "table" and #native == #list and native[i] and not used[i] then used[i] = true return native[i] end
 		return nil
 	end
 	for i, o in ipairs(list or {}) do

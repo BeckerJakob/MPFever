@@ -7,14 +7,18 @@ MPFever - Changelog
     the report's 6 resynchronisations). Their edge objects now go in the replay's own proposal, as the tool's build has
     them (the segments keep the tool's placeholders, the objects name their segments by the tool's ids); the count is
     checked once built. A script cannot write a native edge object's model ("no writable member 'model'", second report):
-    the objects are the engine's own, from a dry run (the construction twice, guaranteed collision) of the build in script
-    form with its signs. If that fails, or the count differs, the host's game is reloaded as before. Not tested in a real
+    the objects are the engine's own, from its conversion of the construction (the dry run the replay already makes, which
+    has them once per converted copy: 30 for an airport's 10 in the third report), matched by model, place and side. If
+    that fails, or the count differs, the host's game is reloaded as before. Not tested in a real
     game yet. MPFEVER_CONEO=0 turns it off.
   - NOTE (issue #50, refunds): a resynchronisation reloads the game, and the game forgets what can be refunded: an airport
     built just before one (the second report: built at 09:30:00, resynchronisation at 09:30:02, demolished at 09:30:51)
     is no longer refunded. Fewer resynchronisations after airports means fewer lost refunds. A removal that refunds
     nothing costs its builder 0 and its replays 3 000 to 450 000: that difference is booked as before (not booking it, as
     tried in between, put the money of the shared company apart at once).
+  - DIAGNOSTIC (issue #50, frame rate): the launcher writes the game's memory in its log every 5 minutes. In the third
+    report (both games on one PC) the frame rate fell from about 66 to 15 images/s on both games right after the fifth
+    resynchronisation (each reloads a 165 MB savegame), and the game logged "Thread did not respond to ping" from then on.
   - DIAGNOSTIC (issue #50): "build ids" also says how many of the build's new nodes have a node configuration, to find
     which build left the host with 2 fewer than the client (7418 / 7420, after a station of 200 nodes).
   - FIX (issue #49, crashes): an airport or an airfield built by another player was replayed, then its 9 signs (edge
