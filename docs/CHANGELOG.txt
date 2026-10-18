@@ -1,6 +1,28 @@
 MPFever - Changelog
 ===================
 
+0.3.16-experimental - desyncs and a crash after reloads, frozen station edits
+  - FIX (issue #53, crash of every game): what a replicated action creates (a line, a vehicle) is known on every game by a
+    key, which was the action's uid alone; the uid's counter starts again from 0 at every load and every resynchronisation,
+    while the keys stay in the savegame. A line of an earlier session had the same key as a new one: an update of the old
+    line reached the new one after it was removed, and every game crashed (assertion 'it != components.end()', Line). The
+    key is now the uid and the action's stamp; a key bound again no longer names the entity it named before; a key whose
+    line or vehicle is gone is never resolved to it (the action is skipped).
+  - FIX (issue #51, desyncs): the same reused keys in the host's report: 55 keys named two to five vehicles or lines over
+    the session, so an action on an older vehicle or line could reach another one on the other game (the "lines,names"
+    resynchronisations, part of the "vehicles" ones).
+  - FIX (issue #51, desyncs): the game scripts' draws (math.random) counted every draw of a game time together. Something
+    drew at every frame of a pause, as many times as each machine showed frames (81 draws before a player's three loans,
+    measured on the client): the loans' delays, and every later draw of that time, differed between games. Each place in
+    the code (file name and line) now counts its own draws; math.randomseed(n) is followed (the construction scripts seed
+    from their parameters). The files' folders are left out (they differ between machines).
+  - FIX (issue #54, the game stopped for about 30 s at each track added to a station): editing a station sends the whole
+    station (850 KB). The launcher read it for its log with a copy of the rest of the text at every true/false/nil (31 s;
+    0.06 s now), and that player's messages, their clock among them, waited: every game stood still meanwhile.
+  - DIAGNOSTIC (issue #51): the state dumps of the checks (sdump_ring_*.txt, in the problem report) also list every vehicle
+    (line and place), every line's stops, the names of stations, lines and vehicles, and every station with its construction
+    and place: two players' reports show the first one that differs.
+
 0.3.15-experimental - refunds, automatic updates, problem reports, smooth pacing, port opening, ranks per company
   - FIX (issue #50, resynchronisations after builds): an airport, an airfield or a terminal built by another player (signs:
     edge objects on the construction's own runways and taxiways) reloaded the host's game for everybody each time (4 of
