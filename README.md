@@ -18,10 +18,13 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 - **Two ways to play**, chosen by the host:
   - "One company for everybody": shared money, vehicles and lines.
   - "One company per player": own money, roads, stations, depots, vehicles, lines, loans and contracts, and a colour per company. The company belongs to the player's Steam account and is found again after a reconnection.
+    - What belongs to another company cannot be sold, edited, renamed or bought from (its vehicles, lines, stations and depots): refused the same way on every game.
+    - Each company has its own rank, score and permits, computed the same way on every game.
 - **Everything is replicated exactly** in every game, at the same game time:
   - roads, tracks, tram tracks, signals, stops, stations, depots, buildings;
   - terrain edits, trees of the brush, the bulldozer;
   - vehicle purchases, lines, game speed and pause.
+- **Refunds on demolition.** Demolishing what you have just built gives the money back on every game, as in a solo game.
 - **Shared stations** (separate companies). Every station is shared at $100 per stop by default. Its owner sets the fee in the station window, from a list. Other companies' lines stop there and pay the fee.
 - **In-game MPFever window**, opened from a card in the pause menu. It shows:
   - the players and their link (connected, behind, not responding, loading, left);
@@ -30,6 +33,7 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 
   It stays open while playing.
 - **In-game chat**, from a card in the pause menu. New messages show for a few seconds at the left of the screen.
+- **Report a problem in one click.** A button in the in-game MPFever window and in the launcher puts every log into one zip and opens a GitHub issue already filled in (see [Reporting a problem](#reporting-a-problem)).
 - **Host authority.** The games compare their state every 10 seconds. Money is corrected at once. A lasting difference reloads the host's game for everybody (about 20 seconds).
 - **Joining and reconnecting.** Joining a session already running works. A lost connection reconnects by itself for 5 minutes.
 - **No port to forward, most of the time.** The host's port is opened on the router by itself (UPnP / NAT-PMP) while a session runs. The launcher's log says when the provider shares one address among several customers (CGNAT): then only IPv6, a dedicated server elsewhere or a tunnel work.
@@ -44,10 +48,12 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 
 ## Getting started
 
-1. Download `MPFever-<version>.zip` from the [releases](https://github.com/dkdknight/MPFever/releases) and unzip it anywhere. Every player needs the same version.
+1. Download `MPFever-<version>.zip` from the [releases](https://github.com/dkdknight/MPFever/releases) and unzip it anywhere (a dedicated server takes `MPFever-<version>-server.zip`). Every player needs the same version.
 2. Start `MPFever.exe`: it finds the game, installs the mod and starts Transport Fever 3.
 3. In the game's main menu, click **Multiplayer (MPFever)**. The host opens a lobby with one of their savegames; the others join the host's address or accept a Steam invitation.
 4. The host clicks **Start the game**, and every game loads it.
+
+From 0.3.15 on, MPFever updates itself: a new release is installed at startup (your settings and logs are kept), so every player stays on the same version. `autoupdate=ask` in `mpfever_settings.txt` asks first, `autoupdate=0` turns it off.
 
 Details, ports and troubleshooting: [INSTALL](docs/INSTALL.txt). Dedicated server: [SERVER](docs/SERVER.txt).
 
@@ -167,12 +173,13 @@ Testing and reporting problems with your logs helps just as much: thank you!
 
 - **[dkdknight](https://github.com/dkdknight)** – author and maintainer.
 - **[Steelworm](https://github.com/Steelworm)** – contributor: build timing fixes and the experimental builder lead, detailed issue analyses.
-- **[SlikerDev](https://github.com/SlikerDev)** – contributor (dedicated server, IPv6, connection fixes):
+- **[SlikerDev](https://github.com/SlikerDev)** – contributor (dedicated server, automatic updates, IPv6, connection fixes):
   - the redesigned launcher window and its icon;
   - the translation of MPFever into the 13 languages of the game (the launcher follows the game's language);
   - the in-game MPFever window (pause-menu card, players, sync state, Steam invites);
   - the in-game chat;
   - the fee list of the station windows.
+- **[Juliansgith](https://github.com/Juliansgith)** – [Transport Fever 3 Multiplayer Mod](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod) (MIT), the source of the order fixes, the smooth pacing, the signatures and the company rules ported into MPFever.
 
 Thanks to everyone who tests MPFever and reports problems in the [issues](https://github.com/dkdknight/MPFever/issues) (see [Reporting a problem](#reporting-a-problem)): every report with logs helped find a bug.
 
