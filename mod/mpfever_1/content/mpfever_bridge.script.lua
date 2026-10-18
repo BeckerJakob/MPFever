@@ -135,6 +135,28 @@ local function extendedParts(parts)
 				dump[#dump + 1] = "~vehicle " .. ln .. " = " .. (mp and C.dump(mp.dyn):sub(1, 160) or "depot")
 			end
 		end)
+		-- the lines and the names (the parts "lines" and "names" of the checks)
+		pcall(function()
+			for _, l in ipairs(api.engine.system.lineSystem.getLines()) do dump[#dump + 1] = "~line = " .. tostring(R.lineText(l)) end
+			for _, cname in ipairs({ "STATION_GROUP", "LINE", "TRANSPORT_VEHICLE" }) do
+				for _, e in ipairs(R.entitiesWith(cname)) do dump[#dump + 1] = "~name " .. cname .. " = " .. R.nameOf(e) end
+			end
+		end)
+		-- the stations with their construction and its place (an industry that grew in one game only shows here)
+		pcall(function()
+			for _, s in ipairs(R.entitiesWith("STATION")) do
+				local con, f, p = nil, "-", nil
+				pcall(function() con = api.engine.system.streetConnectorSystem.getConstructionEntityForStation(s) end)
+				local cc = type(con) == "number" and con >= 0 and api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
+				if cc then
+					f = tostring(cc.fileName)
+					pcall(function() local m = R.matPos(cc.transf); p = string.format("%.0f,%.0f", m.x, m.y) end)
+				end
+				local sg = nil
+				pcall(function() sg = api.engine.system.stationGroupSystem.getStationGroup(s) end)
+				dump[#dump + 1] = "~station " .. (type(sg) == "number" and sg >= 0 and R.nameOf(sg) or "-") .. " = " .. f .. "@" .. tostring(p)
+			end
+		end)
 		sdumps = sdumps + 1
 		table.sort(dump)
 		pcall(function()

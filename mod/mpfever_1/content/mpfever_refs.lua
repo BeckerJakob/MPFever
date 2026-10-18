@@ -713,6 +713,38 @@ local function quickHash(hashStr, v, d)
 	return 0
 end
 
+-- the name of an entity, and what the player sets on a line (its text in the checks and in the state dumps)
+local function nameOf(e)
+	local n = comp(e, "NAME")
+	return n and n.name and tostring(n.name) or ""
+end
+R.nameOf = nameOf
+
+function R.lineText(e)
+	local c = comp(e, "LINE")
+	if not c then return nil end
+	local t = { nameOf(e) }
+	for i = 1, #c.stops do
+		local st = c.stops[i]
+		-- (the waypoints after the stop: how many, and where along their track; the tracks' ids differ between games)
+		local wps = ""
+		pcall(function()
+			local w = {}
+			for j = 1, #st.waypoints do
+				local wp = st.waypoints[j]
+				local prm = 0
+				pcall(function() prm = wp.edgePos.param end)
+				w[#w + 1] = string.format("%.2f", prm)
+			end
+			wps = table.concat(w, ";")
+		end)
+		t[#t + 1] = nameOf(st.stationGroup) .. "," .. tostring(st.terminal) .. "," .. tostring(st.loadMode) .. ","
+			.. string.format("%.0f/%.0f/%.0f", st.minWaitingTime or 0, st.maxWaitingTime or 0, st.maxAdditionalWaitingTime or 0)
+			.. "," .. wps
+	end
+	return table.concat(t, "|")
+end
+
 -- id-independent world fingerprint parts
 function R.contentHash(hashStr, dumpFn)
 	local parts = {}
@@ -799,36 +831,9 @@ function R.contentHash(hashStr, dumpFn)
 	part("townBuildings", function() return count("TOWN_BUILDING") end)
 	part("persons", function() return count("SIM_PERSON") end)
 	part("stations", function() return count("STATION") end)
-	local function nameOf(e)
-		local n = comp(e, "NAME")
-		return n and n.name and tostring(n.name) or ""
-	end
 	-- the lines with what the player sets on them: name, and for every stop its station's name, terminal, loading mode
 	-- and waiting times (the ids of the stations differ between games, their names do not)
-	part("lines", function() return count("LINE", function(e)
-		local c = comp(e, "LINE")
-		if not c then return nil end
-		local t = { nameOf(e) }
-		for i = 1, #c.stops do
-			local st = c.stops[i]
-			-- (the waypoints after the stop: how many, and where along their track; the tracks' ids differ between games)
-			local wps = ""
-			pcall(function()
-				local w = {}
-				for j = 1, #st.waypoints do
-					local wp = st.waypoints[j]
-					local prm = 0
-					pcall(function() prm = wp.edgePos.param end)
-					w[#w + 1] = string.format("%.2f", prm)
-				end
-				wps = table.concat(w, ";")
-			end)
-			t[#t + 1] = nameOf(st.stationGroup) .. "," .. tostring(st.terminal) .. "," .. tostring(st.loadMode) .. ","
-				.. string.format("%.0f/%.0f/%.0f", st.minWaitingTime or 0, st.maxWaitingTime or 0, st.maxAdditionalWaitingTime or 0)
-				.. "," .. wps
-		end
-		return table.concat(t, "|")
-	end) end)
+	part("lines", function() return count("LINE", R.lineText) end)
 	-- the names of stations, lines and vehicles
 	part("names", function()
 		local n, acc = 0, 0
