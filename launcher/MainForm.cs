@@ -718,7 +718,7 @@ namespace MPFever
                     + (hostName != null ? " (host " + BaseName(hostName) + ")" : ""));
                 sb.AppendLine("Players: " + (ready.Length > 0 ? string.Join(", ", ready.Select(BaseName)) : "-") + "; game running: " + (st ? "yes" : "no"));
                 sb.AppendLine("Sync: " + syncText + "; desyncs " + desyncs + ", resynchronisations " + resyncId + ", actions relayed " + actsRelayed + ", refused " + actRefused);
-                sb.AppendLine("Processor: " + Reporter.Processor() + "; Windows " + Environment.OSVersion.Version);
+                sb.AppendLine("Processor: " + Reporter.Processor() + "; " + Reporter.WindowsVersion());
                 sb.AppendLine("Report made " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + (crashed ? " after a crash of the game" : ""));
                 var summary = sb.ToString();
                 List<string> left;

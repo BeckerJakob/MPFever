@@ -99,6 +99,24 @@ namespace MPFever
             return name + " (" + Environment.ProcessorCount + " threads, " + avx2 + ")";
         }
 
+        /// <summary>Windows' name and build, from the registry (Environment.OSVersion says 6.2 to a program without a
+        /// manifest, whatever the Windows).</summary>
+        public static string WindowsVersion()
+        {
+            try
+            {
+                const string k = @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+                var name = Registry.GetValue(k, "ProductName", null) as string;
+                var build = Registry.GetValue(k, "CurrentBuild", null) as string;
+                var ubr = Registry.GetValue(k, "UBR", null);
+                // (Windows 11 still names itself Windows 10 there: its builds start at 22000)
+                if (name != null && int.TryParse(build, out var b) && b >= 22000) name = name.Replace("Windows 10", "Windows 11");
+                if (name != null) return name + " (build " + build + (ubr != null ? "." + ubr : "") + ")";
+            }
+            catch { }
+            return "Windows " + Environment.OSVersion.Version;
+        }
+
         /// <summary>The game build: TransportFever3.exe's link timestamp, with its name when known.</summary>
         public static string GameBuild(string gameDir)
         {
