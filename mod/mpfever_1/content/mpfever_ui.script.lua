@@ -1335,8 +1335,16 @@ local function pollBindings()
 		for line in chunk:gmatch("([^" .. C.NL .. "]*)" .. C.NL) do
 			consumed = consumed + #line + 1
 			local key, e = line:match("^(%S+) (%-?%d+)")
-			if key == "RESET" then U.rev = {}
-			elseif key then U.rev[tonumber(e)] = key end
+			if key == "RESET" then U.rev = {}; U.byKey = {}
+			elseif key then
+				-- (a key bound again: the entity it named before loses it, issue #53)
+				local n = tonumber(e)
+				U.byKey = U.byKey or {}
+				local old = U.byKey[key]
+				if old and old ~= n and U.rev[old] == key then U.rev[old] = nil end
+				U.byKey[key] = n
+				U.rev[n] = key
+			end
 		end
 		U.bindOff = U.bindOff + consumed
 	end

@@ -342,7 +342,14 @@ end
 
 resolve = function(r, bind)
 	if type(r) ~= "table" then return r end
-	if r.key and bind and bind[r.key] then return bind[r.key] end
+	if r.key and bind and bind[r.key] then
+		-- (a line or a vehicle bound to a key must still be one: a removed line's key sent an update to an entity without a
+		-- line, and the engine crashed, issue #53. Not the sender's id then: the ids of created things differ between games)
+		local b = bind[r.key]
+		if r.k == "line" then return comp(b, "LINE") and b or nil end
+		if r.k == "veh" then return comp(b, "TRANSPORT_VEHICLE") and b or nil end
+		return b
+	end
 	local k = r.k
 	if k == "con" then return resolveCon(r) end
 	if k == "asset" then

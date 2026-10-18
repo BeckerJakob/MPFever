@@ -121,6 +121,20 @@ local function extendedParts(parts)
 		if ok and v ~= "absent" then parts["script:" .. name] = v end
 	end
 	if dump then
+		-- the vehicles too, by their line and where they are (their ids differ between games): the first vehicle that moved
+		-- otherwise in two games' files shows where a drift of "vehicles" started
+		pcall(function()
+			for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+				local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+				local mp = api.engine.getComponent(v, api.type.ComponentType.MOVE_PATH)
+				local ln = ""
+				pcall(function()
+					local n = tv and tv.line and tv.line >= 0 and api.engine.getComponent(tv.line, api.type.ComponentType.NAME)
+					ln = n and tostring(n.name) or "-"
+				end)
+				dump[#dump + 1] = "~vehicle " .. ln .. " = " .. (mp and C.dump(mp.dyn):sub(1, 160) or "depot")
+			end
+		end)
 		sdumps = sdumps + 1
 		table.sort(dump)
 		pcall(function()
@@ -619,6 +633,10 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 		if #C.errors > 0 then log("  notes: " .. table.concat(C.errors, " ; "):sub(1, 300)) end
 	end
 	local createdKey = (a.fn == "makeLineCreateCmd" and "L" or ((a.fn == "makeVehicleBuyCmd" or a.fn == "makeVehicleReplaceCmd") and "V" or nil))
+	-- (the key of what the action creates: its uid and its stamp. The uid alone came back after every load, its counter
+	-- starting again from 0, while the bindings stay in the savegame: a line of an earlier session had the same key as a new
+	-- one, an update of the old line went to the new one after it was removed, and every game crashed, issue #53)
+	local ckey = createdKey and (createdKey .. tostring(a.uid) .. "@" .. tostring(a.at or ""))
 	local oks, errs
 	if useCallback then
 		oks, errs = pcall(sendCommand, cmd, function(data, ok, resultEntities)
@@ -632,7 +650,7 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 			result.entities = C.marshal(resultEntities)
 			local first = nil
 			pcall(function() first = resultEntities[1][1] end)
-			if ok and createdKey and type(first) == "number" then result.created = { key = createdKey .. a.uid, e = first } end
+			if ok and createdKey and type(first) == "number" then result.created = { key = ckey, e = first } end
 			result.answered = true
 			if done and result.returned then done(result) end
 		end)
@@ -673,12 +691,12 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 				if created then
 					if watch == "TRANSPORT_VEHICLE" then data.resultVehicleEntity = created else data.resultEntity = created end
 					result.entities = { { created, 0 } }
-					result.created = { key = createdKey .. a.uid, e = created }
+					result.created = { key = ckey, e = created }
 				else
 					-- the engine may create it during the next step: watch for it
 					local seen = {}
 					for e, _ in pairs(beforeSet) do seen[#seen + 1] = e end
-					result.watch = { kind = watch, key = createdKey .. a.uid, before = seen, steps = 0, fn = a.fn }
+					result.watch = { kind = watch, key = ckey, before = seen, steps = 0, fn = a.fn }
 				end
 			end
 			result.data = data
@@ -1068,30 +1086,78 @@ local function simApplyDue(state)
 	if changed then state:set(st) end
 end
 
--- Deterministic math.random for the game mechanics: the n-th draw of a simulation step depends only on the game time
--- and n, whatever happened before (another script drawing first, the generator state of the process...).
-local detRandom
+-- Deterministic math.random for the game mechanics: a draw depends only on the game time, the place in the code that draws
+-- (file and line) and how many draws that place made at this game time, whatever else drew before. One count for every
+-- draw of the state was not enough: something drew at every frame of a pause, as many times as each machine showed frames
+-- (81 draws before a player's three loans at one game time, issue #51), and every later draw of that game time, the loans'
+-- delays among them, differed between games. math.randomseed(n) (the construction scripts seed from their parameters) starts
+-- that place's draws from n until the game time changes.
+local detRandom, detSeed, detOrigSeed
 local function installRandom()
 	if detRandom and math.random == detRandom then return end
-	local lastT, n = -1, 0
-	detRandom = function(m, k)
-		local okT, t = pcall(gameTime)
-		t = okT and t or 0
-		if t ~= lastT then lastT, n = t, 0 end
-		n = n + 1
-		local h = (t % 4294967296 + n * 2654435769) % 4294967296
+	local lastT, counts, seeds = -1, {}, {}
+	local function mix(h)
 		for _ = 1, 3 do
 			-- 32-bit multiply in doubles (exact: each partial product stays below 2^53), then fold the high bits down
 			local hi, lo = math.floor(h / 65536), h % 65536
 			h = ((hi * 2246822519) % 65536 * 65536 + lo * 2246822519) % 4294967296
 			h = (h + math.floor(h / 8192)) % 4294967296
 		end
+		return h
+	end
+	local function now()
+		local okT, t = pcall(gameTime)
+		t = okT and t or 0
+		if t ~= lastT then lastT, counts, seeds = t, {}, {} end
+		return t
+	end
+	-- (the caller's file and line; level 3: this function, detRandom or detSeed, their caller. The file's name only: the folders
+	-- of the game and of the mods differ between machines)
+	local getinfo = type(debug) == "table" and debug.getinfo or nil
+	local function where()
+		local info = getinfo and getinfo(3, "Sl")
+		if not info then return "?" end
+		local src = tostring(info.source):gsub("\\", "/"):match("([^/]*)$")
+		return src .. ":" .. tostring(info.currentline)
+	end
+	local function placeHash(s)
+		local h = 2166136261
+		for i = 1, #s do h = ((h % 16777216) * 16777619 + s:byte(i) * 4099) % 4294967296 end
+		return h
+	end
+	detRandom = function(m, k)
+		local t = now()
+		local key = where()
+		local file = key:match("^(.*):%-?%d+$") or key
+		local sd = seeds[file]
+		local n
+		local h
+		if sd then
+			-- seeded: the place's file draws in turn from its seed
+			sd.n = sd.n + 1
+			h = mix((sd.seed + sd.n * 2654435769) % 4294967296)
+		else
+			n = (counts[key] or 0) + 1
+			counts[key] = n
+			h = mix((t % 4294967296 + n * 2654435769 + placeHash(key)) % 4294967296)
+		end
 		local x = h / 4294967296
 		if m == nil then return x end
 		if k == nil then m, k = 1, m end
 		return m + math.floor(x * (k - m + 1))
 	end
+	local origSeed = (detSeed and math.randomseed == detSeed) and detOrigSeed or math.randomseed
+	detOrigSeed = origSeed
+	detSeed = function(s)
+		now()
+		local key = where()
+		local file = key:match("^(.*):%-?%d+$") or key
+		s = tonumber(s) or 0
+		seeds[file] = { seed = mix(math.floor(s) % 4294967296), n = 0 }
+		pcall(origSeed, s)
+	end
 	math.random = detRandom
+	math.randomseed = detSeed
 	log("deterministic math.random installed")
 end
 
@@ -1262,7 +1328,8 @@ local function update(userParams, state, dt)
 	-- The game mechanics scripts (contracts, loans, weather, industries, towns...) draw random numbers from the Lua
 	-- generator, which is not part of the savegame and differs between games: reseeded from the game time at every
 	-- simulation step, every game draws the same numbers.
-	pcall(function() math.randomseed(gameTime()) end)
+	-- (scripts that kept the engine's own function draw from it: reseeded every step)
+	pcall(function() if detSeed and math.randomseed == detSeed then detOrigSeed(gameTime()) else math.randomseed(gameTime()) end end)
 	installRandom()
 	if not SIM.subscribed then
 		SIM.subscribed = true
@@ -1963,6 +2030,15 @@ local function withActor(ent, fn, ...)
 	G.actor = prev
 	if not ok then error(r1, 0) end
 	return r1, r2
+end
+
+-- A creation key bound to an entity: the entity it named before loses it (an entity with a stale key travelled as that key and
+-- reached what the key names now, issue #53)
+G.rebind = function(key, e)
+	local old = G.bind[key]
+	if old and old ~= e and G.rev[old] == key then G.rev[old] = nil end
+	G.bind[key] = e
+	G.rev[e] = key
 end
 
 -- The builder's refundable entities (what that player had just built, see pollNativeEvents), while one of their builds is replayed
@@ -4868,7 +4944,7 @@ local function runPausedActions()
 					r.at = now
 					r.answered, r.returned = nil, nil
 					log("paused action " .. tostring(r.uid) .. " " .. tostring(r.fn) .. " at t=" .. tostring(now) .. " -> " .. (r.success and "OK" or "REFUSED"))
-					if r.created then G.bind[r.created.key] = r.created.e; G.rev[r.created.e] = r.created.key; toSim("bind", r.created) end
+					if r.created then G.rebind(r.created.key, r.created.e); toSim("bind", r.created) end
 					G.resultsSeen[tostring(r.uid) .. "@" .. tostring(r.at)] = true
 					C.appendFile(C.DIR .. BS .. "results.log", C.line("result", r))
 					if r.created then C.appendFile(C.DIR .. BS .. "bindings.log", r.created.key .. " " .. tostring(r.created.e) .. NL) end
@@ -9680,8 +9756,7 @@ local function guiUpdate(userParams, state, guiState)
 	-- bindings, results and hashes produced by the simulation half
 	for key, e in pairs(st.bind or {}) do
 		if G.bind[key] ~= e then
-			G.bind[key] = e
-			G.rev[e] = key
+			G.rebind(key, e)
 			C.appendFile(C.DIR .. BS .. "bindings.log", key .. " " .. tostring(e) .. NL)
 		end
 	end
