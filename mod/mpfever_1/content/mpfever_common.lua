@@ -359,6 +359,7 @@ C.CTOR = {
 	StationTerminal = { "api.type.StationTerminal" },
 	Context = { "api.type.Context" },
 	StreetEdgeObject = { "api.type.SimpleStreetProposal.EdgeObject" },
+	NativeEdgeObject = { "api.type.StreetProposal.EdgeObject", "api.type.EdgeObject" },
 	Waypoint = { "api.type.Waypoint" },
 	EdgePos = { "api.type.EdgePos" },
 	EdgeId = { "api.type.EdgeId" },
@@ -1127,6 +1128,37 @@ function C.frozenNodesOf(m, i)
 	return nil
 end
 
+-- The edge objects of a native proposal (StreetProposal.EdgeObject: the segment by its native id, as the tool's), for a
+-- construction's signs. The model without "::/" (with it the script factory fails or hangs); an object without a model,
+-- or a field this game cannot write, is an error: the caller then replays without them (and resynchronises)
+function C.nativeEdgeObjects(list)
+	local out = {}
+	for i, o in ipairs(list or {}) do
+		if type(o) ~= "table" or not o.model or type(o.segmentEntity) ~= "number" then error("edge object " .. i .. " without model or segment") end
+		local eo = C.newOf("NativeEdgeObject")
+		eo.segmentEntity = o.segmentEntity
+		eo.model = tostring(o.model):gsub("^::/", "")
+		eo.param = tonumber(o.param) or 0.5
+		eo.left = o.left == true
+		eo.oneWay = o.oneWay == true
+		eo.category = tonumber(o.category) or 0
+		eo.resultEntity = -1
+		local pl = o.playerEntity
+		if type(pl) ~= "number" or pl < 0 then pl = api.engine.util.getPlayer() end
+		eo.playerEntity = pl
+		pcall(function() eo.name = o.name or "" end)
+		if type(o.params) == "table" then
+			pcall(function()
+				local pp = eo.params
+				for k, v in pairs(o.params) do if k ~= "__ud" and type(v) ~= "table" then pp[k] = v end end
+				eo.params = pp
+			end)
+		end
+		out[i] = eo
+	end
+	return out
+end
+
 function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 	opts = opts or {}
 	local st = m.proposal
@@ -1180,7 +1212,13 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 		local c = sg.comp or {}
 		if type(c.objects) == "table" then
 			local keep = {}
-			for _, o in ipairs(c.objects) do if type(o) == "table" and type(o[1]) == "number" and o[1] >= 0 then keep[#keep + 1] = { objIds[o[1]] or o[1], o[2] } end end
+			for _, o in ipairs(c.objects) do
+				if type(o) == "table" and type(o[1]) == "number" then
+					if o[1] >= 0 then keep[#keep + 1] = { objIds[o[1]] or o[1], o[2] }
+					-- (the tool's placeholders of its new edge objects, -400000000 - k: kept with them, see C.nativeEdgeObjects)
+					elseif opts.withObjects and o[1] <= -400000000 then keep[#keep + 1] = { o[1], o[2] } end
+				end
+			end
 			c.objects = keep
 		end
 		edges[i] = segmentFrom(sg, "addedSegments[" .. i .. "]")
@@ -1212,6 +1250,11 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 			local oko, eo = pcall(function() sp.edgeObjectsToRemove = rmObjs end)
 			if not oko then C.errors[#C.errors + 1] = "edgeObjectsToRemove: " .. tostring(eo):sub(1, 100) end
 		end
+	end
+	-- the tool's new edge objects (an airport's signs on its own runways and taxiways), as the tool's proposal has them
+	if opts.withObjects and #(st.edgeObjectsToAdd or {}) > 0 then
+		local okn, en = pcall(function() sp.edgeObjectsToAdd = C.nativeEdgeObjects(st.edgeObjectsToAdd) end)
+		if not okn then error("edge objects: " .. tostring(en):sub(1, 120)) end
 	end
 	-- the node configurations (lane connections...) the tool removed: only those this game has (removing one that does not
 	-- exist is an engine assertion), and those it added, with the native ids

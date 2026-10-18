@@ -160,7 +160,7 @@ end
 -- booking is applied the amount counts as booked in the checks (REFUND.pending): the builder's game has it already.
 -- MPFEVER_NOREFUND=1 turns it off (on every game).
 -- (one table: the main chunk is close to Lua's 200 locals)
-local REFUND = { pending = {}, on = os.getenv("MPFEVER_NOREFUND") ~= "1" }
+local REFUND = { pending = {}, on = os.getenv("MPFEVER_NOREFUND") ~= "1", all = os.getenv("MPFEVER_REFUNDALL") == "1" }
 function REFUND.costOf(param)
 	local c = nil
 	pcall(function() c = tonumber(param[2].costs) end)
@@ -193,6 +193,14 @@ function REFUND.book(st, now)
 	for _, rc in ipairs(st.rcost) do
 		if rc.at >= now then
 			keep[#keep + 1] = rc
+		elseif (rc.n or 0) > 0 and type(rc.cost) == "number" and rc.cost >= 0 and not REFUND.all then
+			-- (not a refund: the costs the tools report are not what a replay reports. The bulldozer's say 0 for every
+			-- removal that refunds nothing, and the replays of small builds take other forms that cost otherwise (180 000 for
+			-- the builder, 33 554 for its replay): booked, those differences gave every removal for free to the shared
+			-- company (issue #50). Only a refund, which the builder's game alone makes, is booked)
+			if math.floor((rc.got or 0) - rc.cost + 0.5) ~= 0 then
+				log("refund: build " .. tostring(rc.uid) .. " cost its builder " .. rc.cost .. ", its replay here " .. tostring(rc.got) .. ": no refund, nothing booked")
+			end
 		elseif (rc.n or 0) > 0 and type(rc.cost) == "number" then
 			local d = math.floor((rc.got or 0) - rc.cost + 0.5)
 			if d ~= 0 then
@@ -1274,7 +1282,16 @@ local function update(userParams, state, dt)
 			ck.ticks = ck.ticks + 1
 			if ck.ticks >= 2 then
 				local si, ni = R.idsAt(ck.segs, ck.nodes)
-				log("build ids t=" .. ck.at .. ": segments " .. table.concat(si, ",") .. " nodes " .. table.concat(ni, ","))
+				-- (and how many of its new nodes have a node configuration: issue #50's drift, nodeConfigs 7418 / 7420 after
+				-- a station of 200 nodes, compares here between the builder's game and the others)
+				local cfg = 0
+				for _, n in ipairs(ni) do
+					if type(n) == "number" and n >= 0 then
+						local okc, nc = pcall(function() return api.engine.getComponent(n, api.type.ComponentType.BASE_NODE_CONFIG) end)
+						if okc and nc then cfg = cfg + 1 end
+					end
+				end
+				log("build ids t=" .. ck.at .. ": segments " .. table.concat(si, ",") .. " nodes " .. table.concat(ni, ",") .. " (node configurations " .. cfg .. ")")
 			else
 				keep[#keep + 1] = ck
 			end
@@ -3080,14 +3097,11 @@ local function replayNativeConstruction(a)
 			return
 		end
 		if toolNodes then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: the tool's removed nodes are kept (the engine's removal has other nodes)") end
-		C.errors = {}
-		local okp, P = pcall(C.rebuildNativeWithConstruction, m, conv, rm, { toolNodes = toolNodes })
-		if not okp or not P then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: not rebuilt (" .. shortErr(P) .. ")") replayFailed(a, "native rebuild") return end
-		do
-			local notes = {}
-			for _, e in ipairs(C.errors) do if not tostring(e):find("no writable member 'params'", 1, true) then notes[#notes + 1] = e end end
-			if #notes > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: rebuild notes " .. table.concat(notes, "; ")) end
-		end
+		-- the construction's edge objects (an airport's signs on its own runways and taxiways, issue #50) go in the same
+		-- proposal, as the tool's; if this game cannot make it so, the replay goes without them and the host's game is
+		-- reloaded once built (they are never placed afterwards: issue #49)
+		local nEO = #(m.proposal.edgeObjectsToAdd or {})
+		local withObjects = nEO > 0 and os.getenv("MPFEVER_CONEO") ~= "0"
 		local ctx2 = api.type.Context.new()
 		ctx2.checkTerrainAlignment = true
 		ctx2.cleanupStreetGraph = false
@@ -3095,7 +3109,31 @@ local function replayNativeConstruction(a)
 		ctx2.gatherFields = true
 		ctx2.player = api.engine.util.getPlayer()
 		G.refundInto(ctx2)
-		local okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx2, false, true) end)
+		local okk, cmd = false, nil
+		if withObjects then
+			C.errors = {}
+			local okw, PW = pcall(C.rebuildNativeWithConstruction, m, conv, rm, { toolNodes = toolNodes, withObjects = true })
+			if okw and PW then okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(PW, ctx2, false, true) end) end
+			if okk and cmd then
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: with its " .. nEO .. " edge object(s)")
+			else
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: not made with its " .. nEO .. " edge object(s) ("
+					.. shortErr(okw and cmd or PW) .. "): without them, then resynchronisation")
+				okk, cmd, withObjects = false, nil, false
+			end
+		end
+		local okp, P = true, nil
+		if not cmd then
+			C.errors = {}
+			okp, P = pcall(C.rebuildNativeWithConstruction, m, conv, rm, { toolNodes = toolNodes })
+		end
+		if not cmd and (not okp or not P) then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: not rebuilt (" .. shortErr(P) .. ")") replayFailed(a, "native rebuild") return end
+		do
+			local notes = {}
+			for _, e in ipairs(C.errors) do if not tostring(e):find("no writable member 'params'", 1, true) then notes[#notes + 1] = e end end
+			if #notes > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: rebuild notes " .. table.concat(notes, "; ")) end
+		end
+		if not cmd then okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx2, false, true) end) end
 		if (not okk or not cmd) and os.getenv("MPFEVER_DEPOTEXP") then
 			local oke, erre = pcall(depotExperiments, a, m, conv, rm, ctx2)
 			if not oke then log("DEPOTEXP failed: " .. tostring(erre)) end
@@ -3135,10 +3173,11 @@ local function replayNativeConstruction(a)
 			-- made by the engine's conversion. 0.3.13 placed them afterwards as stops are, by rebuilding each segment: those
 			-- segments are the construction's own (frozen) edges, the construction kept the removed ones, and the game crashed
 			-- as soon as the construction was selected or demolished (assertion 'it != components.end()', BaseEdge; issue
-			-- #49). Never rebuilt now: the host's game is reloaded for everybody at once (the airport as the host has it).
-			if #(m.proposal.edgeObjectsToAdd or {}) > 0 then
-				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: " .. #m.proposal.edgeObjectsToAdd
-					.. " edge object(s) of the construction (an airport's signs) cannot be replayed: resynchronisation")
+			-- #49). Never rebuilt now: they go in the replay's proposal (checked below), else the host's game is reloaded for
+			-- everybody at once (the airport as the host has it).
+			if nEO > 0 and not withObjects then
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: " .. nEO
+					.. " edge object(s) of the construction (an airport's signs) not replayed: resynchronisation")
 				replayFailed(a, "construction edge objects (airport signs)")
 			end
 			pcall(function()
@@ -3155,6 +3194,7 @@ local function replayNativeConstruction(a)
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " edges here " .. got .. ", originator " .. expected .. (got == expected and "" or " SEGMENT COUNT DIFFERS")
 					.. (objExpected ~= 0 and (", edge objects here " .. (objs - objsBefore) .. ", originator " .. objExpected
 						.. (objs - objsBefore == objExpected and "" or " EDGE OBJECT COUNT DIFFERS")) or ""))
+				if withObjects and objs - objsBefore ~= objExpected then replayFailed(a, "construction edge objects differ") end
 			end }
 		end)
 	end)
