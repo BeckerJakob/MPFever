@@ -359,7 +359,6 @@ C.CTOR = {
 	StationTerminal = { "api.type.StationTerminal" },
 	Context = { "api.type.Context" },
 	StreetEdgeObject = { "api.type.SimpleStreetProposal.EdgeObject" },
-	NativeEdgeObject = { "api.type.StreetProposal.EdgeObject", "api.type.EdgeObject" },
 	Waypoint = { "api.type.Waypoint" },
 	EdgePos = { "api.type.EdgePos" },
 	EdgeId = { "api.type.EdgeId" },
@@ -1128,32 +1127,35 @@ function C.frozenNodesOf(m, i)
 	return nil
 end
 
--- The edge objects of a native proposal (StreetProposal.EdgeObject: the segment by its native id, as the tool's), for a
--- construction's signs. The model without "::/" (with it the script factory fails or hangs); an object without a model,
--- or a field this game cannot write, is an error: the caller then replays without them (and resynchronises)
-function C.nativeEdgeObjects(list)
+-- The edge objects of a native proposal for a construction's signs: the engine's own native objects (native, from its
+-- conversion of the same objects in script form, in the same order: a script cannot write a native object's model), each
+-- put on its segment by the tool's native id. A missing one is an error: the caller then replays without them
+-- (and resynchronises)
+function C.nativeEdgeObjects(list, native)
 	local out = {}
+	-- (matched by model, place and side, in case the engine orders them otherwise; else by rank)
+	local used = {}
+	local function find(o, i)
+		for j, x in ipairs(type(native) == "table" and native or {}) do
+			if not used[j] then
+				local okx, same = pcall(function()
+					return tostring(x.model):gsub("^::/", "") == tostring(o.model):gsub("^::/", "")
+						and math.abs((tonumber(x.param) or 0) - (tonumber(o.param) or 0)) < 1e-3 and (x.left == true) == (o.left == true)
+				end)
+				if okx and same then used[j] = true return x end
+			end
+		end
+		if type(native) == "table" and native[i] and not used[i] then used[i] = true return native[i] end
+		return nil
+	end
 	for i, o in ipairs(list or {}) do
-		if type(o) ~= "table" or not o.model or type(o.segmentEntity) ~= "number" then error("edge object " .. i .. " without model or segment") end
-		local eo = C.newOf("NativeEdgeObject")
+		local eo = type(o) == "table" and find(o, i) or nil
+		if type(o) ~= "table" or type(o.segmentEntity) ~= "number" or eo == nil then error("edge object " .. i .. " not converted") end
 		eo.segmentEntity = o.segmentEntity
-		eo.model = tostring(o.model):gsub("^::/", "")
-		eo.param = tonumber(o.param) or 0.5
-		eo.left = o.left == true
-		eo.oneWay = o.oneWay == true
-		eo.category = tonumber(o.category) or 0
-		eo.resultEntity = -1
 		local pl = o.playerEntity
 		if type(pl) ~= "number" or pl < 0 then pl = api.engine.util.getPlayer() end
-		eo.playerEntity = pl
-		pcall(function() eo.name = o.name or "" end)
-		if type(o.params) == "table" then
-			pcall(function()
-				local pp = eo.params
-				for k, v in pairs(o.params) do if k ~= "__ud" and type(v) ~= "table" then pp[k] = v end end
-				eo.params = pp
-			end)
-		end
+		pcall(function() eo.playerEntity = pl end)
+		pcall(function() eo.resultEntity = -1 end)
 		out[i] = eo
 	end
 	return out
@@ -1253,7 +1255,7 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 	end
 	-- the tool's new edge objects (an airport's signs on its own runways and taxiways), as the tool's proposal has them
 	if opts.withObjects and #(st.edgeObjectsToAdd or {}) > 0 then
-		local okn, en = pcall(function() sp.edgeObjectsToAdd = C.nativeEdgeObjects(st.edgeObjectsToAdd) end)
+		local okn, en = pcall(function() sp.edgeObjectsToAdd = C.nativeEdgeObjects(st.edgeObjectsToAdd, opts.withObjects) end)
 		if not okn then error("edge objects: " .. tostring(en):sub(1, 120)) end
 	end
 	-- the node configurations (lane connections...) the tool removed: only those this game has (removing one that does not

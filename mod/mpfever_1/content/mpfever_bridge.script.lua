@@ -158,9 +158,11 @@ end
 -- it; each replaying game adds up what its replay of it cost (every proposal applied for it at its time) and, at its next
 -- update, books the difference on the builder's company: every game charged what the builder's game charged. Until the
 -- booking is applied the amount counts as booked in the checks (REFUND.pending): the builder's game has it already.
+-- (The builder's game pays nothing for a removal that refunds nothing, its replays pay 3 000 to 450 000: booked too. Not
+-- booking them, as tried after issue #50, put the money of the shared company apart at once.)
 -- MPFEVER_NOREFUND=1 turns it off (on every game).
 -- (one table: the main chunk is close to Lua's 200 locals)
-local REFUND = { pending = {}, on = os.getenv("MPFEVER_NOREFUND") ~= "1", all = os.getenv("MPFEVER_REFUNDALL") == "1" }
+local REFUND = { pending = {}, on = os.getenv("MPFEVER_NOREFUND") ~= "1" }
 function REFUND.costOf(param)
 	local c = nil
 	pcall(function() c = tonumber(param[2].costs) end)
@@ -193,14 +195,6 @@ function REFUND.book(st, now)
 	for _, rc in ipairs(st.rcost) do
 		if rc.at >= now then
 			keep[#keep + 1] = rc
-		elseif (rc.n or 0) > 0 and type(rc.cost) == "number" and rc.cost >= 0 and not REFUND.all then
-			-- (not a refund: the costs the tools report are not what a replay reports. The bulldozer's say 0 for every
-			-- removal that refunds nothing, and the replays of small builds take other forms that cost otherwise (180 000 for
-			-- the builder, 33 554 for its replay): booked, those differences gave every removal for free to the shared
-			-- company (issue #50). Only a refund, which the builder's game alone makes, is booked)
-			if math.floor((rc.got or 0) - rc.cost + 0.5) ~= 0 then
-				log("refund: build " .. tostring(rc.uid) .. " cost its builder " .. rc.cost .. ", its replay here " .. tostring(rc.got) .. ": no refund, nothing booked")
-			end
 		elseif (rc.n or 0) > 0 and type(rc.cost) == "number" then
 			local d = math.floor((rc.got or 0) - rc.cost + 0.5)
 			if d ~= 0 then
@@ -3057,6 +3051,43 @@ local function replayNativeConstruction(a)
 	G.refundInto(ctx)
 	local okc, dry = pcall(function() return api.cmd.makeWorldBuildProposalCmd(spCon, ctx, false, true) end)
 	if not okc or not dry then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: conversion command " .. shortErr(dry)) return false end
+	-- the construction's edge objects (an airport's signs): a script cannot write a native edge object's model ("no writable
+	-- member 'model'", issue #50), the engine's conversion of a script proposal makes them. First a dry run of the
+	-- construction twice (guaranteed collision) with its street part and its edge objects in script form: the native
+	-- objects of its result go in the replay (C.nativeEdgeObjects)
+	if a.eoNative == nil and #(m.proposal.edgeObjectsToAdd or {}) > 0 and os.getenv("MPFEVER_CONEO") ~= "0" then
+		local okd, dryObj = pcall(function()
+			local spObj = C.rebuildProposal(m, { seed = 7919 })
+			local two = {}
+			two[1] = spObj.constructionsToAdd[1]
+			two[2] = C.rebuildProposal(m, { noStreet = true, seed = 7919 }).constructionsToAdd[1]
+			spObj.constructionsToAdd = two
+			return api.cmd.makeWorldBuildProposalCmd(spObj, ctx, false, true)
+		end)
+		if okd and dryObj then
+			replaySend(dryObj, function(resO, successO)
+				if successO then
+					log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: the edge objects' conversion was built instead of refused (desync)")
+					replayFailed(a, "conversion built")
+					return
+				end
+				local list = nil
+				pcall(function()
+					local eo = resO.proposal.proposal.edgeObjectsToAdd
+					list = {}
+					for i = 1, #eo do list[i] = eo[i] end
+				end)
+				a.eoNative = list or false
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: the engine converted " .. tostring(list and #list or "no")
+					.. " of its " .. #m.proposal.edgeObjectsToAdd .. " edge object(s)")
+				local okr, errr = pcall(replayNativeConstruction, a)
+				if not okr then replayFailed(a, "error: " .. shortErr(errr)) end
+			end)
+			return true
+		end
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: edge objects' conversion command " .. shortErr(dryObj))
+		a.eoNative = false
+	end
 	toSim("replaying", {})
 	local edgesBefore = #R.allEdges()
 	local objsBefore = 0
@@ -3101,7 +3132,7 @@ local function replayNativeConstruction(a)
 		-- proposal, as the tool's; if this game cannot make it so, the replay goes without them and the host's game is
 		-- reloaded once built (they are never placed afterwards: issue #49)
 		local nEO = #(m.proposal.edgeObjectsToAdd or {})
-		local withObjects = nEO > 0 and os.getenv("MPFEVER_CONEO") ~= "0"
+		local withObjects = nEO > 0 and type(a.eoNative) == "table" and #a.eoNative == nEO
 		local ctx2 = api.type.Context.new()
 		ctx2.checkTerrainAlignment = true
 		ctx2.cleanupStreetGraph = false
@@ -3112,7 +3143,7 @@ local function replayNativeConstruction(a)
 		local okk, cmd = false, nil
 		if withObjects then
 			C.errors = {}
-			local okw, PW = pcall(C.rebuildNativeWithConstruction, m, conv, rm, { toolNodes = toolNodes, withObjects = true })
+			local okw, PW = pcall(C.rebuildNativeWithConstruction, m, conv, rm, { toolNodes = toolNodes, withObjects = a.eoNative })
 			if okw and PW then okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(PW, ctx2, false, true) end) end
 			if okk and cmd then
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: with its " .. nEO .. " edge object(s)")
