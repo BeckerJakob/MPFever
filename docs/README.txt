@@ -43,8 +43,13 @@ WHAT WORKS
   "MULTIJOUEUR / MPFever" button in the main menu opens the multiplayer window.
   - Host: pick one of your savegames (any of them, even one made without MPFever: the mod
     adds no content to the game, it only synchronises) and open the lobby. If the game uses
-    other mods that add content (vehicles, buildings...), every player must have the same
-    ones installed.
+    other mods, every player must have the same ones installed: the lobby lists them and
+    shows each player those missing on their PC.
+  - Mods: MPFever is not made for other mods yet. Mods that only add content (vehicles,
+    buildings...) usually work. Mods that change the game by themselves (rename lines,
+    assign terminals, change colours...) do it on each game separately and break the
+    synchronisation: play without them. Mod authors who want their mod to work with
+    MPFever are welcome to get in touch (GitHub issues).
   - Lobby: the players join it in the main menu and see who is there. The host starts the
     game when everybody is there: every game loads the host's savegame at the same time.
   - Join: type the host's IP address. The host's game is received and loaded

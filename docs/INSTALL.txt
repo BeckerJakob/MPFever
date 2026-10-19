@@ -1,11 +1,12 @@
-MPFever 0.3.19-experimental - Installation and first game
+MPFever 0.3.20-experimental - Installation and first game
 ========================================================
 
 REQUIREMENTS (every player)
 ---------------------------
 - Windows 10 or 11 with .NET Framework 4.8 (already included in Windows 10/11).
 - Transport Fever 3 on Steam, up to date. Every player must have the same game version
-  and the same mods.
+  and the same mods. MPFever is not made for other mods yet: mods that change the game by
+  themselves (rename lines, assign terminals...) break the synchronisation.
 - Steam running.
 
 

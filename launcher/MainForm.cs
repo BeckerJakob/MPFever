@@ -52,7 +52,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.3.19-experimental";
+        public const string Version = "0.3.20-experimental";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -72,6 +72,9 @@ namespace MPFever
         // everybody at once (each game loads the host's savegame at the same time); a player may still join a running game
         volatile bool lobbyOpen, lobbyStarting;
         string lobbySave = "", lobbyPlayers = "";
+        // the mods of the lobby's savegame ("id|name|origin" entries separated by ";;", see mpfever_menu.lua): written by the
+        // host's menu (host_mods.txt), sent to the players of the lobby, shown by their menu with those missing on their PC
+        string lobbyMods = "";
         // the host's addresses shown in its lobby: public (Internet, "" while looked up, "?" when unknown) and local network
         string lobbyPublic = "", lobbyLocal = "";
         int lobbyPort;
@@ -867,6 +870,53 @@ namespace MPFever
             OnMenuRequest("join", addr, menuGame.Name);
         }
 
+        /// <summary>The mods of the savegame the host chose, as its menu wrote them just before asking to host.</summary>
+        string ReadHostMods()
+        {
+            try
+            {
+                var f = Path.Combine(menuGame.Dir, "host_mods.txt");
+                var mods = File.Exists(f) ? File.ReadAllText(f).Trim() : "";
+                var names = ModNames(mods);
+                if (names.Count > 0)
+                {
+                    Log.W(F("Mods de la sauvegarde ({0}) : ", "Mods of the savegame ({0}): ", names.Count) + string.Join(", ", names));
+                    Log.Warn(T("MPFever n'est pas encore prévu pour les mods : certains peuvent désynchroniser la partie.", "MPFever is not made for mods yet: some can desynchronise the game."));
+                }
+                return mods;
+            }
+            catch (Exception e) { Log.W("host_mods: " + e.Message); return ""; }
+        }
+
+        static List<string> ModNames(string mods)
+        {
+            var names = new List<string>();
+            foreach (var e in (mods ?? "").Split(new[] { ";;" }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var f = e.Split('|');
+                names.Add(f.Length > 1 && f[1].Trim() != "" ? f[1].Trim() : f[0].Trim());
+            }
+            return names;
+        }
+
+        /// <summary>The host's game was not loaded: mods of it are missing on this PC (missing_mods.txt, written by
+        /// mpfever_auto.lua). The session ends and the MPFever page of the menu lists them.</summary>
+        void CheckMissingMods()
+        {
+            var f = Path.Combine(menuGame.Dir, "missing_mods.txt");
+            if (!File.Exists(f) || new FileInfo(f).Length == 0) return;
+            string[] lines;
+            try { lines = File.ReadAllLines(f, System.Text.Encoding.UTF8); File.WriteAllText(f, ""); } catch { return; }
+            var names = lines.Select(l => l.Split('\t')).Where(x => x[0].Trim() != "")
+                .Select(x => (x.Length > 1 && x[1].Trim() != "" ? x[1].Trim() : x[0].Trim()) + (x.Length > 2 && x[2].Trim() != "" ? " (" + x[2].Trim() + ")" : "")).ToList();
+            if (names.Count == 0) return;
+            var text = F("Mods manquants ({0}) : ", "Missing mods ({0}): ", names.Count) + string.Join(", ", names)
+                + T(". Installez-les (Steam Workshop ou mod.io), puis rejoignez à nouveau.", ". Install them (Steam Workshop or mod.io), then join again.");
+            Log.Err(T("La partie de l'hôte n'a pas été chargée. ", "The host's game was not loaded. ") + text);
+            EndSession(T("=== Mods manquants : fin de la session ===", "=== Missing mods: the session ends ==="));
+            menuPhase = "error"; menuText = text; MenuStatus();
+        }
+
         /// <summary>Writes the state shown by the game's MPFever window.</summary>
         void MenuStatus()
         {
@@ -896,6 +946,7 @@ namespace MPFever
                     ["loadSeq"] = menuLoadSeq,
                     ["lobby"] = lobbyOpen ? "host" : (menuPhase == "lobby" ? "client" : ""),
                     ["lobbySave"] = lobbyOpen ? lobbySave : "",
+                    ["hostMods"] = lobbyMods,
                     ["publicAddr"] = lobbyOpen ? (lobbyPublic == "" ? "..." : lobbyPublic) : "",
                     ["localAddr"] = lobbyOpen ? lobbyLocal : "",
                     ["port"] = lobbyOpen ? lobbyPort.ToString(CultureInfo.InvariantCulture) : "",
@@ -925,6 +976,7 @@ namespace MPFever
                 try
                 {
                     CheckSteamJoin();
+                    CheckMissingMods();
                     var req = menuGame.ReadMenuRequest();
                     if (req != null && req[0] != lastMenuReq)
                     {
@@ -973,6 +1025,7 @@ namespace MPFever
                 catch (Exception e) { menuPhase = "error"; menuText = T("Impossible d'héberger : ", "Cannot host: ") + e.Message; MenuStatus(); return; }
                 // the lobby opens: the savegame is loaded once the host starts the game (see StartLobbyGame), by every game at once
                 lobbySave = arg; lobbyOpen = true; lobbyStarting = false;
+                lobbyMods = ReadHostMods();
                 lobbyPort = port; lobbyPublic = "";
                 lobbyLocal = string.Join(", ", LocalAddresses().Split(',').Select(a => a.Trim()).Where(a => a != "" && a != "?").Select(a => a + ":" + port));
                 // Steam: friends can join from their friends list or an invitation
@@ -1095,7 +1148,7 @@ namespace MPFever
             hashN = 0; syncText = "—"; actsRelayed = actRefused = actFails = desyncs = 0;
             resyncing = false; resyncDropping = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = ""; lock (partStreak) partStreak.Clear();
             joinPending = false;
-            lobbyOpen = lobbyStarting = false; lobbySave = ""; lobbyPlayers = ""; lobbyPublic = ""; lobbyLocal = "";
+            lobbyOpen = lobbyStarting = false; lobbySave = ""; lobbyPlayers = ""; lobbyPublic = ""; lobbyLocal = ""; lobbyMods = "";
             joinedAddr = null;
             if (steamConnect != null) { steamConnect = null; SteamCtl("clear", null); }
             if (menuGame != null)
@@ -1123,7 +1176,7 @@ namespace MPFever
         {
             if (!lobbyOpen || relay == null) return;
             relay.Broadcast(Msg.Make("lobby", hostName, "{[\"players\"]=" + LuaLit.Quote(LobbyList()) + ",[\"save\"]=" + LuaLit.Quote(lobbySave)
-                + ",[\"host\"]=" + LuaLit.Quote(BaseName(hostName ?? "")) + "}"));
+                + ",[\"host\"]=" + LuaLit.Quote(BaseName(hostName ?? "")) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods) + "}"));
         }
 
         /// <summary>The host starts the game from its lobby: every player in it receives the host's savegame and every game
@@ -1483,6 +1536,13 @@ namespace MPFever
                         if (menuMode && !game.InGame && menuPhase != "downloading" && menuPhase != "loading")
                         {
                             lobbyPlayers = S("players");
+                            var mods = S("mods");
+                            if (mods != lobbyMods)
+                            {
+                                lobbyMods = mods;
+                                var names = ModNames(mods);
+                                if (names.Count > 0) Log.W(F("Mods de la partie de l'hôte ({0}) : ", "Mods of the host's game ({0}): ", names.Count) + string.Join(", ", names));
+                            }
                             menuPhase = "lobby";
                             menuText = F("Dans le salon de {0} (« {1} ») : l'hôte lance la partie quand tout le monde est là.", "In {0}'s lobby (« {1} »): the host starts the game when everybody is here.", S("host"), S("save"));
                             MenuStatus();

@@ -415,7 +415,9 @@ namespace MPFever
         {
             Name = name;
             Role = role;
-            Dir = Path.Combine(Path.GetTempPath(), "mpfever", name + "-" + DateTime.Now.ToString("HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6));
+            // (the folder's name in ASCII as well: the player's name goes to the game in identity.txt)
+            var folder = new string((name ?? "").Select(c => c < 128 && (char.IsLetterOrDigit(c) || c == '-' || c == '_') ? c : '_').ToArray());
+            Dir = Path.Combine(SessionRoot(), folder + "-" + DateTime.Now.ToString("HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6));
             Directory.CreateDirectory(Dir);
             inPath = Path.Combine(Dir, "in.log");
             outPath = Path.Combine(Dir, "out.log");
@@ -423,6 +425,44 @@ namespace MPFever
             File.WriteAllText(outPath, "");
             poll = new Thread(Poll) { IsBackground = true, Name = "GameLink " + name };
             poll.Start();
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern int GetShortPathNameW(string longPath, StringBuilder shortPath, int size);
+
+        static bool IsAscii(string s) => s.All(c => c < 128);
+
+        /// <summary>Folder of the session folders. The game's Lua cannot open a path with letters outside ASCII: with a
+        /// Windows account named "Thöny" (the temporary folder is in the account's folder) no file of the session could be
+        /// read or written by the mod, and the game had no multiplayer page (issue #59). Such a temporary folder is used by
+        /// its short name (C:\Users\MAXEMI~1\...), or else replaced by an ASCII folder shared by the PC's accounts.</summary>
+        static string SessionRoot()
+        {
+            var temp = Path.Combine(Path.GetTempPath(), "mpfever");
+            if (IsAscii(temp)) return temp;
+            try
+            {
+                Directory.CreateDirectory(temp);
+                var sb = new StringBuilder(1024);
+                int n = GetShortPathNameW(temp, sb, sb.Capacity);
+                if (n > 0 && n < sb.Capacity && IsAscii(sb.ToString())) return sb.ToString();
+            }
+            catch { }
+            foreach (var root in new[] { Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), Environment.GetEnvironmentVariable("PUBLIC") })
+            {
+                if (string.IsNullOrEmpty(root) || !IsAscii(root)) continue;
+                try
+                {
+                    var dir = Path.Combine(root, "MPFever", "sessions");
+                    Directory.CreateDirectory(dir);
+                    File.WriteAllText(Path.Combine(dir, "write_test.txt"), "");
+                    File.Delete(Path.Combine(dir, "write_test.txt"));
+                    return dir;
+                }
+                catch { }
+            }
+            Log.Warn(L.T("Le dossier temporaire contient des lettres que le jeu ne sait pas lire : le mod risque de ne pas fonctionner (", "The temporary folder has letters the game cannot read: the mod may not work (") + temp + ")");
+            return temp;
         }
 
         public bool GameRunning => proc != null && !proc.HasExited;

@@ -57,6 +57,25 @@ From 0.3.15 on, MPFever updates itself: a new release is installed at startup (y
 
 Details, ports and troubleshooting: [INSTALL](docs/INSTALL.txt). Dedicated server: [SERVER](docs/SERVER.txt).
 
+## Mods
+
+MPFever is not made to be used with other mods yet. Making it work with mods is planned, but it is not the priority for now.
+
+- **Mods that only add content** (vehicles, buildings, streets...) usually work if every player has them.
+- **Mods that change the game by themselves**, through a script, can break the synchronisation. Such a mod renames lines, assigns terminals, changes colours, or builds and edits things on its own. It does so on each player's game separately, at different moments, so the games drift apart. MPFever then has to resynchronise them again and again. Example: *Auto Line Namer* ([issue #58](https://github.com/dkdknight/MPFever/issues/58)).
+
+**Every player needs the same mods.** When you join a lobby, the multiplayer page lists the mods of the host's savegame and shows in red those missing on your PC. The host's game is not loaded while one is missing: install it, then join again.
+
+If a game keeps resynchronising, try it without the mods that act by themselves.
+
+### Mod authors: let's make your mod compatible
+
+If you use a mod that breaks the synchronisation, you can tell its author about MPFever and ask them to get in touch through a [GitHub issue](https://github.com/dkdknight/MPFever/issues). Together we can look at:
+
+- a simple way for the mod to know that it runs in an MPFever session, so that it can turn its automatic changes off, or make them on the host only;
+- making the mod's automatic changes once and sharing them through MPFever, instead of letting each game make them;
+- a list of mods tested with MPFever: works, works when every player has it, or breaks the synchronisation.
+
 ## Reporting a problem
 
 Please open an [issue](https://github.com/dkdknight/MPFever/issues) with the files below. **Without logs, a desync or a crash can rarely be found**; with them, most bugs are fixed in the next version.
@@ -154,7 +173,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Experimental (0.3.19). Supported game builds:
+Experimental (0.3.20). Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.

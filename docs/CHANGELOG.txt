@@ -1,6 +1,22 @@
 MPFever - Changelog
 ===================
 
+0.3.20-experimental - the lobby shows the mods missing on each player's PC; Windows accounts with accents
+  - NEW: mod check. When the host opens a lobby, its menu reads the mods of the chosen savegame and MPFever sends the
+    list to the players of the lobby. Their multiplayer page shows it under the savegame's picture: the missing mods in
+    red, with their name and origin (Steam Workshop, mod.io...), or "all installed". The host sees the list too.
+  - NEW: the host's game is no longer loaded on a PC where some of its mods are missing (the game would have loaded
+    without them and never matched the host's). The session ends and the page lists the missing mods, which also helps
+    a player who joins a game already running.
+  - NEW: the page, the launcher and the documentation say that MPFever is not made for other mods yet. Mods that change
+    the game by themselves (rename lines, assign terminals, change colours...) do it on each game separately and break
+    the synchronisation (issue #58: Auto Line Namer renamed the lines differently on each game). The README invites mod
+    authors to get in touch so their mods can be made compatible.
+  - FIX: nothing worked on a PC whose Windows account name has letters other than English ones (issue #59: "ö"; also
+    Cyrillic, Chinese...). The game's scripts could not open the files of the session folder, made in the user's
+    temporary folder: no Multiplayer button, no session. The session folder is now on a path the game can read: the
+    temporary folder's short (8.3) name, else C:\ProgramData\MPFever\sessions.
+
 0.3.19-experimental - tram tracks added to a street join the crossings on every game
   - FIX: tram tracks added to an existing street (or taken from it) with the street tool reached the crossings only on the
     game of the player who built them. The other games replayed the change as a street upgrade (the engine's

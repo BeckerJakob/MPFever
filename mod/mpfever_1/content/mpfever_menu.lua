@@ -100,6 +100,56 @@ local function listSaves()
 	return out
 end
 
+-- The mods of a savegame (MPFever left out), as the host sends them to the players of its lobby: "id|name|source"
+-- entries separated by ";;" (one line of menu_state.txt). The mod's display name and origin (Steam Workshop, mod.io...)
+-- come from the savegame's mod descriptions.
+local MOD_ID = "mpfever_1"
+local function modsOf(info)
+	local out, descs = {}, {}
+	pcall(function()
+		for _, d in ipairs(info.metadata.gameModDescs or {}) do
+			if d.modId and d.modId.name then descs[d.modId.name] = d end
+		end
+	end)
+	pcall(function()
+		for _, m in ipairs(info.mods or {}) do
+			local id = m.name
+			if id and id ~= "" and id ~= MOD_ID then
+				local d = descs[id]
+				out[#out + 1] = { id = id, name = d and d.name ~= "" and d.name or id, source = d and d.modSource or "" }
+			end
+		end
+	end)
+	return out
+end
+
+local function encodeMods(mods)
+	local parts = {}
+	local function clean(s) return (tostring(s or ""):gsub("[|;%c]", " ")) end
+	for _, m in ipairs(mods or {}) do parts[#parts + 1] = clean(m.id) .. "|" .. clean(m.name) .. "|" .. clean(m.source) end
+	return table.concat(parts, ";;")
+end
+
+local function decodeMods(s)
+	local out = {}
+	for e in (s or ""):gmatch("[^;]+") do
+		local id, name, source = e:match("^([^|]*)|([^|]*)|?(.*)$")
+		if id and id ~= "" then out[#out + 1] = { id = id, name = name ~= "" and name or id, source = source or "" } end
+	end
+	return out
+end
+
+-- whether a mod is installed on this PC (nil: unknown)
+local function modInstalled(id)
+	local ok, r = pcall(function()
+		local m = api.type.ModId.new()
+		m.name = id
+		return app.getUserProfile():getModRep():exists(m)
+	end)
+	if ok then return r and true or false end
+	return nil
+end
+
 -- loads a savegame of this player; the application script (mpfever_auto.lua) starts it once loaded
 local function loadSave(name)
 	local ns = app.SaveGameNamespace.getSavegame()
@@ -303,12 +353,15 @@ local function setup()
 			local a = asyncState:old()
 			if a and dataState:old() == nil and a:isCompleted() then
 				local d = a:get()
-				local image
+				local image, mods
 				if d and d.info then
-					local sh = d.info.metadata.screenshot
-					image = { native = sh.image_native:clone(), w = sh.width, h = sh.height }
+					pcall(function()
+						local sh = d.info.metadata.screenshot
+						image = { native = sh.image_native:clone(), w = sh.width, h = sh.height }
+					end)
+					mods = modsOf(d.info)
 				end
-				dataState:set({ image = image or false })
+				dataState:set({ image = image or false, mods = mods })
 			end
 		end)
 		react.onUnmount(function()
@@ -340,7 +393,7 @@ local function setup()
 						text(tp.save.timestamp and api.util.formatPosixTimestamp(tp.save.timestamp, api.type["enum"].DateFormat.MEDIUM) or "", "font-scale-body"),
 					}, nil, { padding = { 2, 6, 0, 6 } }),
 					gap(1, 8),
-					button(T("Héberger", "Host"), tp.onHost, { primary = true, enabled = tp.enabled, icon = "::/gui/menu/icons/menu_play.tga", size = { TILE_W - 8, 40 } }),
+					button(T("Héberger", "Host"), function() tp.onHost(d and d.mods) end, { primary = true, enabled = tp.enabled, icon = "::/gui/menu/icons/menu_play.tga", size = { TILE_W - 8, 40 } }),
 				}, nil, { size = { TILE_W, -1 }, padding = { 4, 4, 4, 4 }, image1 = CARD_SURFACE, background1 = { 0.16, 0.24, 0.32, 1 } }),
 			},
 		}
@@ -553,8 +606,53 @@ local function setup()
 			end
 			right[#right + 1] = box(H, actions)
 
+			-- the mods of the host's savegame, under its picture: the player who joins sees at once which ones are missing here
+			-- (the host's game cannot be loaded without them, see mpfever_auto.lua)
+			local leftCol = { SavePicture{ save = lobbySave, size = { SIDE_W, SIDE_W * 9 / 16 }, fallback = "::/gui/menu/images/main.tga" } }
+			local mods = decodeMods(st.hostMods)
+			if #mods > 0 then
+				local missing, names = {}, {}
+				for _, m in ipairs(mods) do
+					if not isHost and modInstalled(m.id) == false then missing[#missing + 1] = m end
+				end
+				local function label(m) return m.name .. (m.source ~= "" and " (" .. m.source .. ")" or "") end
+				local rows = {}
+				if #missing > 0 then
+					for _, m in ipairs(missing) do names[#names + 1] = label(m) end
+					rows[#rows + 1] = box(H, {
+						icon("::/gui/menu/icons/alert.tga"),
+						gap(8, 1),
+						text((T("Mods manquants : %s sur %s", "Missing mods: %s of %s"):gsub("%%s", tostring(#missing), 1):gsub("%%s", tostring(#mods), 1)), "font-scale-title-3, error"),
+					})
+					rows[#rows + 1] = gap(1, 4)
+					rows[#rows + 1] = text(table.concat(names, ", "), "font-scale-title-4", SIDE_W - 40)
+					rows[#rows + 1] = gap(1, 4)
+					rows[#rows + 1] = text(T("Installez-les (Steam Workshop ou mod.io) avant que l'hôte lance la partie : sans eux, sa partie ne peut pas être chargée.",
+						"Install them (Steam Workshop or mod.io) before the host starts the game: without them, the host's game cannot be loaded."), "font-scale-body, warning", SIDE_W - 40)
+				else
+					for _, m in ipairs(mods) do names[#names + 1] = label(m) end
+					rows[#rows + 1] = text((T("Mods de la partie : %s", "Mods of the game: %s"):gsub("%%s", tostring(#mods), 1))
+						.. (isHost and "" or T(" (tous installés)", " (all installed)")), "font-scale-title-3")
+					rows[#rows + 1] = gap(1, 4)
+					rows[#rows + 1] = text(table.concat(names, ", "), "font-scale-body", SIDE_W - 40)
+				end
+				rows[#rows + 1] = gap(1, 6)
+				rows[#rows + 1] = text(T("MPFever n'est pas encore prévu pour les mods : certains peuvent désynchroniser la partie.",
+					"MPFever is not made for mods yet: some can desynchronise the game."), "font-scale-body, warning", SIDE_W - 40)
+				local picH = 300
+				leftCol = {
+					SavePicture{ save = lobbySave, size = { SIDE_W, picH }, fallback = "::/gui/menu/images/main.tga" },
+					gap(1, 8),
+					builtin.ScrollArea{
+						meta = { styleSheet = style{ size = { SIDE_W, math.floor(SIDE_W * 9 / 16) - picH - 8 } } },
+						content = box(V, rows, nil, { padding = { 8, 12, 8, 12 }, background = { 1, 1, 1, 0.07 }, size = { SIDE_W - 20, -1 } }),
+						horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+						verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+					},
+				}
+			end
 			body[#body + 1] = box(H, {
-				SavePicture{ save = lobbySave, size = { SIDE_W, SIDE_W * 9 / 16 }, fallback = "::/gui/menu/images/main.tga" },
+				box(V, leftCol),
 				gap(24, 1),
 				box(V, right, nil, { size = { PAGE_W - SIDE_W - 40, SIDE_W * 9 / 16 } }),
 			})
@@ -580,7 +678,17 @@ local function setup()
 						meta = { localKey = "save-" .. tostring(s.saveName) },
 						save = s,
 						enabled = not busy,
-						onHost = function()
+						onHost = function(mods)
+							-- the savegame's mods, sent by MPFever.exe to the players of the lobby (read now if the tile had not yet)
+							if not mods then
+								pcall(function()
+									local a = app.getSavegameInfo(saveId(s))
+									local d = a and a:get()
+									if d and d.info then mods = modsOf(d.info) end
+								end)
+							end
+							writeFile("host_mods.txt", encodeMods(mods))
+							log("savegame mods: " .. #(mods or {}))
 							-- MPFever.exe opens the session as a lobby: the players join it here, then the host starts the game for everybody
 							request("host", s.saveName, playerName(), companies:old())
 						end,

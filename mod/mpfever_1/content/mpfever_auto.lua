@@ -23,7 +23,7 @@ end
 
 local S = { requested = false, frames = 0, readyStarted = false }
 
-local function loadSave(name)
+local function loadSave(name, fromMenu)
 	name = name or SAVE
 	local ns = app.SaveGameNamespace.getSavegame()
 	local found = nil
@@ -42,7 +42,7 @@ local function loadSave(name)
 	-- as the game's own load screen does when the player changes the mods of a savegame
 	local ok, async = pcall(app.getSavegameInfo, id)
 	if ok and async then
-		S.pending = { id = id, async = async, name = name, since = S.frames }
+		S.pending = { id = id, async = async, name = name, since = S.frames, fromMenu = fromMenu }
 		log("reading savegame '" .. name .. "' (" .. tostring(found.path) .. ")")
 	else
 		log("loading savegame '" .. name .. "' (details unavailable: " .. tostring(async) .. ")")
@@ -51,6 +51,41 @@ local function loadSave(name)
 end
 
 local MOD_ID = "mpfever_1"
+
+-- the savegame's mods not installed here: written to missing_mods.txt (one "id TAB name TAB origin" line each); true if any
+local function missingMods(info)
+	local okr, rep = pcall(function() return app.getUserProfile():getModRep() end)
+	if not okr or not rep then return false end
+	local descs = {}
+	pcall(function()
+		for _, d in ipairs(info.metadata.gameModDescs or {}) do
+			if d.modId and d.modId.name then descs[d.modId.name] = d end
+		end
+	end)
+	local lines = {}
+	for _, m in ipairs(info.mods or {}) do
+		if m.name ~= MOD_ID then
+			local ok, exists = pcall(function() return rep:exists(m) end)
+			if ok and exists == false then
+				local d = descs[m.name]
+				local name = d and d.name ~= "" and d.name or m.name
+				lines[#lines + 1] = (m.name .. string.char(9) .. name .. string.char(9) .. (d and d.modSource or "")):gsub("[" .. string.char(10, 13) .. "]", " ")
+			end
+		end
+	end
+	if #lines == 0 then return false end
+	-- (MPFever.exe must hear of it: loaded anyway if the file cannot be written)
+	if not (DIR and IO) then return false end
+	local f = IO.open(DIR .. BS .. "missing_mods.txt", "wb")
+	if not f then return false end
+	f:write(table.concat(lines, string.char(10)) .. string.char(10))
+	f:close()
+	-- (no resynchronisation load waits any more)
+	local fl = IO.open(DIR .. BS .. "resync_pending.txt", "wb")
+	if fl then fl:close() end
+	log("not loaded: " .. #lines .. " mod(s) of the host's game missing here")
+	return true
+end
 
 local function loadPending()
 	local p = S.pending
@@ -67,6 +102,9 @@ local function loadPending()
 		app.loadGame(p.id, false)
 		return
 	end
+	-- the host's game received from the main menu: not loaded when mods of it are missing on this PC (the game would load
+	-- without them, and never match the host's). MPFever.exe reads missing_mods.txt and shows them.
+	if p.fromMenu and missingMods(info) then return end
 	local details = api.type.SaveGameDetails.new(info)
 	local has = false
 	local mods = {}
@@ -122,7 +160,7 @@ local function menuLoad()
 	if fd then fd:write(seq) fd:close() end
 	local fl = IO.open(DIR .. BS .. "resync_pending.txt", "wb")
 	if fl then fl:write("1") fl:close() end
-	local ok, err = pcall(loadSave, name)
+	local ok, err = pcall(loadSave, name, true)
 	if not ok then log("menu load failed: " .. tostring(err)) end
 end
 
