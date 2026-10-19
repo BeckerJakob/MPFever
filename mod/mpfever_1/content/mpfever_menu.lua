@@ -478,6 +478,33 @@ local function setup()
 			end
 			right[#right + 1] = gap(1, 12)
 			if st.text and st.text ~= "" then right[#right + 1] = text(st.text, "font-scale-title-4", PAGE_W - SIDE_W - 60) end
+			-- the host's lobby: the addresses to give to the other players (public: looked up by MPFever.exe, "..." meanwhile,
+			-- "?" when unknown)
+			if isHost and st.publicAddr and st.publicAddr ~= "" then
+				local w = PAGE_W - SIDE_W - 60
+				local pub = st.publicAddr
+				local addrRows = {
+					text(T("Adresse à donner aux autres joueurs (Internet)", "Address to give to the other players (Internet)"), "font-scale-body"),
+					gap(1, 4),
+				}
+				if pub == "..." then
+					addrRows[#addrRows + 1] = text(T("Recherche de votre adresse publique...", "Looking up your public address..."), "font-scale-title-3")
+				elseif pub == "?" then
+					addrRows[#addrRows + 1] = text(T("Adresse publique introuvable : cherchez « mon adresse IP » sur Internet.", "Public address unknown: search « what is my IP » on the Internet."), "font-scale-title-4, warning", w - 24)
+				else
+					addrRows[#addrRows + 1] = text(pub, "font-scale-title-2", w - 24)
+				end
+				if st.port and st.port ~= "" then
+					addrRows[#addrRows + 1] = gap(1, 4)
+					addrRows[#addrRows + 1] = text((T("Le port TCP %s doit être redirigé vers ce PC sur votre box.", "TCP port %s must be forwarded to this PC on your router."):gsub("%%s", function() return st.port end)), "font-scale-body, warning", w - 24)
+				end
+				if st.localAddr and st.localAddr ~= "" then
+					addrRows[#addrRows + 1] = gap(1, 8)
+					addrRows[#addrRows + 1] = text(T("Même réseau local : ", "Same local network: ") .. st.localAddr, "font-scale-body", w - 24)
+				end
+				right[#right + 1] = gap(1, 10)
+				right[#right + 1] = box(V, addrRows, nil, { padding = { 10, 12, 10, 12 }, background = { 1, 1, 1, 0.07 }, size = { w, -1 } })
+			end
 			-- the download of the host's game: its percentage, from the text MPFever.exe writes
 			if st.phase == "downloading" then
 				local pct = tonumber((st.text or ""):match("(%d+)%s*%%"))

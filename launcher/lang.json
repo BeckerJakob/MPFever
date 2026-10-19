@@ -2861,19 +2861,6 @@
       "zh-CN": "给其他玩家发消息  ›",
       "zh-TW": "傳訊息給其他玩家  ›"
     },
-    "Lobby open (« {0} »). Other players join with your IP address, port {1} (TCP, to forward on your router for the Internet). Local address: {2}. Start the game when everybody is here.": {
-      "de": "Lobby geöffnet (« {0} »). Die anderen Spieler treten mit deiner IP-Adresse bei, Port {1} (TCP, für das Internet im Router weiterleiten). Lokale Adresse: {2}. Starte das Spiel, wenn alle da sind.",
-      "es": "Sala abierta (« {0} »). Los demás jugadores se unen con tu dirección IP, puerto {1} (TCP, redirígelo en tu router para jugar por Internet). Dirección local: {2}. Inicia la partida cuando estén todos.",
-      "it": "Lobby aperta (« {0} »). Gli altri giocatori si uniscono con il tuo indirizzo IP, porta {1} (TCP, da inoltrare sul router per Internet). Indirizzo locale: {2}. Avvia la partita quando ci sono tutti.",
-      "nl": "Lobby geopend (« {0} »). De andere spelers doen mee met jouw IP-adres, poort {1} (TCP, voor internet doorsturen op je router). Lokaal adres: {2}. Start het spel als iedereen er is.",
-      "pl": "Poczekalnia otwarta (« {0} »). Pozostali gracze dołączają przez Twój adres IP, port {1} (TCP, do przekierowania na routerze dla Internetu). Adres lokalny: {2}. Rozpocznij grę, gdy wszyscy będą obecni.",
-      "pt-BR": "Sala aberta (« {0} »). Os outros jogadores entram com seu endereço IP, porta {1} (TCP, a redirecionar no roteador para a Internet). Endereço local: {2}. Inicie a partida quando todos estiverem aqui.",
-      "ru": "Лобби открыто (« {0} »). Остальные игроки подключаются по вашему IP-адресу, порт {1} (TCP, для Интернета пробросьте его на роутере). Локальный адрес: {2}. Запустите игру, когда все соберутся.",
-      "ja": "ロビーを開きました（「{0}」）。他のプレイヤーはあなたの IP アドレス、ポート {1} で参加します（TCP。インターネット経由ではルーターで転送してください）。ローカルアドレス：{2}。全員がそろったらゲームを開始してください。",
-      "ko": "로비를 열었습니다 (« {0} »). 다른 플레이어는 내 IP 주소, 포트 {1}로 참가합니다 (TCP, 인터넷용으로 공유기에서 포워딩). 로컬 주소: {2}. 모두 모이면 게임을 시작하세요.",
-      "zh-CN": "大厅已开启（“{0}”）。其他玩家通过你的 IP 地址加入，端口 {1}（TCP，如需通过互联网游玩请在路由器上转发）。本地地址：{2}。所有人到齐后开始游戏。",
-      "zh-TW": "大廳已開啟（「{0}」）。其他玩家透過你的 IP 位址加入，連接埠 {1}（TCP，若要透過網際網路遊玩請在路由器上轉送）。本機位址：{2}。所有人到齊後開始遊戲。"
-    },
     "=== New connection: the previous session ends ===": {
       "de": "=== Neue Verbindung: die vorherige Sitzung endet ===",
       "es": "=== Nueva conexión: termina la sesión anterior ===",
@@ -5330,6 +5317,84 @@
       "ko": "함께 플레이: 게임을 호스트하거나 참가하세요",
       "zh-CN": "一起玩：创建游戏或加入游戏",
       "zh-TW": "一起玩：建立遊戲或加入遊戲"
+    },
+    "Address to give to the other players (Internet)": {
+      "de": "Adresse für die anderen Spieler (Internet)",
+      "es": "Dirección para los demás jugadores (Internet)",
+      "it": "Indirizzo da dare agli altri giocatori (Internet)",
+      "nl": "Adres voor de andere spelers (internet)",
+      "pl": "Adres dla innych graczy (Internet)",
+      "pt-BR": "Endereço para os outros jogadores (Internet)",
+      "ru": "Адрес для других игроков (Интернет)",
+      "ja": "他のプレイヤーに伝えるアドレス（インターネット）",
+      "ko": "다른 플레이어에게 알려줄 주소 (인터넷)",
+      "zh-CN": "提供给其他玩家的地址（互联网）",
+      "zh-TW": "提供給其他玩家的位址（網際網路）"
+    },
+    "Lobby open (« {0} »). Start the game when everybody is here.": {
+      "de": "Lobby geöffnet (« {0} »). Starte das Spiel, wenn alle da sind.",
+      "es": "Sala abierta (« {0} »). Lanza la partida cuando estén todos.",
+      "it": "Stanza aperta (« {0} »). Avvia la partita quando ci sono tutti.",
+      "nl": "Lobby geopend (« {0} »). Start het spel als iedereen er is.",
+      "pl": "Poczekalnia otwarta (« {0} »). Uruchom grę, gdy wszyscy będą obecni.",
+      "pt-BR": "Sala aberta (« {0} »). Inicie o jogo quando todos estiverem aqui.",
+      "ru": "Лобби открыто (« {0} »). Запустите игру, когда все соберутся.",
+      "ja": "ロビーを開きました（« {0} »）。全員そろったらゲームを開始してください。",
+      "ko": "로비가 열렸습니다 (« {0} »). 모두 모이면 게임을 시작하세요.",
+      "zh-CN": "大厅已开启（« {0} »）。人齐后开始游戏。",
+      "zh-TW": "大廳已開啟（« {0} »）。人齊後開始遊戲。"
+    },
+    "Looking up your public address...": {
+      "de": "Deine öffentliche Adresse wird ermittelt...",
+      "es": "Buscando tu dirección pública...",
+      "it": "Ricerca del tuo indirizzo pubblico...",
+      "nl": "Je openbare adres wordt opgezocht...",
+      "pl": "Wyszukiwanie twojego adresu publicznego...",
+      "pt-BR": "Procurando seu endereço público...",
+      "ru": "Определение вашего публичного адреса...",
+      "ja": "公開アドレスを確認中...",
+      "ko": "공용 주소를 확인하는 중...",
+      "zh-CN": "正在查询你的公网地址...",
+      "zh-TW": "正在查詢你的公開位址..."
+    },
+    "Public address unknown: search « what is my IP » on the Internet.": {
+      "de": "Öffentliche Adresse unbekannt: suche im Internet nach « Wie ist meine IP ».",
+      "es": "Dirección pública desconocida: busca « cuál es mi IP » en Internet.",
+      "it": "Indirizzo pubblico sconosciuto: cerca « qual è il mio IP » su Internet.",
+      "nl": "Openbaar adres onbekend: zoek « wat is mijn IP » op internet.",
+      "pl": "Nieznany adres publiczny: wyszukaj « jaki mam adres IP » w Internecie.",
+      "pt-BR": "Endereço público desconhecido: pesquise « qual é o meu IP » na Internet.",
+      "ru": "Публичный адрес неизвестен: найдите в Интернете « мой IP ».",
+      "ja": "公開アドレスが不明です：インターネットで「IPアドレス確認」を検索してください。",
+      "ko": "공용 주소를 알 수 없습니다: 인터넷에서 « 내 IP 확인 »을 검색하세요.",
+      "zh-CN": "公网地址未知：请在网上搜索« 我的IP »。",
+      "zh-TW": "公開位址未知：請在網路上搜尋« 我的IP »。"
+    },
+    "Same local network: ": {
+      "de": "Gleiches lokales Netzwerk: ",
+      "es": "Misma red local: ",
+      "it": "Stessa rete locale: ",
+      "nl": "Hetzelfde lokale netwerk: ",
+      "pl": "Ta sama sieć lokalna: ",
+      "pt-BR": "Mesma rede local: ",
+      "ru": "Та же локальная сеть: ",
+      "ja": "同じローカルネットワーク：",
+      "ko": "같은 로컬 네트워크: ",
+      "zh-CN": "同一局域网：",
+      "zh-TW": "同一區域網路："
+    },
+    "TCP port %s must be forwarded to this PC on your router.": {
+      "de": "Der TCP-Port %s muss im Router auf diesen PC weitergeleitet werden.",
+      "es": "El puerto TCP %s debe redirigirse a este PC en tu router.",
+      "it": "La porta TCP %s deve essere inoltrata a questo PC sul router.",
+      "nl": "TCP-poort %s moet op je router naar deze pc worden doorgestuurd.",
+      "pl": "Port TCP %s musi być przekierowany na ten komputer w routerze.",
+      "pt-BR": "A porta TCP %s deve ser redirecionada para este PC no seu roteador.",
+      "ru": "TCP-порт %s должен быть перенаправлен на этот ПК в роутере.",
+      "ja": "ルーターでTCPポート %s をこのPCに転送する必要があります。",
+      "ko": "공유기에서 TCP 포트 %s를 이 PC로 포워딩해야 합니다.",
+      "zh-CN": "必须在路由器上将 TCP 端口 %s 转发到这台电脑。",
+      "zh-TW": "必須在路由器上將 TCP 連接埠 %s 轉發到這台電腦。"
     }
   }
 }

@@ -72,6 +72,9 @@ namespace MPFever
         // everybody at once (each game loads the host's savegame at the same time); a player may still join a running game
         volatile bool lobbyOpen, lobbyStarting;
         string lobbySave = "", lobbyPlayers = "";
+        // the host's addresses shown in its lobby: public (Internet, "" while looked up, "?" when unknown) and local network
+        string lobbyPublic = "", lobbyLocal = "";
+        int lobbyPort;
         const long Step = 200;                 // game time units per simulation step
         const double UnitsPerSecond = 1000;    // game time units per real second at x1
         const double HashEverySeconds = 10;
@@ -893,6 +896,9 @@ namespace MPFever
                     ["loadSeq"] = menuLoadSeq,
                     ["lobby"] = lobbyOpen ? "host" : (menuPhase == "lobby" ? "client" : ""),
                     ["lobbySave"] = lobbyOpen ? lobbySave : "",
+                    ["publicAddr"] = lobbyOpen ? (lobbyPublic == "" ? "..." : lobbyPublic) : "",
+                    ["localAddr"] = lobbyOpen ? lobbyLocal : "",
+                    ["port"] = lobbyOpen ? lobbyPort.ToString(CultureInfo.InvariantCulture) : "",
                     ["invite"] = steamConnect != null ? "1" : "",
                     ["lang"] = L.Code,
                 });
@@ -967,18 +973,28 @@ namespace MPFever
                 catch (Exception e) { menuPhase = "error"; menuText = T("Impossible d'héberger : ", "Cannot host: ") + e.Message; MenuStatus(); return; }
                 // the lobby opens: the savegame is loaded once the host starts the game (see StartLobbyGame), by every game at once
                 lobbySave = arg; lobbyOpen = true; lobbyStarting = false;
+                lobbyPort = port; lobbyPublic = "";
+                lobbyLocal = string.Join(", ", LocalAddresses().Split(',').Select(a => a.Trim()).Where(a => a != "" && a != "?").Select(a => a + ":" + port));
                 // Steam: friends can join from their friends list or an invitation
                 new Thread(() =>
                 {
                     // the public IPv4 and, when this PC has one, its IPv6 (behind DS-Lite only the IPv6 reaches it)
                     var v6 = LoadSettings().TryGetValue("ipv6", out var i6) && i6.Trim() == "0" ? new List<string>() : NetAddr.PublicIPv6List();
-                    steamConnect = "+mpfever_connect " + PublicAddress() + ":" + port + string.Concat(v6.Select(a => "," + NetAddr.Show(a, port)));
+                    var pub = PublicAddress();
+                    // (PublicAddress falls back to a local address when the lookup fails or is turned off)
+                    bool known = !LocalAddresses().Split(',').Select(a => a.Trim()).Contains(pub);
+                    var shown = new List<string>();
+                    if (known) shown.Add(pub + ":" + port);
+                    shown.AddRange(v6.Select(a => NetAddr.Show(a, port)));
+                    lobbyPublic = shown.Count > 0 ? string.Join(", ", shown) : "?";
+                    steamConnect = "+mpfever_connect " + pub + ":" + port + string.Concat(v6.Select(a => "," + NetAddr.Show(a, port)));
                     SteamCtl("presence", steamConnect);
                     Log.Ok(T("Steam : invitations possibles (", "Steam: invitations enabled (") + steamConnect + ")");
                     MenuStatus();
                 }) { IsBackground = true, Name = "Steam presence" }.Start();
                 menuPhase = "lobby";
-                menuText = F("Salon ouvert (« {0} »). Les autres joueurs rejoignent avec votre adresse IP, port {1} (TCP, à rediriger sur votre box pour Internet). Adresse locale : {2}. Lancez la partie quand tout le monde est là.", "Lobby open (« {0} »). Other players join with your IP address, port {1} (TCP, to forward on your router for the Internet). Local address: {2}. Start the game when everybody is here.", arg, port, LocalAddresses() + string.Concat(NetAddr.PublicIPv6List().Select(a6 => ", " + NetAddr.Show(a6, port))));
+                // (the addresses to give: on the page, from publicAddr / localAddr)
+                menuText = F("Salon ouvert (« {0} »). Lancez la partie quand tout le monde est là.", "Lobby open (« {0} »). Start the game when everybody is here.", arg);
                 MenuStatus();
             }
             else if (cmd == "start")
@@ -1079,7 +1095,7 @@ namespace MPFever
             hashN = 0; syncText = "—"; actsRelayed = actRefused = actFails = desyncs = 0;
             resyncing = false; resyncDropping = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = ""; lock (partStreak) partStreak.Clear();
             joinPending = false;
-            lobbyOpen = lobbyStarting = false; lobbySave = ""; lobbyPlayers = "";
+            lobbyOpen = lobbyStarting = false; lobbySave = ""; lobbyPlayers = ""; lobbyPublic = ""; lobbyLocal = "";
             joinedAddr = null;
             if (steamConnect != null) { steamConnect = null; SteamCtl("clear", null); }
             if (menuGame != null)
