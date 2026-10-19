@@ -2663,6 +2663,20 @@ local function upgradePlan(margs)
 	if #tAdd > 0 or #tRem > 0 then return nil end
 	local added, removed = st.addedSegments or {}, st.removedSegments or {}
 	if #added == 0 or #added ~= #removed then return nil end
+	-- tram tracks added to (or taken from) a street: the tool also changes the lane connections of its crossings (node
+	-- configurations), which replaceSegment leaves as they were (the tracks stopped at the crossings): the native proposal
+	-- is replayed instead, node configurations included
+	if #(st.nodeConfigsToAdd or {}) > 0 or #(st.nodeConfigsToRemove or {}) > 0 then
+		local function lanes(s) return type(s.comp) == "table" and type(s.comp.laneConfigs) == "table" and C.laneSignature(s.comp.laneConfigs) or nil end
+		for _, ad in ipairs(added) do
+			for _, rm in ipairs(removed) do
+				local ac, rc = ad.comp or {}, rm.comp or {}
+				local same = (rc.node0 == ac.node0 and rc.node1 == ac.node1) or (rc.node0 == ac.node1 and rc.node1 == ac.node0)
+				-- (same street type, other lanes: tracks; a new street type keeps the upgrade's replay)
+				if same and ac.roadTemplate == rc.roadTemplate and lanes(ad) ~= lanes(rm) then return nil end
+			end
+		end
+	end
 	local plan = {}
 	for _, ad in ipairs(added) do
 		local c = ad.comp or {}

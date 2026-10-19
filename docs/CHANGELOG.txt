@@ -1,6 +1,14 @@
 MPFever - Changelog
 ===================
 
+0.3.19-experimental - tram tracks added to a street join the crossings on every game
+  - FIX: tram tracks added to an existing street (or taken from it) with the street tool reached the crossings only on the
+    game of the player who built them. The other games replayed the change as a street upgrade (the engine's
+    replaceSegment): the street got its tracks, but the crossings kept the lane connections of a street without tram, so
+    the tracks stopped at every crossing and trams could not turn or go straight on. The tool also changes the crossings'
+    lane connections (node configurations): such a change (same street type, other lanes) is now replayed from the tool's
+    own proposal, node configurations included. Upgrades to another street type are replayed as before.
+
 0.3.18-experimental - a new multiplayer page in the main menu
   - NEW: the small MPFever window of the main menu is replaced by a full page in the game's own style (the frame, title
     bar and back button of « Load Game »), opened by a « Multiplayer » card at the top left of the main menu.

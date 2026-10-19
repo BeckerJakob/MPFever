@@ -2,7 +2,7 @@
 
 **Build your transport empire together.** MPFever adds multiplayer to Transport Fever 3. You and your friends play the same world, each in your own game, over the internet or a local network. You can share one company or each run your own.
 
-> ⚠️ **Experimental version (0.3.18).** It works, but expect bugs, short pauses and the occasional crash. Back up your savegames, and please send feedback: it decides what comes next.
+> ⚠️ **Experimental version (0.3.19).** It works, but expect bugs, short pauses and the occasional crash. Back up your savegames, and please send feedback: it decides what comes next.
 
 ## Features
 
