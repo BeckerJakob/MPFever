@@ -5,7 +5,7 @@ Experimental multiplayer for Transport Fever 3. Several players play the same wo
 - in **one shared company** (co-op);
 - or **each with their own company**. This second mode is still in development and has many bugs: use it to test and help.
 
-The game starts from `MPFever.exe`. A multiplayer button in the main menu lets you open a lobby with one of your savegames or join a host by IP address. The players gather in the lobby, then the host starts the game and every game loads it at the same time; the host's game is received automatically. Joining a game already running works too, and Steam invitations are supported.
+The game starts from `MPFever.exe`. A multiplayer page in the main menu, in the game's own style, lets you open a lobby with one of your savegames or join a host by IP address. The players gather in the lobby, then the host starts the game and every game loads it at the same time; the host's game is received automatically. Joining a game already running works too, and Steam invitations are supported.
 
 A world can also run on a **dedicated server** (`MPFever.exe --server`): a PC of its own runs the world, nobody plays on it, and the players join it as they join a host. See [SERVER](docs/SERVER.txt).
 
@@ -50,7 +50,7 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 
 1. Download `MPFever-<version>.zip` from the [releases](https://github.com/dkdknight/MPFever/releases) and unzip it anywhere (a dedicated server takes `MPFever-<version>-server.zip`). Every player needs the same version.
 2. Start `MPFever.exe`: it finds the game, installs the mod and starts Transport Fever 3.
-3. In the game's main menu, click **Multiplayer (MPFever)**. The host opens a lobby with one of their savegames; the others join the host's address or accept a Steam invitation.
+3. In the game's main menu, click the **Multiplayer** card (top left). On the multiplayer page, the host clicks **Host** under one of their savegames to open a lobby; the others join the host's address or accept a Steam invitation.
 4. The host clicks **Start the game**, and every game loads it.
 
 From 0.3.15 on, MPFever updates itself: a new release is installed at startup (your settings and logs are kept), so every player stays on the same version. `autoupdate=ask` in `mpfever_settings.txt` asks first, `autoupdate=0` turns it off.
@@ -154,7 +154,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Experimental (0.3.17). Supported game builds:
+Experimental (0.3.18). Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.

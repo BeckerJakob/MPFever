@@ -1,4 +1,4 @@
-MPFever 0.3.17-experimental - Installation and first game
+MPFever 0.3.18-experimental - Installation and first game
 ========================================================
 
 REQUIREMENTS (every player)
@@ -54,26 +54,28 @@ c) Same local network: use the host's local address (for example 192.168.1.20).
 4. PLAY
 -------
 Everybody: start MPFever.exe. Transport Fever 3 starts by itself (the MPFever window
-stays minimized). In the game's main menu, click "Multiplayer (MPFever)" (under the
-cards) and type your player name.
+stays minimized). In the game's main menu, click the "Multiplayer" card (top left,
+under your profile): the multiplayer page opens. Type your player name at its top right.
 
 Host:
-1. "Host a game", click the savegame to share, then "Open the lobby".
-2. The lobby stays in the main menu: your friends join it, and the MPFever window lists
-   the players who are there.
-3. Invite friends: click "Invite Steam friends" in the MPFever window of the main menu
-   (or friends right-click you in their Steam friends list, "Join game").
+1. Tab "Host a game": choose the company mode (one company for everybody, or one per
+   player), then click "Host" under the savegame to share (the field at the right of
+   the list filters the savegames by name).
+2. The lobby opens on the same page: your friends join it, and the page lists the
+   players who are there.
+3. Invite friends: click "Invite Steam friends" (or friends right-click you in their
+   Steam friends list, "Join game").
 4. When everybody is there, click "Start the game": every player receives your savegame
-   and every game loads it at the same time.
+   and every game loads it at the same time. "Close the lobby" cancels.
 
 Other players, either:
 - accept the host's Steam invitation (Transport Fever 3 and MPFever start by
-  themselves if needed), or
-- "Join a game", type the host's address (for example 89.12.34.56 or
+  themselves if needed; the multiplayer page opens by itself), or
+- tab "Join a game": type the host's address (for example 89.12.34.56 or
   89.12.34.56:28090), then "Join". A dedicated server may ask for a password: type it
   in the "Password" field before "Join".
 In the lobby, wait for the host to start the game: the host's game is sent to you
-(progress shown in the MPFever window) and loads by itself.
+(progress shown on the multiplayer page) and loads by itself.
 You can also join a game that is already running: then every game pauses and reloads
 the host's game for a few seconds, and everybody continues together.
 
@@ -101,7 +103,7 @@ TROUBLESHOOTING
   installed in one of its libraries.
 - "Cannot connect": check the address, the port, the host's firewall / port
   forwarding, or use a virtual LAN.
-- No "Multiplayer (MPFever)" button in the main menu: the game was not started by
+- No "Multiplayer" card in the main menu: the game was not started by
   MPFever.exe, or another winhttp.dll is in the game folder (see the MPFever log).
 - The game shows "press any key" after a resynchronisation and does not continue: press
   a key, and please report it (with the logs, see README.txt).

@@ -1,6 +1,23 @@
 MPFever - Changelog
 ===================
 
+0.3.18-experimental - a new multiplayer page in the main menu
+  - NEW: the small MPFever window of the main menu is replaced by a full page in the game's own style (the frame, title
+    bar and back button of « Load Game »), opened by a « Multiplayer » card at the top left of the main menu.
+    - « Host a game » tab: the savegames as tiles with their picture, name and date, five per row, with a filter by name;
+      « Host » under a savegame opens the lobby. The company mode is chosen above them with two large buttons (the
+      experimental mode says so in orange).
+    - « Join a game » tab: the host's address and the password of a dedicated server, then « Join »; a reminder that a
+      Steam friend can be joined from the friends list.
+    - While something runs (lobby, connection, download, loading), the page shows it: the savegame's picture, what
+      happens, a progress bar for the host's game being received, the players (the host marked), and the buttons « Start
+      the game », « Invite Steam friends », « Close the lobby » / « Leave the lobby » / « Cancel ».
+    - The last error (cannot connect, lobby closed...) shows in red above the tabs.
+    - Your player name is at the top right of the page; the first time, it is your Steam name.
+    - A session started without the page (a Steam invitation accepted) opens it by itself; the page leaves when the game
+      loads. Escape or « Back » returns to the main menu.
+  - Translations: the page's texts in the 11 other languages.
+
 0.3.17-experimental - 0.3.16 did not start a game
   - FIX (issue #56): in 0.3.16 the game never started: both games loaded the savegame, then nobody was ready. The mod's main
     file had two local variables more than the game allows (Lua's 200 in a file's main chunk, of which the game takes
