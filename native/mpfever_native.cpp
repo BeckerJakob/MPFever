@@ -1475,6 +1475,27 @@ extern "C" void* AddDetour(void* list, void* out, void* cmd, void* done, void* p
             }
         }
     }
+    {   // Refunds (issue #61, found by Steelworm): a Context's refund time-out (float at +0x364, then the refund factor 0.75 at
+        // +0x368 and the size of refundableEntities at +0x380) is the game's bulldozeRefundTimeOut (60 s) in a tool's command
+        // but 0 in a script's, and with 0 the engine ignores the list. The replays carry their builder's list (G.refundInto):
+        // a script's world-build command whose Context holds entries gets the tools' time-out, learned from a tool's command.
+        // MPFEVER_REFUNDTIMEOUT=0 turns it off. Offsets of build 40420.
+        static float refundTimeOut = 60.0f;
+        static int refundOn = -1;
+        if (refundOn < 0) { char v[4]; refundOn = (GetEnvironmentVariableA("MPFEVER_REFUNDTIMEOUT", v, 3) > 0 && v[0] == '0') ? 0 : 1; }
+        u8* pay = cmd ? *(u8**)cmd : 0;
+        if (refundOn && pay && Readable(pay, 0x9c0) && *(u8*)(pay + 0x9b8) == 52) {
+            float* to = (float*)(pay + 0x364);
+            u64 nRefund = *(u64*)(pay + 0x380);
+            if (IsUiSite(caller)) {
+                if (*to > 0.0f && *to < 100000.0f) refundTimeOut = *to;
+            } else if (*to == 0.0f && nRefund > 0 && nRefund < 100000) {
+                *to = refundTimeOut;
+                static long shownR = 0;
+                if (shownR++ < 20) { Buf b; b.str("refund time-out ").dec((int)refundTimeOut).str(" s given to a script's build with ").dec((int)nRefund).str(" refundable entities"); LogLine(b); }
+            }
+        }
+    }
     if (g_dumpOn) { u8* pay = cmd ? *(u8**)cmd : 0; if (pay && Readable(pay, 0x9c0) && *(u8*)(pay + 0x9b8) == 52) { char t[16]; Buf tb; tb.str("c").hex(caller); for (int i = 0; i < tb.n && i < 15; i++) t[i] = tb.s[i]; t[tb.n < 15 ? tb.n : 15] = 0; DumpPayload(pay, t); } }
     if (IsUiSite(caller)) {
         u8* pay = cmd ? *(u8**)cmd : 0;

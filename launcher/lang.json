@@ -5551,6 +5551,58 @@
       "ko": " (모두 설치됨)",
       "zh-CN": "（全部已安装）",
       "zh-TW": "（全部已安裝）"
+    },
+    "Reduce": {
+      "de": "Verkleinern",
+      "es": "Reducir",
+      "it": "Riduci",
+      "nl": "Verkleinen",
+      "pl": "Zmniejsz",
+      "pt-BR": "Reduzir",
+      "ru": "Свернуть",
+      "ja": "縮小",
+      "ko": "축소",
+      "zh-CN": "缩小",
+      "zh-TW": "縮小"
+    },
+    "Expand": {
+      "de": "Vergrößern",
+      "es": "Ampliar",
+      "it": "Espandi",
+      "nl": "Vergroten",
+      "pl": "Rozwiń",
+      "pt-BR": "Expandir",
+      "ru": "Развернуть",
+      "ja": "拡大",
+      "ko": "확장",
+      "zh-CN": "展开",
+      "zh-TW": "展開"
+    },
+    "Narrower": {
+      "de": "Schmaler",
+      "es": "Más estrecha",
+      "it": "Più stretta",
+      "nl": "Smaller",
+      "pl": "Węższe",
+      "pt-BR": "Mais estreita",
+      "ru": "Уже",
+      "ja": "幅を狭く",
+      "ko": "좁게",
+      "zh-CN": "变窄",
+      "zh-TW": "變窄"
+    },
+    "Wider": {
+      "de": "Breiter",
+      "es": "Más ancha",
+      "it": "Più larga",
+      "nl": "Breder",
+      "pl": "Szersze",
+      "pt-BR": "Mais larga",
+      "ru": "Шире",
+      "ja": "幅を広く",
+      "ko": "넓게",
+      "zh-CN": "变宽",
+      "zh-TW": "變寬"
     }
   }
 }

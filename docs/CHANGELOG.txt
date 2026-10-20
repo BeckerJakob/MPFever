@@ -1,6 +1,42 @@
 MPFever - Changelog
 ===================
 
+0.3.21-experimental - stations, stops and street upgrades replayed alike; paused builds shipped; smaller window
+  - FIX: editing a rail station could crash the other games (issues #65, #67). A modular station whose tracks were set
+    to standard or high-speed track was not recognised as a station: its edit was rebuilt by the script forms, then in
+    two steps, and the engine asserted (a segment removed twice, then a missing component). Stations, depots, airports
+    and harbours are now recognised by their construction file, whatever their tracks, and replayed as the tool's own
+    native proposal. If that fails for the edit of an existing station, the host's game is reloaded instead of trying
+    the forms that crash.
+  - FIX: a new station built by a guest was refused on the host's game, again after each resynchronisation (#66): the
+    same detection, the new station now goes the native construction way.
+  - FIX: while the session was paused, a player's own builds could be taken for replays of the other player's builds
+    and never shipped (#64, #66): the player kept a station the others did not have, and the games went out of sync.
+    Each station replay counted one build too many (its conversion command, refused on purpose, never builds); the
+    counts added up while the game time stood still. A replay the engine refuses is now taken off the count.
+  - FIX: a bus stop or a signal replayed on the other games could reshape the street around it (#63: 4 segments and 2
+    nodes there, 1 segment on the builder's game), and every later entity was numbered differently: desyncs on edges,
+    node configurations and owners. The replay now uses the stop tool's own settings (the street graph is not cleaned
+    up). MPFEVER_STOPCLEANUP=1 brings back the old setting.
+  - FIX: a street upgrade whose tool gave its replacement maps is replayed with them (the new segments get the
+    builder's numbers), as the other native builds (#64). MPFEVER_UPGRADEPLAN=1: as before.
+  - FIX: one company per player: the savegame company's rank stood still (#63: the bar stuck at 3332 of 3600) while
+    the game announced a new headquarters level it could not take. Its experience now follows the game's own
+    experience while that one is higher. MPFEVER_RANK1OWN=0: as before.
+  - FIX: refunds of a build demolished within 60 s (#61, found by Steelworm): the native module gives a script's build
+    that carries refundable entities the refund time-out of the tools, so the replays get the same refund as the
+    builder. MPFEVER_REFUNDTIMEOUT=0 turns it off.
+  - FIX: widening a town street (a street upgrade that moves town buildings, with trees) crashed the other games (#65):
+    without the tool's replacement maps it was rebuilt by the script forms, whose lanes the engine asserted on. It is now
+    replayed with the engine's own street upgrade, which moves the same town buildings on every game.
+    MPFEVER_TOWNUPGRADE=0: as before.
+  - FIX: Steam reinstalled in another folder: MPFever read a stale Steam folder from the registry (the mod was installed
+    nowhere, no savegame found). It now takes the first Steam folder that holds steam.exe, then the running Steam's.
+  - NEW: the in-game MPFever window can be reduced to a small card (sync, players, chat) and expanded again, and made
+    narrower or wider with « − / + » (#68).
+  - Connections: TCP keepalive on both sides, so that a connection that died without a word is noticed within about
+    half a minute (#60).
+
 0.3.20-experimental - the lobby shows the mods missing on each player's PC; Windows accounts with accents
   - NEW: mod check. When the host opens a lobby, its menu reads the mods of the chosen savegame and MPFever sends the
     list to the players of the lobby. Their multiplayer page shows it under the savegame's picture: the missing mods in

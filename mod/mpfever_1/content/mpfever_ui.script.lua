@@ -941,7 +941,51 @@ local function installSession(react, builtin)
 	-- MPFever's window: stays open while playing, can be moved and closed
 	U.SessionWindow = react.RegisterWrapperRecipe("MPFeverSessionWindow", builtin.Window, function(wp)
 		local st = useStatus(react)
+		-- reduced to one small card (issue #68): the sync, the players and the chat, kept for the session
+		local small = react.useState(U.sessionSmall == true)
+		-- its width, adjustable by steps (the game's windows cannot be resized with the mouse), kept for the session
+		-- (every state before the reduced card's early return: the same hooks on every render)
+		local width = react.useState(U.sessionWidth or 540)
+		local function toggle()
+			U.sessionSmall = not small:old()
+			small:set(U.sessionSmall)
+		end
+		if small:old() then
+			local sync, syncCls = syncLine(st)
+			local link, linkCls = linkLine(st)
+			local mini = {}
+			if link and linkCls ~= "success" then mini[#mini + 1] = row { dot(linkCls), text("  " .. link, nil, linkCls) } end
+			mini[#mini + 1] = row { dot(syncCls), text("  " .. sync, nil, syncCls) }
+			mini[#mini + 1] = row { icon(ICON_PLAYERS, 22), text("  " .. T("Joueurs", "Players") .. "  (" .. playerCount(st) .. ")") }
+			mini[#mini + 1] = row {
+				builtin.Button { meta = { class = "secondary" }, content = icon(ICON_CHAT, 22), onClick = function() if U.openChat then U.openChat() end end },
+				text("  "),
+				builtin.Button { meta = { class = "secondary" }, content = text(T("Agrandir", "Expand")), onClick = toggle },
+			}
+			return builtin.Window {
+				title = "MPFever",
+				id = "window.mpfever.session",
+				initialX = 0.98,
+				initialY = 0.12,
+				movable = true,
+				closable = true,
+				onClose = wp.onClose,
+				content = builtin.Component { meta = { styleSheet = style { size = { 280, -1 } } }, layout = builtin.BoxLayout { orientation = V, children = mini } },
+			}
+		end
 		local rows = {}
+		local function widen(d)
+			local w = math.max(400, math.min(900, width:old() + d))
+			U.sessionWidth = w
+			width:set(w)
+		end
+		rows[#rows + 1] = row {
+			builtin.Button { meta = { class = "secondary" }, content = text(T("Réduire", "Reduce")), onClick = toggle },
+			text("  "),
+			builtin.Button { meta = { class = "secondary", tooltip = T("Plus étroite", "Narrower") }, content = text("  -  "), onClick = function() widen(-80) end },
+			text(" "),
+			builtin.Button { meta = { class = "secondary", tooltip = T("Plus large", "Wider") }, content = text("  +  "), onClick = function() widen(80) end },
+		}
 		if st and st.host then
 			-- (a dedicated server: its name as its settings write it)
 			local hostText = st.server == "1" and C.Tf("Serveur dédié : %s", "Dedicated server: %s", (st.title and st.title ~= "") and st.title or st.host)
@@ -988,7 +1032,8 @@ local function installSession(react, builtin)
 			closable = true,
 			onClose = wp.onClose,
 			-- wide enough for the title and the longest lines (the window takes its content's size)
-			content = builtin.Component { meta = { styleSheet = style { size = { 540, -1 } } }, layout = builtin.BoxLayout { orientation = V, children = rows } },
+			pinnable = true,
+			content = builtin.Component { meta = { styleSheet = style { size = { width:old(), -1 } } }, layout = builtin.BoxLayout { orientation = V, children = rows } },
 		}
 	end)
 

@@ -2001,6 +2001,12 @@ local function handleEvent(userParams, state, src, id, name, param)
 			st.rcost = st.rcost or {}
 			st.rcost[#st.rcost + 1] = { at = gameTime(), uid = param.uid, cost = tonumber(param.cost), co = param.co, got = 0, n = 0 }
 			while #st.rcost > 8 do table.remove(st.rcost, 1) end
+		elseif name == "replay_unused" then
+			-- (a counted replay the engine refused: no build of it will come, see replaySend)
+			if st.replay and st.replay.at == gameTime() and st.replay.n > 0 then
+				st.replay.n = st.replay.n - 1
+				log("replay refused here: " .. st.replay.n .. " build(s) still expected at t=" .. tostring(st.replay.at))
+			end
 		elseif name == "replaying" then
 			st.replay = { at = gameTime(), n = ((st.replay and st.replay.at == gameTime()) and st.replay.n or 0) + 1 }
 			-- (what it builds, when known: see C.buildSig)
@@ -2120,6 +2126,8 @@ local function parseLine(line)
 end
 
 local function toSim(name, param)
+	-- (a replay announced to the simulation: the next replaySend is the command it counts, see replaySend)
+	if name == "replaying" then G.replayCounted = (G.replayCounted or 0) + 1 end
 	O.sendCommand(O.event("mpfever", "mpfever", name, param))
 end
 
@@ -2614,6 +2622,12 @@ local function buildEffects(res, success)
 end
 
 local function replaySend(cmd, cb)
+	-- A replay counted by the simulation ("replaying": its build there is taken as this replay, not shipped) that the engine
+	-- refuses builds nothing: the simulation is told, else it kept waiting for that build. While the game is paused (the same
+	-- game time for minutes) these counts added up (a station replay's conversion command, refused on purpose, counted one
+	-- each) and the player's own next builds were taken as replays and never shipped (issues #64, #66)
+	local counted = (G.replayCounted or 0) > 0 and os.getenv("MPFEVER_REPLAYUNUSED") ~= "0"
+	if counted then G.replayCounted = G.replayCounted - 1 end
 	G.replayOut = (G.replayOut or 0) + 1
 	G.replaySince = G.frames
 	local who, rf = G.actor, G.refund
@@ -2621,6 +2635,7 @@ local function replaySend(cmd, cb)
 		G.replayOut = math.max(0, (G.replayOut or 1) - 1)
 		G.replayQuiet = G.frames + 3   -- room for a follow-up command (next segment, next form)
 		pcall(buildEffects, ...)
+		if counted and select(2, ...) ~= true then pcall(toSim, "replay_unused", {}) end
 		if cb then
 			local prevRf = G.refund
 			G.refund = rf
@@ -2649,10 +2664,14 @@ local OBJECT_FORMS = {}
 
 -- A pure upgrade (every added segment replaces a removed one between the same nodes, nothing else): the engine's
 -- replaceSegment builds it exactly as the upgrade tool does.
-local function upgradePlan(margs)
+local function upgradePlan(margs, townAuto)
 	local st = margs[1] and margs[1].proposal
 	if type(st) ~= "table" then return nil end
 	if #(st.addedNodes or {}) > 0 or #(st.removedNodes or {}) > 0 or #(st.edgeObjectsToAdd or {}) > 0 then return nil end
+	-- the tool said which new segment replaces which old one: the native proposal with those maps gives the new segments the
+	-- builder's numbers. replaceSegment numbered them otherwise (issue #64: segment 290428 here, 272675 on the builder's
+	-- game; an upgrade of 3 segments became 3 builds), and every later build then differed. MPFEVER_UPGRADEPLAN=1: as before.
+	if C.hasReplaceMaps(st) and os.getenv("MPFEVER_UPGRADEPLAN") ~= "1" and os.getenv("MPFEVER_MAPREPLAY") ~= "0" then return nil end
 	-- a stop removed with the bulldozer looks like an upgrade, but replaceSegment would keep the stop
 	if #(st.edgeObjectsToRemove or {}) > 0 then return nil end
 	-- constructions: only town buildings the engine moved for the new street (nobody's, -1); every game's own
@@ -2660,7 +2679,10 @@ local function upgradePlan(margs)
 	local tAdd, tRem = margs[1].toAdd or {}, margs[1].toRemove or {}
 	-- buildings moved for the new street: the engine picks their new places at random, so every game would put them
 	-- elsewhere (the town then grows differently): they are rebuilt exactly as the originator's engine placed them
-	if #tAdd > 0 or #tRem > 0 then return nil end
+	-- (except town buildings the engine itself moves, townAuto: this game's replaceSegment, with buildings gathered, takes the
+	-- same ones away and puts the same ones back. Rebuilt by the script forms, a widened street with trees made a proposal
+	-- whose lanes the engine asserted on, and the game crashed: issue #65. MPFEVER_TOWNUPGRADE=0: as before)
+	if (#tAdd > 0 or #tRem > 0) and not (townAuto and os.getenv("MPFEVER_TOWNUPGRADE") ~= "0") then return nil end
 	local added, removed = st.addedSegments or {}, st.removedSegments or {}
 	if #added == 0 or #added ~= #removed then return nil end
 	-- tram tracks added to (or taken from) a street: the tool also changes the lane connections of its crossings (node
@@ -2835,11 +2857,21 @@ local function sNodePos(n)
 	local c = api.engine.getComponent(n, api.type.ComponentType.BASE_NODE)
 	return c and { x = c.position.x, y = c.position.y, z = c.position.z } or nil
 end
-local function sContext()
+-- The context of a replayed stop or signal: the stop and signal tools clean nothing up. With cleanupStreetGraph the engine
+-- reshaped the street around the replayed stop (issue #63: 4 segments and 2 nodes here, 1 segment on the builder's game,
+-- so every later entity was numbered differently). The tool's own flags when the act carries them (bits of a.ctx, 32 and
+-- up: a tool's build); MPFEVER_STOPCLEANUP=1 brings back the old context.
+local function sContext(a, cleanup)
 	local c = api.type.Context.new()
+	local bits = a and tonumber(a.ctx)
 	c.checkTerrainAlignment = false
-	c.cleanupStreetGraph = true
+	c.cleanupStreetGraph = cleanup == true or os.getenv("MPFEVER_STOPCLEANUP") == "1"
 	c.gatherBuildings = false
+	if bits and bits >= 32 and not cleanup and os.getenv("MPFEVER_STOPCLEANUP") ~= "1" then
+		c.gatherBuildings = bits % 2 == 1
+		c.checkTerrainAlignment = math.floor(bits / 2) % 2 == 1
+		c.cleanupStreetGraph = math.floor(bits / 4) % 2 == 1
+	end
 	c.gatherFields = true
 	c.player = api.engine.util.getPlayer()
 	G.refundInto(c)
@@ -2951,7 +2983,8 @@ local function replayStop(a, plan, variant)
 		if not okn then log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: node configurations not copied: " .. tostring(errn)) end
 	end
 	sp.streetProposal = ssp
-	local okf, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, sContext(), false, true) end)
+	local okf, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, sContext(not plan.after and a or nil, plan.cleanup), false, true) end)
+		if okf and cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " stop context: tool flags " .. tostring(a.ctx)) end
 	if not okf or not cmd then
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: factory (variant " .. variant .. ") " .. shortErr(cmd))
 		if variant < 2 then return replayStop(a, plan, variant + 1) end
@@ -2969,6 +3002,13 @@ local function replayStop(a, plan, variant)
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " stop on segment " .. plan.E .. ": " .. (success and "BUILT" or ("refused " .. why)))
 		-- (built on the player's game: a refusal here means the games differ, the host reloads at once)
+		-- (refused without the street cleanup, "Collision" in a test: tried once more with it, as before 0.3.21)
+		if not success and not plan.cleanup then
+			plan.cleanup = true
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: tried again with the street cleanup")
+			G.waits[#G.waits + 1] = { at = G.frames + 1, fn = function() replayStop(a, plan, variant) end }
+			return
+		end
 		if not success then pcall(send, "replay_failed", { uid = tostring(a.uid), why = ("stop refused " .. why):sub(1, 120) }) end
 		if success then
 			G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
@@ -3046,10 +3086,30 @@ local function isConstructionSegment(sg)
 		or tpl:find("/street/airport/", 1, true) ~= nil or tpl:find("/rail_depot[%w_]*%.street_template") ~= nil
 end
 
+-- A station, depot, airport or port of a player (not a town building): its tracks may be of any type. A modular station
+-- whose tracks were set to standard or high-speed track had none of the templates above, its edit was rebuilt by the
+-- script forms and then in two steps, and the engine asserted and the game crashed (issues #65 and #67)
+local function isTransportConstruction(ce)
+	local f = tostring(type(ce) == "table" and ce.fileName or "")
+	return f:find("/stations/", 1, true) ~= nil or f:find("depot", 1, true) ~= nil or f:find("airport", 1, true) ~= nil
+		or f:find("airfield", 1, true) ~= nil or f:find("harbor", 1, true) ~= nil
+end
+
 local function hasConstructionSegments(m)
 	if type(m) ~= "table" or #(m.toAdd or {}) == 0 or type(m.proposal) ~= "table" then return false end
 	for _, sg in ipairs(m.proposal.addedSegments or {}) do if isConstructionSegment(sg) then return true end end
+	if #(m.proposal.addedSegments or {}) > 0 and os.getenv("MPFEVER_CONBYFILE") ~= "0" then
+		for _, ce in ipairs(m.toAdd) do if isTransportConstruction(ce) then return true end end
+	end
 	return false
+end
+
+-- an existing station (or depot...) rebuilt with other tracks or modules: the engine's removal of the old one with the
+-- new one is only safe as the tool's own native proposal. The script forms and the two-step replay make proposals the
+-- engine asserts on (a segment removed twice, then a missing component: the game crashed, issues #65 and #67): such a
+-- build is reported as not reproduced, and the host's game is reloaded everywhere instead
+local function editsConstruction(m)
+	return type(m) == "table" and #(m.toRemove or {}) > 0 and hasConstructionSegments(m) and os.getenv("MPFEVER_EDITFORMS") ~= "1"
 end
 
 local STREET_FORMS = {
@@ -3370,7 +3430,7 @@ G.placeStopsAfter = function(a)
 			objs[#objs + 1] = x
 		end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: " .. #objs .. " placed again on segment " .. found .. (reversed and " (reversed)" or ""))
-		replayStop(a, { E = found, seg = g.seg, objs = objs, removeIdx = {}, nodeConfigs = {}, segType = g.seg.type or 0 })
+		replayStop(a, { E = found, seg = g.seg, objs = objs, removeIdx = {}, nodeConfigs = {}, segType = g.seg.type or 0, after = true })
 		G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function() place(k + 1) end }
 	end
 	G.waits[#G.waits + 1] = { at = G.frames + 3, fn = function() place(1) end }
@@ -3450,6 +3510,7 @@ end
 function replayTwoStep(a)
 	local m0 = a.args[1]
 	if type(m0) ~= "table" or #(m0.toAdd or {}) == 0 or type(m0.proposal) ~= "table" then return false end
+	if editsConstruction(m0) then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: not for the edit of an existing station (the engine asserts)") return false end
 	local cArgs = C.deser(C.ser(a.args))
 	local miss = R.translateIn(cArgs, G.bind)
 	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: unresolved " .. table.concat(miss, ",")) return false end
@@ -3594,7 +3655,7 @@ local function replayNative(a, formIndex)
 					.. " taken away by the engine itself")
 			end
 		end
-		local plan = (#missing == 0) and upgradePlan(probe) or nil
+		local plan = (#missing == 0) and upgradePlan(probe, a.townAuto) or nil
 		if plan then return replayUpgrade(a, plan, 1) end
 		-- stops: the stop tool replaces one existing segment between the same nodes and adds edge objects
 		local stp = probe[1] and probe[1].proposal
@@ -3639,6 +3700,11 @@ local function replayNative(a, formIndex)
 		if hasConstructionSegments(a.args[1]) then
 			if replayNativeConstruction(a) then return end
 			if replayTwoStep(a) then return end
+			if editsConstruction(a.args[1]) then
+				log("NATIVE REPLAY " .. tostring(a.uid) .. ": the edit of an existing station could not be replayed as the tool's proposal: not rebuilt otherwise")
+				replayFailed(a, "station edit not replayed")
+				return
+			end
 		end
 		local removal = (#missing == 0) and removalPlan(probe) or nil
 		if removal then

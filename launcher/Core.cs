@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -768,6 +768,7 @@ namespace MPFever
                 {
                     var c = listener.AcceptTcpClient();
                     c.NoDelay = true;
+                    NetAddr.KeepAlive(c);
                     var p = new Peer { Id = nextId++, Tcp = c, Writer = new StreamWriter(c.GetStream(), new UTF8Encoding(false)) { NewLine = "\n", AutoFlush = true } };
                     p.Name = "Player" + p.Id;
                     try { p.Address = c.Client.RemoteEndPoint?.ToString(); } catch { }
@@ -914,6 +915,7 @@ namespace MPFever
                     var task = c.ConnectAsync(ep.Address, ep.Port);
                     if (!task.Wait(TimeSpan.FromSeconds(targets.Count > 1 ? 8 : 20))) throw new TimeoutException(L.T("pas de réponse", "no answer"));
                     tcp = c;
+                    NetAddr.KeepAlive(c);
                     used = ep;
                     break;
                 }
@@ -979,6 +981,23 @@ namespace MPFever
     /// port), "name:28090", several separated by commas.</summary>
     static class NetAddr
     {
+        /// <summary>TCP keepalive after 15 s of silence, every 3 s: a connection that died without a word (a router, a lost
+        /// Wi-Fi) is noticed within about half a minute instead of hours. Issue #60: the host kept a player's dead connection
+        /// until the player came back on a new one.</summary>
+        public static void KeepAlive(TcpClient c)
+        {
+            try
+            {
+                c.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+                var v = new byte[12];
+                BitConverter.GetBytes(1u).CopyTo(v, 0);
+                BitConverter.GetBytes(15000u).CopyTo(v, 4);
+                BitConverter.GetBytes(3000u).CopyTo(v, 8);
+                c.Client.IOControl(IOControlCode.KeepAliveValues, v, null);
+            }
+            catch (Exception e) { Log.W("keepalive: " + e.Message); }
+        }
+
         public static List<KeyValuePair<string, int>> Parse(string spec, int defaultPort)
         {
             var res = new List<KeyValuePair<string, int>>();
@@ -1149,8 +1168,22 @@ namespace MPFever
 
         public static string SteamPath()
         {
-            try { return (Registry.GetValue(@"HKEY_CURRENT_USER\Software\Valve\Steam", "SteamPath", null) as string)?.Replace('/', Path.DirectorySeparatorChar); }
-            catch { return null; }
+            // The user's SteamPath can be stale (Steam reinstalled elsewhere: it still named the old folder, where only a
+            // library was left, so the mod went nowhere and no savegame was found): the first of these that holds steam.exe,
+            // then the running Steam's folder
+            var cands = new List<string>();
+            try { cands.Add(Registry.GetValue(@"HKEY_CURRENT_USER\Software\Valve\Steam", "SteamPath", null) as string); } catch { }
+            try { cands.Add(Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null) as string); } catch { }
+            try { cands.Add(Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam", "InstallPath", null) as string); } catch { }
+            try { cands.Add(Path.GetDirectoryName(Registry.GetValue(@"HKEY_CURRENT_USER\Software\Valve\Steam", "SteamExe", null) as string ?? "")); } catch { }
+            try { foreach (var p in System.Diagnostics.Process.GetProcessesByName("steam")) try { cands.Add(Path.GetDirectoryName(p.MainModule.FileName)); } catch { } } catch { }
+            foreach (var c in cands)
+            {
+                if (string.IsNullOrEmpty(c)) continue;
+                var d = c.Replace('/', Path.DirectorySeparatorChar);
+                try { if (File.Exists(Path.Combine(d, "steam.exe")) && Directory.Exists(Path.Combine(d, "userdata"))) return d; } catch { }
+            }
+            return cands.FirstOrDefault(c => !string.IsNullOrEmpty(c))?.Replace('/', Path.DirectorySeparatorChar);
         }
 
         static IEnumerable<string> SteamLibraries()

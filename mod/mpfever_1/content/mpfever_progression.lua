@@ -321,6 +321,15 @@ function PG.tally(prog, reg, towns, game, say, now)
 		local r, id = entry.record, entry.company.id
 		local experience = math.floor(scores[id])
 		if experience > r.experience then r.experience = experience end
+		-- the savegame's company began with the game's own experience (the highest world population), far above its score:
+		-- it then stood still (issue #63: 9332, the bar stuck at 3332 of 3600) while the game's own progression went on and
+		-- announced a new headquarters level that the company could not take. It follows the game's own experience while
+		-- that one is higher (MPFEVER_RANK1OWN=0: as before)
+		if id == 1 and os.getenv("MPFEVER_RANK1OWN") ~= "0" then
+			local okO, own = pcall(game.own, entry.company.ent)
+			local x = okO and type(own) == "table" and tonumber(own.experience) or nil
+			if x and math.floor(x) > r.experience then r.experience = math.floor(x) end
+		end
 		local ok, level = pcall(game.levelFor, r.experience)
 		if ok and type(level) == "number" then r.potential = level end
 		if say then say(string.format("ranks at t=%s: company %d score %.4f, experience %d, rank %d reached, %d taken", tostring(now), id, scores[id], r.experience, r.potential, r.level)) end
