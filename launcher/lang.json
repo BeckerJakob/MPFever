@@ -3732,19 +3732,6 @@
       "zh-CN": "服务器已满（最多 {0} 名玩家）。",
       "zh-TW": "伺服器已滿（最多 {0} 名玩家）。"
     },
-    "The server runs MPFever {0} and you run {1}: install the same version.": {
-      "de": "Der Server verwendet MPFever {0} und du {1}: installiere dieselbe Version.",
-      "es": "El servidor usa MPFever {0} y tú {1}: instala la misma versión.",
-      "it": "Il server usa MPFever {0} e tu {1}: installa la stessa versione.",
-      "nl": "De server gebruikt MPFever {0} en jij {1}: installeer dezelfde versie.",
-      "pl": "Serwer używa MPFever {0}, a Ty {1}: zainstaluj tę samą wersję.",
-      "pt-BR": "O servidor usa o MPFever {0} e você usa {1}: instale a mesma versão.",
-      "ru": "На сервере MPFever {0}, а у вас {1}: установите ту же версию.",
-      "ja": "サーバーは MPFever {0}、あなたは {1} を使っています：同じバージョンをインストールしてください。",
-      "ko": "서버는 MPFever {0}, 나는 {1}을(를) 사용 중입니다: 같은 버전을 설치하세요.",
-      "zh-CN": "服务器使用 MPFever {0}，你使用 {1}：请安装相同的版本。",
-      "zh-TW": "伺服器使用 MPFever {0}，你使用 {1}：請安裝相同的版本。"
-    },
     "You were kicked from the server.": {
       "de": "Du wurdest vom Server geworfen.",
       "es": "Te han expulsado del servidor.",
@@ -5720,6 +5707,45 @@
       "ko": " – Transport Fever 3 멀티플레이",
       "zh-CN": " – Transport Fever 3 多人游戏",
       "zh-TW": " – Transport Fever 3 多人遊戲"
+    },
+    "The host runs an older version of MPFever, and you run {0}: every player needs the same version.": {
+      "de": "Der Host nutzt eine ältere Version von MPFever, du nutzt {0}: alle Spieler brauchen dieselbe Version.",
+      "es": "El anfitrión usa una versión más antigua de MPFever y tú {0}: todos los jugadores necesitan la misma versión.",
+      "it": "L'host usa una versione più vecchia di MPFever e tu {0}: tutti i giocatori devono avere la stessa versione.",
+      "nl": "De host gebruikt een oudere versie van MPFever en jij {0}: alle spelers hebben dezelfde versie nodig.",
+      "pl": "Host używa starszej wersji MPFever, a ty {0}: wszyscy gracze muszą mieć tę samą wersję.",
+      "pt-BR": "O anfitrião usa uma versão mais antiga do MPFever e você {0}: todos os jogadores precisam da mesma versão.",
+      "ru": "Хост использует более старую версию MPFever, а вы {0}: у всех игроков должна быть одна версия.",
+      "ja": "ホストは古いバージョンの MPFever を使用しており、あなたは {0} です：全員が同じバージョンを使う必要があります。",
+      "ko": "호스트는 더 오래된 MPFever 버전을, 당신은 {0}을(를) 사용 중입니다: 모든 플레이어가 같은 버전이어야 합니다.",
+      "zh-CN": "主机使用的是较旧版本的 MPFever，而你使用的是 {0}：所有玩家都需要相同的版本。",
+      "zh-TW": "主機使用的是較舊版本的 MPFever，而你使用的是 {0}：所有玩家都需要相同的版本。"
+    },
+    "A player with MPFever {0} was refused: this game runs {1}.": {
+      "de": "Ein Spieler mit MPFever {0} wurde abgelehnt: dieses Spiel nutzt {1}.",
+      "es": "Se rechazó a un jugador con MPFever {0}: esta partida usa {1}.",
+      "it": "Un giocatore con MPFever {0} è stato rifiutato: questa partita usa {1}.",
+      "nl": "Een speler met MPFever {0} is geweigerd: dit spel gebruikt {1}.",
+      "pl": "Odrzucono gracza z MPFever {0}: ta gra używa {1}.",
+      "pt-BR": "Um jogador com MPFever {0} foi recusado: este jogo usa {1}.",
+      "ru": "Игрок с MPFever {0} отклонён: в этой игре используется {1}.",
+      "ja": "MPFever {0} のプレイヤーを拒否しました：このゲームは {1} です。",
+      "ko": "MPFever {0} 플레이어가 거부되었습니다: 이 게임은 {1}을(를) 사용합니다.",
+      "zh-CN": "已拒绝使用 MPFever {0} 的玩家：本游戏使用 {1}。",
+      "zh-TW": "已拒絕使用 MPFever {0} 的玩家：本遊戲使用 {1}。"
+    },
+    "The host runs MPFever {0} and you run {1}: every player needs the same version.": {
+      "de": "Der Host nutzt MPFever {0} und du {1}: alle Spieler brauchen dieselbe Version.",
+      "es": "El anfitrión usa MPFever {0} y tú {1}: todos los jugadores necesitan la misma versión.",
+      "it": "L'host usa MPFever {0} e tu {1}: tutti i giocatori devono avere la stessa versione.",
+      "nl": "De host gebruikt MPFever {0} en jij {1}: alle spelers hebben dezelfde versie nodig.",
+      "pl": "Host używa MPFever {0}, a ty {1}: wszyscy gracze muszą mieć tę samą wersję.",
+      "pt-BR": "O anfitrião usa MPFever {0} e você {1}: todos os jogadores precisam da mesma versão.",
+      "ru": "Хост использует MPFever {0}, а вы {1}: у всех игроков должна быть одна версия.",
+      "ja": "ホストは MPFever {0}、あなたは {1} です：全員が同じバージョンを使う必要があります。",
+      "ko": "호스트는 MPFever {0}, 당신은 {1}을(를) 사용 중입니다: 모든 플레이어가 같은 버전이어야 합니다.",
+      "zh-CN": "主机使用 MPFever {0}，你使用 {1}：所有玩家都需要相同的版本。",
+      "zh-TW": "主機使用 MPFever {0}，你使用 {1}：所有玩家都需要相同的版本。"
     }
   }
 }

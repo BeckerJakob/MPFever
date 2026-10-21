@@ -1,6 +1,17 @@
 MPFever - Changelog
 ===================
 
+0.3.23 - road junctions replayed; players on another version are refused
+  - FIX: the road junctions of the street tool (roundabout, T, trumpet, cloverleaf, diamond and diverging diamond
+    interchanges, street_construction/*.con) made a desync each time (#72): MPFever did not take them for constructions,
+    rebuilt their streets by the script forms, and the engine refused them ("Construction impossible"). They are now
+    replayed as the tool's own native construction, as stations are. MPFEVER_JUNCTIONCON=0: as before.
+  - NEW: a player's own game, as host, refuses a guest on another MPFever version, and a guest leaves a host on another
+    version (an older host, which does not say its version, included), with both versions told (#73: a host on 0.3.20
+    with a guest on 0.3.22 crashed on town street upgrades fixed in 0.3.21). A dedicated server already did.
+    MPFEVER_ANYVERSION=1 lets everybody in.
+  - Tests: streetcon scenario (each game builds junctions, the others replay them).
+
 0.3.22 - no longer "experimental"; replayed stops priced like the tool's; a thanks window when the game closes
   - The version and the archives lose "-experimental" (MPFever-0.3.22.zip, MPFever-0.3.22-server.zip). The automatic
     update of 0.3.15 to 0.3.21 takes any MPFever*.zip of the newest release, so they update to it (launcher selftest).

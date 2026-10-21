@@ -731,6 +731,16 @@ namespace MPFever
             lock (greeted) greeted.Remove(BaseName(p.Name));
         }
 
+        /// <summary>A player's own game as host: a guest on another version is refused (the "denied" payload), else null.</summary>
+        internal static string VersionAdmit(string joinPayload)
+        {
+            var t = LuaLit.Parse(joinPayload ?? "") as Dictionary<object, object>;
+            var v = t != null && t.TryGetValue("v", out var vo) && vo is string vs ? vs : "";
+            if (v == Version) return null;
+            Log.Warn(F("Un joueur avec MPFever {0} a été refusé : cette partie utilise {1}.", "A player with MPFever {0} was refused: this game runs {1}.", v == "" ? "?" : v, Version));
+            return "{[\"reason\"]=\"version\",[\"v\"]=" + LuaLit.Quote(Version) + "}";
+        }
+
         /// <summary>Why a host refused this player (the "denied" message), in the player's language.</summary>
         internal static string DeniedText(Dictionary<object, object> d)
         {
@@ -739,7 +749,7 @@ namespace MPFever
             {
                 case "password": return T("Mot de passe du serveur incorrect ou manquant : tapez-le dans la fenêtre MPFever, puis rejoignez à nouveau.", "Wrong or missing server password: type it in the MPFever window, then join again.");
                 case "full": return F("Le serveur est plein ({0} joueurs au maximum).", "The server is full ({0} players at most).", S("max"));
-                case "version": return F("Le serveur utilise MPFever {0} et vous {1} : installez la même version.", "The server runs MPFever {0} and you run {1}: install the same version.", S("v"), Version);
+                case "version": return F("L'hôte utilise MPFever {0} et vous {1} : tous les joueurs doivent installer la même version.", "The host runs MPFever {0} and you run {1}: every player needs the same version.", S("v"), Version);
                 case "kicked": return T("Vous avez été exclu du serveur.", "You were kicked from the server.");
                 case "stopped": return T("Le serveur a été arrêté.", "The server was stopped.");
             }

@@ -3118,10 +3118,13 @@ end
 -- A station, depot, airport or port of a player (not a town building): its tracks may be of any type. A modular station
 -- whose tracks were set to standard or high-speed track had none of the templates above, its edit was rebuilt by the
 -- script forms and then in two steps, and the engine asserted and the game crashed (issues #65 and #67)
+-- The road junctions of the street tool (roundabout, T, trumpet, cloverleaf, diamond... in street_construction/) too: their
+-- streets were rebuilt by the script forms and refused by the engine ("Construction impossible"), a desync each (issue #72)
 local function isTransportConstruction(ce)
 	local f = tostring(type(ce) == "table" and ce.fileName or "")
 	return f:find("/stations/", 1, true) ~= nil or f:find("depot", 1, true) ~= nil or f:find("airport", 1, true) ~= nil
 		or f:find("airfield", 1, true) ~= nil or f:find("harbor", 1, true) ~= nil
+		or (f:find("/street_construction/", 1, true) ~= nil and os.getenv("MPFEVER_JUNCTIONCON") ~= "0")
 end
 
 local function hasConstructionSegments(m)
@@ -9117,6 +9120,65 @@ H.dsignal = function(from, p)
 		AUTO.results[#AUTO.results + 1] = "dsignal error " .. tostring(err)
 		autoFinish()
 	end
+end
+
+-- Road junctions of the street tool (MPFEVER_SCENARIO=streetcon, issue #72): roundabout, T, trumpet and diamond junctions
+-- (street_construction/*.con, their parameters at the game's defaults) built by each game on open ground next to a dead end, held
+-- and shipped as a native build: the other games replay them. MPFEVER_STREETCON_FILES=names separated by commas.
+H.streetcon = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("AUTOTEST streetcon " .. t); AUTO.results[#AUTO.results + 1] = t end
+	local names = {}
+	for n in (os.getenv("MPFEVER_STREETCON_FILES") or "roundabout,t_interchange,trumpet_interchange,diamond_interchange"):gmatch("[^,]+") do names[#names + 1] = n end
+	local i = 0
+	local nextOne
+	nextOne = function()
+		i = i + 1
+		if i > #names then G.waits[#G.waits + 1] = { at = G.frames + 180, fn = autoFinish }; return end
+		local ok, err = pcall(function()
+			local file, id = nil, -1
+			for _, f in ipairs({ "::/infrastructure/street_construction/" .. names[i] .. ".con", "infrastructure/street_construction/" .. names[i] .. ".con" }) do
+				local okf, r = pcall(api.res.constructionRep.find, f)
+				if okf and type(r) == "number" and r >= 0 then file, id = f, r break end
+			end
+			if not file then say(names[i] .. ": construction not found"); return nextOne() end
+			local params = { seed = 1 }
+			pcall(function()
+				local rep = api.res.constructionRep.get(id)
+				for k = 1, #rep.params do local pp = rep.params[k]; params[pp.key] = pp.defaultIndex or 0 end
+			end)
+			-- (open ground: 250 m beyond a dead end, away from the ones the other game takes)
+			local ends = deadEnds()
+			local n = ends[(((p.role == "host") and 11 or 29) + i * 17) % #ends + 1]
+			local info = select(2, deadEnds())[n]
+			local pn, po = nodePosition(n), nodePosition(info.other)
+			local dx, dy = pn.x - po.x, pn.y - po.y
+			local len = math.sqrt(dx * dx + dy * dy)
+			local x, y = pn.x + dx / len * 250, pn.y + dy / len * 250
+			local z = groundZ(x, y, pn.z)
+			AUTO.points[#AUTO.points + 1] = { x = x, y = y, z = z }
+			local sp = api.type.SimpleProposal.new()
+			local ce = api.type.SimpleProposal.ConstructionEntity.new()
+			ce.fileName = file
+			ce.params = params
+			ce.transf = api.type.Mat4f.new(api.type.Vec4f.new(1, 0, 0, 0), api.type.Vec4f.new(0, 1, 0, 0), api.type.Vec4f.new(0, 0, 1, 0), api.type.Vec4f.new(x, y, z, 1))
+			ce.playerEntity = api.engine.util.getPlayer()
+			pcall(function() ce.name = "" end)
+			sp.constructionsToAdd = { ce }
+			local edges0 = #R.allEdges()
+			deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, playerContext(), false, true), function(res, success)
+				local why = ""
+				if not success then pcall(function() why = " " .. C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+				say(names[i] .. ": " .. (success and "built" or ("refused" .. why)) .. ", edges " .. edges0 .. " -> " .. #R.allEdges())
+				G.waits[#G.waits + 1] = { at = G.frames + 120, fn = nextOne }
+			end)
+		end)
+		if not ok then say(tostring(names[i]) .. " failed: " .. shortErr(err)); G.waits[#G.waits + 1] = { at = G.frames + 40, fn = nextOne } end
+	end
+	nextOne()
 end
 
 -- Stops put on town streets the way the stop tool builds them (MPFEVER_SCENARIO=dstop): the street segment is replaced by a copy

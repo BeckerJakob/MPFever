@@ -54,7 +54,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.3.22";
+        public const string Version = "0.3.23";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -1447,12 +1447,15 @@ namespace MPFever
             relay = new Relay();
             // a dedicated server lets in only the players with its password and its version, up to its number of players
             if (server != null) { var r = relay; relay.Admit = (p, m) => ServerAdmit(r, p, m); }
+            // a player's own game lets in only the players with its version: a guest on another version replays the builds its
+            // own way and the games go apart (issue #73: a host on 0.3.20, its guest on 0.3.22). MPFEVER_ANYVERSION=1 lets everybody in.
+            else if (Environment.GetEnvironmentVariable("MPFEVER_ANYVERSION") != "1") relay.Admit = (p, m) => VersionAdmit(m.Payload);
             relay.Joined += p =>
             {
                 Log.Ok(F("{0} a rejoint la session", "{0} joined the session", p.Name));
                 lock (leftAt) leftAt.Remove(BaseName(p.Name));
                 relay.DropOlder(p);
-                relay.Send(p, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(p.Name) + ",[\"role\"]=\"client\"}"));
+                relay.Send(p, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(p.Name) + ",[\"role\"]=\"client\",[\"v\"]=" + LuaLit.Quote(Version) + "}"));
                 Msg[] history; lock (chatLog) history = chatLog.ToArray();
                 foreach (var c in history) relay.Send(p, c);   // the chat so far (a reconnecting player skips what it has)
                 HostChat("join", BaseName(p.Name), "");
@@ -1596,7 +1599,26 @@ namespace MPFever
                         return;
                     }
                     if (m.Kind == "welcome" && LuaLit.Parse(m.Payload) is Dictionary<object, object> w && w.TryGetValue("you", out var you) && you is string youName)
+                    {
                         myId = youName;
+                        // a host on another version (before 0.3.23 its welcome says none: older than this one): the player leaves
+                        // at once rather than play apart (issue #73)
+                        var hv = w.TryGetValue("v", out var hvo) && hvo is string hvs ? hvs : "";
+                        if (hv != Version && Environment.GetEnvironmentVariable("MPFEVER_ANYVERSION") != "1")
+                        {
+                            clientCancelled = true;
+                            var text = hv == ""
+                                ? F("L'hôte utilise une version plus ancienne de MPFever, et vous {0} : tous les joueurs doivent installer la même version.", "The host runs an older version of MPFever, and you run {0}: every player needs the same version.", Version)
+                                : DeniedText(new Dictionary<object, object> { ["reason"] = "version", ["v"] = hv });
+                            deniedText = text;
+                            Log.Err(text);
+                            ClientStatus("denied", 0);
+                            game.AppendChat(0, UnixNow(), "msg", "MPFever", text);
+                            if (menuMode) { menuPhase = "error"; menuText = text; MenuStatus(); }
+                            new Thread(() => { try { client.Dispose(); } catch { } }) { IsBackground = true }.Start();
+                            return;
+                        }
+                    }
                     game.ToGame(m);
                     if (m.Kind == "act") Log.Dim(F("[{0}] reçu {1} de {2}", "[{0}] received {1} from {2}", name, m.Kind, m.From));
                 };
@@ -1969,7 +1991,7 @@ namespace MPFever
                     lock (players) players.Add(m.From);
                     Log.W(F("{0} : jeu prêt {1}", "{0}: game ready {1}", m.From, m.Payload));
                     // a game started again (resynchronisation): it needs its identity again
-                    if (from != null) relay.Send(from, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(from.Name) + ",[\"role\"]=\"client\"}"));
+                    if (from != null) relay.Send(from, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(from.Name) + ",[\"role\"]=\"client\",[\"v\"]=" + LuaLit.Quote(Version) + "}"));
                     lock (resyncWaiting) resyncWaiting.Remove(m.From);
                     if (from != null && server != null) ServerGreet(from);
                     break;
