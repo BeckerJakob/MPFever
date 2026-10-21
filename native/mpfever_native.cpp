@@ -1496,6 +1496,24 @@ extern "C" void* AddDetour(void* list, void* out, void* cmd, void* done, void* p
             }
         }
     }
+    {   // Replayed stops and signals (issue #62): a segment a build replaces costs a script's command a quarter of its price (the
+        // engine charges the new segment minus the Context's refund factor, +0x368, 0.75, times the replaced one's price), where the
+        // tools' commands pay nothing for it. The factor is not in the Context a script can write, so the bridge marks the command of a
+        // replayed stop or signal of a tool (doDust, +0x9b0, set together with playerInitiated, +0x3d2: the game's own scripts and no
+        // other build of this mod do that, see G.toolCosts; a mod's own GUI command that did would be priced so too, on every game):
+        // its refund factor becomes 1.0 (a segment replaced by one of the same price is free, a dearer one pays the difference) and
+        // doDust is cleared again (the stop tool's own command has it off). The factor also weighs the refunds of removed segments that
+        // replace nothing; the replays marked remove none. Offsets of build 40420. MPFEVER_REPLACEFREE=0 turns it off.
+        static int replaceFree = -1;
+        if (replaceFree < 0) { char v[16] = {}; DWORD n = GetEnvironmentVariableA("MPFEVER_REPLACEFREE", v, sizeof(v)); replaceFree = (n == 1 && v[0] == '0') ? 0 : 1; }
+        u8* pay = cmd ? *(u8**)cmd : 0;
+        if (replaceFree && !IsUiSite(caller) && pay && Readable(pay, 0x9c0) && *(u8*)(pay + 0x9b8) == 52 && pay[0x9b0] && pay[0x3d2]) {
+            *(float*)(pay + 0x368) = 1.0f;
+            pay[0x9b0] = 0;
+            static long shownF = 0;
+            if (shownF++ < 20) { Buf b; b.str("replaced segment free (refund factor 1.0) on a marked stop or signal build (doDust)"); LogLine(b); }
+        }
+    }
     if (g_dumpOn) { u8* pay = cmd ? *(u8**)cmd : 0; if (pay && Readable(pay, 0x9c0) && *(u8*)(pay + 0x9b8) == 52) { char t[16]; Buf tb; tb.str("c").hex(caller); for (int i = 0; i < tb.n && i < 15; i++) t[i] = tb.s[i]; t[tb.n < 15 ? tb.n : 15] = 0; DumpPayload(pay, t); } }
     if (IsUiSite(caller)) {
         u8* pay = cmd ? *(u8**)cmd : 0;
