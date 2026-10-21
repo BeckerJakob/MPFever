@@ -6160,19 +6160,29 @@ H.conedit = function(from, p)
 	AUTO.running = true
 	AUTO.results = {}
 	AUTO.points = {}
+	-- candidates against a street, a refused one makes way for the next. Modular stations only when asked by file name: a scripted
+	-- rebuild of one crashes the builder's game ("Construction impossible", then a crash), and real station edits are not replayed
 	local want = os.getenv("MPFEVER_CONEDIT_FILE")
-	local pick, pc = nil, nil
+	local cands = {}
 	for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
 		local okc, c = pcall(function() return api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) end)
 		if okc and c then
 			local f = tostring(c.fileName)
 			local street = f:find("street", 1, true) or f:find("modular_terminal", 1, true) or f:find("depot", 1, true)
+			if not want and f:find("modular_station", 1, true) then street = nil end
 			local has = false
 			pcall(function() has = #c.stations > 0 or #c.depots > 0 end)
-			if has and street and (not want or f:find(want, 1, true)) and (not pick or e < pick) then pick, pc = e, c end
+			if has and street and (not want or f:find(want, 1, true)) then cands[#cands + 1] = { e = e, c = c } end
 		end
 	end
-	if not pick then log("AUTOTEST conedit: no construction against a street"); AUTO.results[#AUTO.results + 1] = "conedit: none"; return autoFinish() end
+	table.sort(cands, function(x, y) return x.e < y.e end)
+	if #cands == 0 then log("AUTOTEST conedit: no construction against a street"); AUTO.results[#AUTO.results + 1] = "conedit: none"; return autoFinish() end
+	local tries = 0
+	local tryOne
+	tryOne = function()
+	tries = tries + 1
+	if tries > math.min(#cands, 4) then G.waits[#G.waits + 1] = { at = G.frames + 60, fn = autoFinish }; return end
+	local pick, pc = cands[tries].e, cands[tries].c
 	-- what C.rebuildNativeWithConstruction writes on a native proposal for an edit (read back, nothing sent)
 	pcall(function()
 		local P = api.type.Proposal.new()
@@ -6186,7 +6196,7 @@ H.conedit = function(from, p)
 	local m = { toAdd = { { fileName = pc.fileName, params = params, transf = C.marshal(pc.transf), playerEntity = api.engine.util.getPlayer() } },
 		toRemove = { pick }, old2newByRank = { [1] = 0 } }
 	local okp, sp = pcall(C.rebuildProposal, m, { noStreet = true, seed = 7919 })
-	if not okp then log("AUTOTEST conedit proposal error " .. shortErr(sp)); AUTO.results[#AUTO.results + 1] = "conedit: no proposal"; return autoFinish() end
+	if not okp then log("AUTOTEST conedit proposal error " .. shortErr(sp)); AUTO.results[#AUTO.results + 1] = "conedit: no proposal"; return tryOne() end
 	local cons0 = #R.entitiesWith("CONSTRUCTION")
 	log("AUTOTEST conedit: rebuilding construction " .. pick .. " " .. tostring(pc.fileName))
 	local ctx = api.type.Context.new()
@@ -6202,9 +6212,11 @@ H.conedit = function(from, p)
 			local line = "conedit " .. tostring(pc.fileName) .. ": " .. (success and "built" or ("refused " .. why)) .. ", constructions " .. cons0 .. " -> " .. #R.entitiesWith("CONSTRUCTION")
 			log("AUTOTEST " .. line)
 			AUTO.results[#AUTO.results + 1] = line
-			G.waits[#G.waits + 1] = { at = G.frames + 60, fn = autoFinish }
+			if success then G.waits[#G.waits + 1] = { at = G.frames + 60, fn = autoFinish } else tryOne() end
 		end }
 	end)
+	end
+	tryOne()
 	end)
 	if not ok then
 		log("AUTOTEST conedit failed: " .. tostring(err))
@@ -6699,17 +6711,18 @@ H.dozenew = function(from, p)
 	AUTO.results = {}
 	AUTO.points = {}
 	local function say(t) log("AUTOTEST dozenew " .. t); AUTO.results[#AUTO.results + 1] = t end
-	local i, startFrame = 0, G.frames
+	-- three roads built and demolished; a refused or failed spot makes way for another dead end (at most 12 spots)
+	local i, built, startFrame = 0, 0, G.frames
 	local function aim() if G.buildLead then G.buildToolSeen("streetBuilder") end end
 	local nextOne
 	local function edgeSet() local s = {} for _, e in ipairs(R.allEdges()) do s[e] = true end return s end
 	nextOne = function()
 		aim()
-		if i >= 3 then G.waits[#G.waits + 1] = { at = G.frames + 120, fn = autoFinish }; return end
+		if built >= 3 or i >= 12 then G.waits[#G.waits + 1] = { at = G.frames + 120, fn = autoFinish }; return end
 		i = i + 1
 		local n0 = i
 		local okp, err = pcall(function()
-			local n, info, pn, a = matrixPlace((p.offset or 0) + 60 + n0 * 5)
+			local n, info, pn, a = matrixPlace((p.offset or 0) + (p.role == "host" and 160 or 60) + n0 * 5)
 			local o = { tlanes = true, template = true, roadType = true, street = true, owner = true, positions = true, sharedIds = true,
 				tmpl = { roadTemplate = info.c.roadTemplate, roadStyle = info.c.roadStyle, roadType = info.c.roadType } }
 			local sp = buildMatrixProposal(o, n, pn, a)
@@ -6717,7 +6730,10 @@ H.dozenew = function(from, p)
 			deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, playerContext(), false, true), function(res, success)
 				local new = {}
 				for _, e in ipairs(R.allEdges()) do if not before[e] then new[#new + 1] = e end end
-				say("road " .. n0 .. ": " .. (success and "built" or "refused") .. ", new segments " .. table.concat(new, ","))
+				local why = ""
+				if not success then pcall(function() why = " " .. C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+				say("road " .. n0 .. ": " .. (success and "built" or ("refused" .. why)) .. ", new segments " .. table.concat(new, ","))
+				if success and #new > 0 then built = built + 1 end
 				if not success or #new == 0 then G.waits[#G.waits + 1] = { at = G.frames + 40, fn = nextOne }; return end
 				G.waits[#G.waits + 1] = { at = G.frames + 60, fn = function()
 					aim()

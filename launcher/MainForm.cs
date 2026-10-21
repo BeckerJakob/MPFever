@@ -35,6 +35,8 @@ namespace MPFever
             Log.Init(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs"));
             MainForm.InitLanguage();
             MainForm.JustUpdated = updated;
+            // --thanks: the thanks window alone (to look at it)
+            if (args.Length > 0 && args[0] == "--thanks") { using (var t = new ThanksDialog()) { t.StartPosition = FormStartPosition.CenterScreen; t.ShowInTaskbar = true; t.ShowDialog(); } return 0; }
             bool auto = args.Length > 0 && args[0] == "--autotest";
             MainForm.Dev = auto || args.Contains("--dev");
             // default: the game starts at once and the session is set up from its main menu (MPFever window)
@@ -52,7 +54,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.3.21-experimental";
+        public const string Version = "0.3.22";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -230,7 +232,7 @@ namespace MPFever
             Theme.SetLanguage(L.Code);
             Font = Theme.Ui(9.75f);
             Text = "MPFever " + Version + (ServerMode ? T(" – serveur dédié Transport Fever 3", " – Transport Fever 3 dedicated server")
-                                                       : T(" – multijoueur Transport Fever 3 (expérimental)", " – Transport Fever 3 multiplayer (experimental)"));
+                                                       : T(" – multijoueur Transport Fever 3", " – Transport Fever 3 multiplayer"));
             hostBtn.Text = T("Héberger une partie", "Host a game");
             joinBtn.Text = T("Rejoindre par IP", "Join by IP");
             localBtn.Text = T("Test local (2 jeux)", "Local test (2 games)");
@@ -362,8 +364,24 @@ namespace MPFever
                 try { Process.Start("https://github.com/dkdknight/MPFever"); }
                 catch (Exception ex) { Log.W(ex.Message); }
             };
+            var kofiText = T("♥ Soutenir MPFever", "♥ Support MPFever");
+            var kofi = new Label
+            {
+                Text = kofiText, AutoSize = false, Dock = DockStyle.Right, TextAlign = ContentAlignment.MiddleRight,
+                Font = creditFont, ForeColor = Theme.Accent, Cursor = Cursors.Hand,
+            };
+            kofi.Width = TextRenderer.MeasureText(kofiText, linkFont).Width + S(16);
+            new ToolTip().SetToolTip(kofi, "ko-fi.com/knighthd");
+            kofi.MouseEnter += (s, e) => { kofi.Font = linkFont; kofi.ForeColor = Theme.AccentHover; };
+            kofi.MouseLeave += (s, e) => { kofi.Font = creditFont; kofi.ForeColor = Theme.Accent; };
+            kofi.Click += (s, e) =>
+            {
+                try { Process.Start("https://ko-fi.com/knighthd"); }
+                catch (Exception ex) { Log.W(ex.Message); }
+            };
             footer.Controls.Add(status);
             footer.Controls.Add(gameLabel);
+            footer.Controls.Add(kofi);
             footer.Controls.Add(by);
             footer.Controls.Add(credit);   // docked first: rightmost
 
@@ -706,7 +724,13 @@ namespace MPFever
                 }
                 catch (Exception e) { Log.Err(e.Message); }
             }
-            Close();
+            if (ServerMode || autotest) { Close(); return; }
+            // (the launcher stays open behind a small thanks window: Close keeps it, Quit closes everything)
+            try { WindowState = FormWindowState.Normal; Activate(); } catch { }
+            DialogResult r;
+            using (var dlg = new ThanksDialog()) r = dlg.ShowDialog(this);
+            if (r == DialogResult.Abort) Close();
+            else if (r == DialogResult.Retry) Report(false);
         }
 
         /// <summary>A problem report: the logs in a zip (reports\), shown in the Explorer, and a new GitHub issue opened in
@@ -805,7 +829,7 @@ namespace MPFever
             hostBtn.Enabled = joinBtn.Enabled = localBtn.Enabled = false;
             menuGame = new GameLink(SavedName(), "menu");
             games.Add(menuGame);
-            menuGame.Exited += () => { Log.W(T("Transport Fever 3 fermé : fin de MPFever.", "Transport Fever 3 closed: MPFever exits.")); try { BeginInvoke((Action)InstallPendingUpdateThenClose); } catch { } };
+            menuGame.Exited += () => { Log.W(T("Transport Fever 3 fermé.", "Transport Fever 3 closed.")); try { BeginInvoke((Action)InstallPendingUpdateThenClose); } catch { } };
             MenuStatus();
             // (the game rewrites its log at its start: the previous run's is kept for a report)
             if (JoinAtStart == null) Reporter.KeepPreviousGameLog();
@@ -1128,6 +1152,8 @@ namespace MPFever
         void EndSession(string why = null)
         {
             Log.W(why ?? T("=== Retour au menu principal : fin de la session ===", "=== Back to the main menu: the session ends ==="));
+            Log.W(T("Ce mod vous plaît ? Soutenez le projet ou remerciez son auteur sur ko-fi.com/knighthd",
+                "Enjoying MPFever? Support the project or thank its author at ko-fi.com/knighthd"));
             sessionGen++;
             clientCancelled = true;
             foreach (var cl in clients.ToList()) try { cl.Dispose(); } catch { }

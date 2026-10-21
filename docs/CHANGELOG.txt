@@ -1,6 +1,20 @@
 MPFever - Changelog
 ===================
 
+0.3.22 - no longer "experimental"; replayed stops priced like the tool's; a thanks window when the game closes
+  - The version and the archives lose "-experimental" (MPFever-0.3.22.zip, MPFever-0.3.22-server.zip). The automatic
+    update of 0.3.15 to 0.3.21 takes any MPFever*.zip of the newest release, so they update to it (launcher selftest).
+    The mode « One company per player » stays marked experimental.
+  - FIX: a replayed bus stop or signal paid a quarter of the street or track segment it replaces, where the tool pays
+    nothing for it (#62, second part, pull request #70 by Steelworm). The replay of a tool's stop is now marked, and the
+    native module gives it the tool's refund factor. MPFEVER_REPLACEFREE=0 turns it off. Still seen in a real session: the
+    stop tool charges a fixed multiple of what a replay pays (6x on the test savegame); the refund booking evens it out.
+  - NEW: when the game closes, the launcher stays open behind a small window: thanks, support on Ko-fi, rate on Nexus,
+    star on GitHub, report a problem, close it (Escape) or quit MPFever. The launcher's footer has a « ♥ Support
+    MPFever » link (ko-fi.com/knighthd).
+  - Tests: the dozenew scenario (build then demolish) now works on the host too (other dead ends, refusal reasons
+    logged); conedit no longer rebuilds modular stations by script, which crashed the builder's game.
+
 0.3.21-experimental - stations, stops and street upgrades replayed alike; paused builds shipped; smaller window
   - FIX: editing a rail station could crash the other games (issues #65, #67). A modular station whose tracks were set
     to standard or high-speed track was not recognised as a station: its edit was rebuilt by the script forms, then in

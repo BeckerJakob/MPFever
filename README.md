@@ -1,6 +1,6 @@
 # MPFever – Multiplayer for Transport Fever 3
 
-Experimental multiplayer for Transport Fever 3. Several players play the same world, each in their own copy of the game, over the internet or a local network. They play either:
+Multiplayer for Transport Fever 3. Several players play the same world, each in their own copy of the game, over the internet or a local network. They play either:
 
 - in **one shared company** (co-op);
 - or **each with their own company**. This second mode is still in development and has many bugs: use it to test and help.
@@ -9,7 +9,7 @@ The game starts from `MPFever.exe`. A multiplayer page in the main menu, in the 
 
 A world can also run on a **dedicated server** (`MPFever.exe --server`): a PC of its own runs the world, nobody plays on it, and the players join it as they join a host. See [SERVER](docs/SERVER.txt).
 
-Enjoying MPFever? You can support its development on [Ko-fi](https://ko-fi.com/H2H717LY5N).
+Enjoying MPFever? You can support its development on [Ko-fi](https://ko-fi.com/knighthd).
 
 Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL](docs/INSTALL.txt), [SERVER](docs/SERVER.txt), [ROADMAP](docs/ROADMAP.txt) and [CHANGELOG](docs/CHANGELOG.txt). What we learned about the engine, the causes of desyncs and what must be synchronised in each mode is in [RESEARCH](docs/RESEARCH.md).
 
@@ -173,7 +173,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Experimental (0.3.21). Supported game builds:
+Version 0.3.22, still in active development. Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.
@@ -184,7 +184,7 @@ See [`docs/ROADMAP.txt`](docs/ROADMAP.txt).
 
 MPFever is free and open source, developed on free time. If you enjoy playing Transport Fever 3 with your friends and want to help the development, you can support it on Ko-fi:
 
-[![Support MPFever on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/H2H717LY5N)
+[![Support MPFever on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/knighthd)
 
 Testing and reporting problems with your logs helps just as much: thank you!
 

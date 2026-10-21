@@ -1,8 +1,8 @@
-[size=5][b]MPFever – Multiplayer for Transport Fever 3 (experimental)[/b][/size]
+[size=5][b]MPFever – Multiplayer for Transport Fever 3[/b][/size]
 
 [b]Build your transport empire together.[/b] MPFever adds multiplayer to Transport Fever 3. You and your friends play the same world, each in your own game, over the internet or a local network. You can share one company or each run your own.
 
-[b]⚠ Experimental version (0.3.21).[/b] It works, but expect bugs, short pauses and the occasional crash. Back up your savegames, and please send feedback: it decides what comes next.
+[b]⚠ Version 0.3.22, still in active development.[/b] It works, but you may meet bugs, short pauses or a crash now and then. Back up your savegames, and please send feedback: it decides what comes next.
 
 [size=4][b]Features[/b][/size]
 [list]
@@ -61,3 +61,6 @@ Describe what you did and what happened, and attach:
 [*]the %TEMP%\mpfever session folders.
 [/list]
 Details are in README.txt.
+
+[b]Support[/b]
+Enjoying MPFever? Support the project or thank its author on [url=https://ko-fi.com/knighthd]Ko-fi[/url].
