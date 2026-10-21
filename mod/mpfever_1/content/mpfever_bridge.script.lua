@@ -2900,6 +2900,22 @@ local function stopPlan(margs)
 	return { E = E, seg = ad, objs = objs, removeIdx = removeIdx, nodeConfigs = st.nodeConfigsToAdd or {}, segType = rm.type }
 end
 
+-- A tool's stop or signal pays nothing for the segment it replaces (the street or track under it); a script's command pays a
+-- quarter of that segment's price for it (the Context's refund factor 0.75 against the replaced segment: 15 per metre of a town
+-- street, issue #62), and the money was then booked back (REFUND.book). The replay of a tool's build (its flags came with it,
+-- a.ctx) is sent with doDust set, which the native module turns into the same terms (refund factor 1.0). Only what was measured
+-- against the tools: new stops or signals on a segment of the same template, none removed, the street not cleaned up (not the
+-- bulldozer on a stop, nor the stops placed again after a street build, plan.after: what their builder paid is not known; the
+-- bookings still even out any difference). MPFEVER_REPLACEFREE=0: as before; MPFEVER_REPLACEFREE=builder (tests): the replays as
+-- before, the dstop scenario's builder still priced like the tool.
+G.toolCosts = function(a, plan)
+	local bits = tonumber(a and a.ctx)
+	local sw = os.getenv("MPFEVER_REPLACEFREE")
+	return bits ~= nil and bits >= 32 and math.floor(bits / 4) % 2 == 0 and #(plan.objs or {}) > 0 and next(plan.removeIdx or {}) == nil
+		and not plan.after and not plan.plainCosts and not plan.cleanup and os.getenv("MPFEVER_STOPCLEANUP") ~= "1"
+		and sw ~= "0" and sw ~= "builder"
+end
+
 local function replayStop(a, plan, variant)
 	variant = variant or 1
 	local c = api.engine.getComponent(plan.E, api.type.ComponentType.BASE_EDGE)
@@ -2983,10 +2999,16 @@ local function replayStop(a, plan, variant)
 		if not okn then log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: node configurations not copied: " .. tostring(errn)) end
 	end
 	sp.streetProposal = ssp
-	local okf, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, sContext(not plan.after and a or nil, plan.cleanup), false, true) end)
+	local free = G.toolCosts(a, plan) and cc.roadTemplate == c.roadTemplate
+	local okf, cmd = pcall(function()
+		local ctx = sContext(not plan.after and a or nil, plan.cleanup)
+		if free then return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true, true) end
+		return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true)
+	end)
 		if okf and cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " stop context: tool flags " .. tostring(a.ctx)) end
 	if not okf or not cmd then
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: factory (variant " .. variant .. ") " .. shortErr(cmd))
+		if free then plan.plainCosts = true; return replayStop(a, plan, variant) end
 		if variant < 2 then return replayStop(a, plan, variant + 1) end
 		return
 	end
@@ -3000,7 +3022,14 @@ local function replayStop(a, plan, variant)
 	replaySend(cmd, function(res, success)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
-		log("NATIVE REPLAY " .. tostring(a.uid) .. " stop on segment " .. plan.E .. ": " .. (success and "BUILT" or ("refused " .. why)))
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " stop on segment " .. plan.E .. ": " .. (success and "BUILT" or ("refused " .. why)) .. (free and ", priced like the tool's build" or ""))
+		-- (refused in that form: once more without it, which pays the quarter of the replaced segment, booked back as before)
+		if not success and free then
+			plan.plainCosts = true
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: tried again without the tool's pricing")
+			G.waits[#G.waits + 1] = { at = G.frames + 1, fn = function() replayStop(a, plan, variant) end }
+			return
+		end
 		-- (built on the player's game: a refusal here means the games differ, the host reloads at once)
 		-- (refused without the street cleanup, "Collision" in a test: tried once more with it, as before 0.3.21)
 		if not success and not plan.cleanup then
@@ -9070,6 +9099,115 @@ H.dsignal = function(from, p)
 	if not ok then
 		log("DSIGNAL failed: " .. tostring(err))
 		AUTO.results[#AUTO.results + 1] = "dsignal error " .. tostring(err)
+		autoFinish()
+	end
+end
+
+-- Stops put on town streets the way the stop tool builds them (MPFEVER_SCENARIO=dstop): the street segment is replaced by a copy
+-- carrying the stop, with the tool's Context (nothing cleaned up) and the junctions' node configurations removed (the tool also puts
+-- them back; this does not), sent as a script's command marked like a replayed stop (doDust: the native module prices it like the
+-- tool's build, the replaced segment free), held and shipped as a native build: the other games replay it and must pay what this one
+-- did. MPFEVER_DSTOP_COUNT stops (3), each on a segment of its own. MPFEVER_STOPTOOL=0 or MPFEVER_REPLACEFREE=0: not marked (the
+-- segment is paid for, the replay then pays it too).
+H.dstop = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("DSTOP " .. t); AUTO.results[#AUTO.results + 1] = t end
+	local ok, err = pcall(function()
+		local want = tonumber(os.getenv("MPFEVER_DSTOP_COUNT") or "3") or 3
+		local list = {}
+		for _, e in ipairs(R.allEdges()) do
+			local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+			local okC, con = pcall(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForEdge(e) end)
+			if c and c.type == 0 and #c.objects == 0 and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET)
+				and tostring(c.roadTemplate):find("/town/", 1, true) and not (okC and type(con) == "number" and con >= 0) then
+				local a, b = nodePosition(c.node0), nodePosition(c.node1)
+				local len = a and b and math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) or 0
+				if len > 40 and len < 120 then list[#list + 1] = e end
+			end
+		end
+		if #list < want then say("dstop: only " .. #list .. " free town street segments"); return autoFinish() end
+		local used, n, step = {}, 0, ((C.ROLE == "host") and 7 or 23)
+		local nextOne
+		nextOne = function()
+			if n >= want then G.waits[#G.waits + 1] = { at = G.frames + 90, fn = autoFinish }; return end
+			local E
+			for k = 1, #list do
+				local cand = list[(step * (n + 1) + k) % #list + 1]
+				local cc0 = api.engine.getComponent(cand, api.type.ComponentType.BASE_EDGE)
+				if cc0 and #cc0.objects == 0 and not used[cc0.node0] and not used[cc0.node1] then E = cand; break end
+			end
+			if not E then say("dstop: no segment left"); return autoFinish() end
+			n = n + 1
+			local c = api.engine.getComponent(E, api.type.ComponentType.BASE_EDGE)
+			used[c.node0] = true; used[c.node1] = true
+			local sp = api.type.SimpleProposal.new()
+			local ssp = sp.streetProposal
+			local e = api.type.SegmentAndEntity.new()
+			e.entity = -1
+			e.type = 0
+			local cc = e.comp
+			cc.node0 = c.node0; cc.node1 = c.node1
+			cc.tangent0 = vec(c.tangent0); cc.tangent1 = vec(c.tangent1)
+			cc.position0 = vec(nodePosition(c.node0)); cc.position1 = vec(nodePosition(c.node1))
+			cc.type = c.type; cc.typeIndex = c.typeIndex
+			cc.roadTemplate = c.roadTemplate; cc.roadStyle = c.roadStyle; cc.roadType = c.roadType
+			cc.laneConfigs = c.laneConfigs
+			local left = n % 2 == 0
+			cc.objects = { { -400000000, left and 0 or 1 } }
+			e.comp = cc
+			local se = e.streetEdge; se.precedenceNode0 = 2; se.precedenceNode1 = 2; e.streetEdge = se
+			local eo = api.type.SimpleStreetProposal.EdgeObject.new()
+			eo.edgeEntity = -1
+			eo.param = 0.3 + 0.1 * n
+			eo.oneWay = false
+			eo.left = left
+			eo.model = K.STOP_MODEL
+			eo.playerEntity = api.engine.util.getPlayer()
+			eo.name = "MPF stop " .. C.ROLE .. n
+			ssp.edgesToRemove = { E }
+			ssp.edgesToAdd = { e }
+			ssp.edgeObjectsToAdd = { eo }
+			-- (the junctions' node configurations refer to the replaced segment: removed)
+			local ncr = {}
+			for _, nd in ipairs({ c.node0, c.node1 }) do
+				local okn, nc = pcall(function() return api.engine.getComponent(nd, api.type.ComponentType.BASE_NODE_CONFIG) end)
+				if okn and nc then ncr[#ncr + 1] = nd end
+			end
+			if #ncr > 0 then ssp.nodeConfigsToRemove = ncr end
+			sp.streetProposal = ssp
+			local ctx = api.type.Context.new()
+			ctx.checkTerrainAlignment = false
+			ctx.cleanupStreetGraph = false
+			ctx.gatherBuildings = false
+			ctx.gatherFields = true
+			ctx.player = api.engine.util.getPlayer()
+			local tool = os.getenv("MPFEVER_STOPTOOL") ~= "0" and os.getenv("MPFEVER_REPLACEFREE") ~= "0"
+			local p0, p1 = nodePosition(c.node0), nodePosition(c.node1)
+			AUTO.points[#AUTO.points + 1] = p0
+			say("stop " .. n .. " on segment " .. E .. " (" .. tostring(c.roadTemplate):match("[^/]+$") .. ", chord "
+				.. string.format("%.2f", math.sqrt((p0.x - p1.x) ^ 2 + (p0.y - p1.y) ^ 2 + (p0.z - p1.z) ^ 2)) .. (tool and ", priced like the tool's build" or ", priced as a script's") .. ")")
+			-- (doDust set: the native module turns that into the tool's terms)
+			local cmd = tool and api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true, true) or api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true)
+			deferredSend(cmd, function(res, success)
+				local why, costs = "", "?"
+				if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+				pcall(function() costs = tostring(res.resultProposalData.costs) end)
+				say("stop " .. n .. ": " .. (success and "built" or ("refused " .. why)) .. ", costs " .. costs)
+				G.waits[#G.waits + 1] = { at = G.frames + 60, fn = nextOne }
+			end)
+			-- (what the native module reports of a tool's command: its flags, 32 = known, see pollNativeEvents)
+			if tool then
+				G.natCtx = G.natCtx or {}
+				G.natCtx[100000 + G.autoBuildSeq] = 32
+			end
+		end
+		nextOne()
+	end)
+	if not ok then
+		say("failed " .. shortErr(err))
 		autoFinish()
 	end
 end
