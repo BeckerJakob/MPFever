@@ -173,7 +173,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Version 0.3.23, still in active development. Supported game builds:
+Version 0.3.24, still in active development. Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.

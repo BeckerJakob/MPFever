@@ -2665,15 +2665,17 @@ local OBJECT_FORMS = {}
 -- A pure upgrade (every added segment replaces a removed one between the same nodes, nothing else): the engine's
 -- replaceSegment builds it exactly as the upgrade tool does.
 local function upgradePlan(margs, townAuto)
+	-- (why there is no plan, for the log: G.upgradeWhy)
+	local function no(why) G.upgradeWhy = why return nil end
 	local st = margs[1] and margs[1].proposal
-	if type(st) ~= "table" then return nil end
-	if #(st.addedNodes or {}) > 0 or #(st.removedNodes or {}) > 0 or #(st.edgeObjectsToAdd or {}) > 0 then return nil end
+	if type(st) ~= "table" then return no("no proposal") end
+	if #(st.addedNodes or {}) > 0 or #(st.removedNodes or {}) > 0 or #(st.edgeObjectsToAdd or {}) > 0 then return no("nodes added or removed, or stops added") end
 	-- the tool said which new segment replaces which old one: the native proposal with those maps gives the new segments the
 	-- builder's numbers. replaceSegment numbered them otherwise (issue #64: segment 290428 here, 272675 on the builder's
 	-- game; an upgrade of 3 segments became 3 builds), and every later build then differed. MPFEVER_UPGRADEPLAN=1: as before.
-	if C.hasReplaceMaps(st) and os.getenv("MPFEVER_UPGRADEPLAN") ~= "1" and os.getenv("MPFEVER_MAPREPLAY") ~= "0" then return nil end
+	if C.hasReplaceMaps(st) and os.getenv("MPFEVER_UPGRADEPLAN") ~= "1" and os.getenv("MPFEVER_MAPREPLAY") ~= "0" then return no("replacement maps") end
 	-- a stop removed with the bulldozer looks like an upgrade, but replaceSegment would keep the stop
-	if #(st.edgeObjectsToRemove or {}) > 0 then return nil end
+	if #(st.edgeObjectsToRemove or {}) > 0 then return no("stops removed") end
 	-- constructions: only town buildings the engine moved for the new street (nobody's, -1); every game's own
 	-- replaceSegment moves them the same way (a rebuilt proposal could not make them town buildings again)
 	local tAdd, tRem = margs[1].toAdd or {}, margs[1].toRemove or {}
@@ -2682,9 +2684,9 @@ local function upgradePlan(margs, townAuto)
 	-- (except town buildings the engine itself moves, townAuto: this game's replaceSegment, with buildings gathered, takes the
 	-- same ones away and puts the same ones back. Rebuilt by the script forms, a widened street with trees made a proposal
 	-- whose lanes the engine asserted on, and the game crashed: issue #65. MPFEVER_TOWNUPGRADE=0: as before)
-	if (#tAdd > 0 or #tRem > 0) and not (townAuto and os.getenv("MPFEVER_TOWNUPGRADE") ~= "0") then return nil end
+	if (#tAdd > 0 or #tRem > 0) and not (townAuto and os.getenv("MPFEVER_TOWNUPGRADE") ~= "0") then return no("constructions other than town buildings") end
 	local added, removed = st.addedSegments or {}, st.removedSegments or {}
-	if #added == 0 or #added ~= #removed then return nil end
+	if #added == 0 or #added ~= #removed then return no("not one new segment per old one") end
 	-- tram tracks added to (or taken from) a street: the tool also changes the lane connections of its crossings (node
 	-- configurations), which replaceSegment leaves as they were (the tracks stopped at the crossings): the native proposal
 	-- is replayed instead, node configurations included
@@ -2695,7 +2697,7 @@ local function upgradePlan(margs, townAuto)
 				local ac, rc = ad.comp or {}, rm.comp or {}
 				local same = (rc.node0 == ac.node0 and rc.node1 == ac.node1) or (rc.node0 == ac.node1 and rc.node1 == ac.node0)
 				-- (same street type, other lanes: tracks; a new street type keeps the upgrade's replay)
-				if same and ac.roadTemplate == rc.roadTemplate and lanes(ad) ~= lanes(rm) then return nil end
+				if same and ac.roadTemplate == rc.roadTemplate and lanes(ad) ~= lanes(rm) then return no("tram tracks (node configurations)") end
 			end
 		end
 	end
@@ -2709,12 +2711,12 @@ local function upgradePlan(margs, townAuto)
 			if (rc.node0 == c.node0 and rc.node1 == c.node1) or (rc.node0 == c.node1 and rc.node1 == c.node0) then
 				match = rm.entity
 				-- more than a new template (a bridge, a different track...): replaceSegment would not make it
-				if c.type ~= rc.type or c.typeIndex ~= rc.typeIndex or c.roadType ~= rc.roadType or ad.type ~= rm.type then return nil end
+				if c.type ~= rc.type or c.typeIndex ~= rc.typeIndex or c.roadType ~= rc.roadType or ad.type ~= rm.type then return no("other segment type") end
 				-- (the decorations, a noise barrier for instance, are put on the engine's upgrade proposal below)
 				if C.ser(c.edgeDecorations or {}) ~= C.ser(rc.edgeDecorations or {}) then decorations = c.edgeDecorations or {} end
 			end
 		end
-		if type(match) ~= "number" or match < 0 then return nil end
+		if type(match) ~= "number" or match < 0 then return no("no old segment between the same nodes") end
 		plan[#plan + 1] = { edge = match, template = c.roadTemplate, decorations = decorations, lanes = customLanes, n0 = c.node0 }
 	end
 	return plan
@@ -3687,8 +3689,18 @@ local function replayNative(a, formIndex)
 					.. " taken away by the engine itself")
 			end
 		end
+		G.upgradeWhy = nil
 		local plan = (#missing == 0) and upgradePlan(probe, a.townAuto) or nil
 		if plan then return replayUpgrade(a, plan, 1) end
+		if a.townAuto then log("NATIVE REPLAY " .. tostring(a.uid) .. ": no street upgrade (" .. tostring(G.upgradeWhy or (#missing > 0 and "unresolved" or "?")) .. ")") end
+		-- a street through a town that moves town buildings: never by the script forms, whose lanes the engine asserted on while
+		-- making the command (the host's game crashed, issue #75), nor given up when the street carries stops (every form refused):
+		-- the tool's own native proposal, without the town buildings, which this game's engine moves itself.
+		-- MPFEVER_TOWNNATIVE=0: as before
+		if a.townAuto and #missing == 0 and os.getenv("MPFEVER_TOWNNATIVE") ~= "0" then
+			log("NATIVE REPLAY " .. tostring(a.uid) .. ": a street through a town" .. C.mapSizes(a.args[1]) .. ": native street proposal")
+			return replayNativeStreet(a)
+		end
 		-- stops: the stop tool replaces one existing segment between the same nodes and adds edge objects
 		local stp = probe[1] and probe[1].proposal
 		-- (the signs of an airport are edge objects on its own taxiways: the airport goes the construction's way below)

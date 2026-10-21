@@ -1,6 +1,14 @@
 MPFever - Changelog
 ===================
 
+0.3.24 - town street upgrades no longer crash the host
+  - FIX: upgrading a town street that moves town buildings (#75, #74): when the engine's own street upgrade could not be
+    used, the replay fell back to the script forms. While making the command, the engine asserted on the street's lanes
+    and the host's game crashed; on a street with a bus stop, every form was refused and the host's game reloaded. Such
+    an upgrade is now replayed as the tool's own native proposal, without the town buildings, which every game's engine
+    moves itself. MPFEVER_TOWNNATIVE=0: as before. The log says why the street upgrade was not used ("no street upgrade
+    (...)"), to find the remaining cause.
+
 0.3.23 - road junctions replayed; players on another version are refused
   - FIX: the road junctions of the street tool (roundabout, T, trumpet, cloverleaf, diamond and diverging diamond
     interchanges, street_construction/*.con) made a desync each time (#72): MPFever did not take them for constructions,
