@@ -3694,6 +3694,11 @@ local function replayNativeStreet(a)
 		ctx.checkTerrainAlignment = math.floor(bits / 2) % 2 == 1
 		ctx.cleanupStreetGraph = math.floor(bits / 4) % 2 == 1
 	end
+	-- never the street cleanup: the tool's proposal is already the cleaned-up result, and cleaned up once more here the
+	-- engine merged one more node of the new road (one segment fewer on the replaying game, a cost a fourth off: a manual
+	-- test on 40423, 2026-10-22; without it, the same cost and ground as the builder's). MPFEVER_STREETCLEANUP=1: the
+	-- tool's flag as before
+	if os.getenv("MPFEVER_STREETCLEANUP") ~= "1" then ctx.cleanupStreetGraph = false end
 	ctx.gatherFields = true
 	ctx.player = api.engine.util.getPlayer()
 	G.refundInto(ctx)
@@ -3725,6 +3730,19 @@ local function replayNativeStreet(a)
 			return
 		end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " native street BUILT (" .. label .. ")")
+		-- (diagnostic) the tool's new nodes and segments the engine did not apply here, by place
+		pcall(function()
+			local st = res.proposal.proposal
+			local got, miss = {}, {}
+			local function key(p) return string.format("%.0f,%.0f", p.x, p.y) end
+			for i = 1, #st.addedNodes do got[key(st.addedNodes[i].comp.position)] = true end
+			for _, n in ipairs(m.proposal.addedNodes or {}) do
+				local p = n.comp and n.comp.position
+				if p and not got[key(p)] then miss[#miss + 1] = "node " .. tostring(n.entity) .. "@" .. key(p) end
+			end
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " engine applied: +nodes " .. #st.addedNodes .. " -nodes " .. #st.removedNodes .. " +segments " .. #st.addedSegments
+				.. " -segments " .. #st.removedSegments .. (#miss > 0 and ("; missing " .. table.concat(miss, " ")) or ""))
+		end)
 		-- the stops and signals the tool re-created on the new segments (issue #28)
 		G.placeStopsAfter(a)
 		local expected = #(m.proposal.addedSegments or {}) - #(m.proposal.removedSegments or {})

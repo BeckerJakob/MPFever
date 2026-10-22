@@ -1,6 +1,14 @@
 MPFever - Changelog
 ===================
 
+0.4.3 - roads that replace segments replayed exactly
+  - FIX: a road of the street tool replacing existing segments (replayed as the tool's own proposal) was cleaned up once
+    more on the other games: the engine merged one more node of the new road there, one segment fewer, then a resync
+    (a manual test on 40423: 7 segments instead of 8, a cost of 34301 instead of 59895). The tool's proposal is already
+    cleaned up: it is now replayed without the street cleanup, which gives the builder's segments, cost and ground
+    exactly (replayed from the test's own builds on both games, and the road scenario in sync). MPFEVER_STREETCLEANUP=1:
+    as before.
+
 0.4.2 - « one company per player » on game build 40423
   - FIX: 4 readings of the local player (the word +0x20C that « one company per player » sets per game) were not found on
     build 40423: in the interface's tools money check (0x65b1f4 on 40420, 0x65bf74 on 40423), a small player reading
