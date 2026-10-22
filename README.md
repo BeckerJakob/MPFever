@@ -174,9 +174,9 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Version 0.4.1, still in active development. Supported game builds:
+Version 0.4.2, still in active development. Supported game builds:
 
-- **40423**, the current Steam version (update of 2026-10-22): supported through the signatures shipped with MPFever (`mpfever_sigs.txt`), except 4 places of « one company per player ».
+- **40423**, the current Steam version (update of 2026-10-22): supported through the signatures shipped with MPFever (`mpfever_sigs.txt`).
 - **40420**: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.
 

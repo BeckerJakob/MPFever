@@ -1,6 +1,13 @@
 MPFever - Changelog
 ===================
 
+0.4.2 - « one company per player » on game build 40423
+  - FIX: 4 readings of the local player (the word +0x20C that « one company per player » sets per game) were not found on
+    build 40423: in the interface's tools money check (0x65b1f4 on 40420, 0x65bf74 on 40423), a small player reading
+    (0x7aa040 / 0x7aefc0) and UI::react::UpdateConstructionActionForRC (0x2a1cb9d, 0x2a1ce5f / 0x2a240ad, 0x2a2436f).
+    Their signatures held bytes the update changed; they are now made of the bytes common to both builds. 100 places of
+    100 found on 40420 and on 40423.
+
 0.4.1 - game build 40423; savegames of a game not installed through Steam
   - FIX: the signatures of the native module's places (native/mpfever_sigs.txt, tools/mksigs.py) were never shipped. On a
     game build the module does not know, like the update 40423 of 2026-10-22, it then turned every hook off: no
