@@ -6345,44 +6345,44 @@
       "zh-CN": "另一个多人联机模组：它修改与 MPFever 相同的内容。请将其禁用。",
       "zh-TW": "另一個多人連線模組：它修改與 MPFever 相同的內容。請將其停用。"
     },
-    "The names given by the host's game apply everywhere (0.3.25).": {
-      "de": "Die vom Spiel des Hosts vergebenen Namen gelten überall (0.3.25).",
-      "es": "Los nombres que da la partida del anfitrión se aplican en todas partes (0.3.25).",
-      "it": "I nomi dati dalla partita dell'host valgono ovunque (0.3.25).",
-      "nl": "De namen die het spel van de host geeft, gelden overal (0.3.25).",
-      "pl": "Nazwy nadane w grze hosta obowiązują wszędzie (0.3.25).",
-      "pt-BR": "Os nomes dados pelo jogo do anfitrião valem em todos os jogos (0.3.25).",
-      "ru": "Имена, заданные в игре хоста, применяются везде (0.3.25).",
-      "ja": "ホストのゲームが付けた名前が全員に適用されます（0.3.25）。",
-      "ko": "호스트의 게임이 정한 이름이 모두에게 적용됩니다 (0.3.25).",
-      "zh-CN": "主机游戏设定的名称适用于所有人（0.3.25）。",
-      "zh-TW": "主機遊戲設定的名稱適用於所有人（0.3.25）。"
+    "The names given by the host's game apply everywhere (0.4.0).": {
+      "de": "Die vom Spiel des Hosts vergebenen Namen gelten überall (0.4.0).",
+      "es": "Los nombres que da la partida del anfitrión se aplican en todas partes (0.4.0).",
+      "it": "I nomi dati dalla partita dell'host valgono ovunque (0.4.0).",
+      "nl": "De namen die het spel van de host geeft, gelden overal (0.4.0).",
+      "pl": "Nazwy nadane w grze hosta obowiązują wszędzie (0.4.0).",
+      "pt-BR": "Os nomes dados pelo jogo do anfitrião valem em todos os jogos (0.4.0).",
+      "ru": "Имена, заданные в игре хоста, применяются везде (0.4.0).",
+      "ja": "ホストのゲームが付けた名前が全員に適用されます（0.4.0）。",
+      "ko": "호스트의 게임이 정한 이름이 모두에게 적용됩니다 (0.4.0).",
+      "zh-CN": "主机游戏设定的名称适用于所有人（0.4.0）。",
+      "zh-TW": "主機遊戲設定的名稱適用於所有人（0.4.0）。"
     },
-    "The colours given by the host's game apply everywhere (0.3.25).": {
-      "de": "Die vom Spiel des Hosts vergebenen Farben gelten überall (0.3.25).",
-      "es": "Los colores que da la partida del anfitrión se aplican en todas partes (0.3.25).",
-      "it": "I colori dati dalla partita dell'host valgono ovunque (0.3.25).",
-      "nl": "De kleuren die het spel van de host geeft, gelden overal (0.3.25).",
-      "pl": "Kolory nadane w grze hosta obowiązują wszędzie (0.3.25).",
-      "pt-BR": "As cores dadas pelo jogo do anfitrião valem em todos os jogos (0.3.25).",
-      "ru": "Цвета, заданные в игре хоста, применяются везде (0.3.25).",
-      "ja": "ホストのゲームが付けた色が全員に適用されます（0.3.25）。",
-      "ko": "호스트의 게임이 정한 색상이 모두에게 적용됩니다 (0.3.25).",
-      "zh-CN": "主机游戏设定的颜色适用于所有人（0.3.25）。",
-      "zh-TW": "主機遊戲設定的顏色適用於所有人（0.3.25）。"
+    "The colours given by the host's game apply everywhere (0.4.0).": {
+      "de": "Die vom Spiel des Hosts vergebenen Farben gelten überall (0.4.0).",
+      "es": "Los colores que da la partida del anfitrión se aplican en todas partes (0.4.0).",
+      "it": "I colori dati dalla partita dell'host valgono ovunque (0.4.0).",
+      "nl": "De kleuren die het spel van de host geeft, gelden overal (0.4.0).",
+      "pl": "Kolory nadane w grze hosta obowiązują wszędzie (0.4.0).",
+      "pt-BR": "As cores dadas pelo jogo do anfitrião valem em todos os jogos (0.4.0).",
+      "ru": "Цвета, заданные в игре хоста, применяются везде (0.4.0).",
+      "ja": "ホストのゲームが付けた色が全員に適用されます（0.4.0）。",
+      "ko": "호스트의 게임이 정한 색상이 모두에게 적용됩니다 (0.4.0).",
+      "zh-CN": "主机游戏设定的颜色适用于所有人（0.4.0）。",
+      "zh-TW": "主機遊戲設定的顏色適用於所有人（0.4.0）。"
     },
-    "The platforms chosen by the host's game apply everywhere (0.3.25).": {
-      "de": "Die vom Spiel des Hosts gewählten Bahnsteige gelten überall (0.3.25).",
-      "es": "Los andenes que elige la partida del anfitrión se aplican en todas partes (0.3.25).",
-      "it": "I binari scelti dalla partita dell'host valgono ovunque (0.3.25).",
-      "nl": "De perrons die het spel van de host kiest, gelden overal (0.3.25).",
-      "pl": "Perony wybrane w grze hosta obowiązują wszędzie (0.3.25).",
-      "pt-BR": "As plataformas escolhidas pelo jogo do anfitrião valem em todos os jogos (0.3.25).",
-      "ru": "Платформы, выбранные в игре хоста, применяются везде (0.3.25).",
-      "ja": "ホストのゲームが選んだホームが全員に適用されます（0.3.25）。",
-      "ko": "호스트의 게임이 고른 승강장이 모두에게 적용됩니다 (0.3.25).",
-      "zh-CN": "主机游戏选择的站台适用于所有人（0.3.25）。",
-      "zh-TW": "主機遊戲選擇的月台適用於所有人（0.3.25）。"
+    "The platforms chosen by the host's game apply everywhere (0.4.0).": {
+      "de": "Die vom Spiel des Hosts gewählten Bahnsteige gelten überall (0.4.0).",
+      "es": "Los andenes que elige la partida del anfitrión se aplican en todas partes (0.4.0).",
+      "it": "I binari scelti dalla partita dell'host valgono ovunque (0.4.0).",
+      "nl": "De perrons die het spel van de host kiest, gelden overal (0.4.0).",
+      "pl": "Perony wybrane w grze hosta obowiązują wszędzie (0.4.0).",
+      "pt-BR": "As plataformas escolhidas pelo jogo do anfitrião valem em todos os jogos (0.4.0).",
+      "ru": "Платформы, выбранные в игре хоста, применяются везде (0.4.0).",
+      "ja": "ホストのゲームが選んだホームが全員に適用されます（0.4.0）。",
+      "ko": "호스트의 게임이 고른 승강장이 모두에게 적용됩니다 (0.4.0).",
+      "zh-CN": "主机游戏选择的站台适用于所有人（0.4.0）。",
+      "zh-TW": "主機遊戲選擇的月台適用於所有人（0.4.0）。"
     },
     "Script acting on the game: not tested with MPFever yet.": {
       "de": "Skript, das ins Spiel eingreift: noch nicht mit MPFever getestet.",
@@ -6397,31 +6397,31 @@
       "zh-CN": "会影响游戏的脚本：尚未与 MPFever 一起测试。",
       "zh-TW": "會影響遊戲的腳本：尚未與 MPFever 一起測試。"
     },
-    "Mods' line names, colours and terminals sent by the host only (0.3.25)": {
-      "de": "Liniennamen, -farben und Bahnsteige von Mods nur vom Host gesendet (0.3.25)",
-      "es": "Nombres, colores y andenes de líneas de los mods enviados solo por el anfitrión (0.3.25)",
-      "it": "Nomi, colori e binari delle linee delle mod inviati solo dall'host (0.3.25)",
-      "nl": "Lijnnamen, -kleuren en perrons van mods alleen door de host verstuurd (0.3.25)",
-      "pl": "Nazwy, kolory i perony linii z modów wysyłane tylko przez hosta (0.3.25)",
-      "pt-BR": "Nomes, cores e plataformas de linhas dos mods enviados só pelo anfitrião (0.3.25)",
-      "ru": "Названия, цвета и платформы линий от модов отправляет только хост (0.3.25)",
-      "ja": "MODによる路線名・色・ホームはホストのみが送信（0.3.25）",
-      "ko": "모드의 노선 이름·색상·승강장은 호스트만 전송 (0.3.25)",
-      "zh-CN": "模组设定的线路名称、颜色和站台仅由主机发送（0.3.25）",
-      "zh-TW": "模組設定的路線名稱、顏色和月台僅由主機傳送（0.3.25）"
+    "Mods' line names, colours and terminals sent by the host only (0.4.0)": {
+      "de": "Liniennamen, -farben und Bahnsteige von Mods nur vom Host gesendet (0.4.0)",
+      "es": "Nombres, colores y andenes de líneas de los mods enviados solo por el anfitrión (0.4.0)",
+      "it": "Nomi, colori e binari delle linee delle mod inviati solo dall'host (0.4.0)",
+      "nl": "Lijnnamen, -kleuren en perrons van mods alleen door de host verstuurd (0.4.0)",
+      "pl": "Nazwy, kolory i perony linii z modów wysyłane tylko przez hosta (0.4.0)",
+      "pt-BR": "Nomes, cores e plataformas de linhas dos mods enviados só pelo anfitrião (0.4.0)",
+      "ru": "Названия, цвета и платформы линий от модов отправляет только хост (0.4.0)",
+      "ja": "MODによる路線名・色・ホームはホストのみが送信（0.4.0）",
+      "ko": "모드의 노선 이름·색상·승강장은 호스트만 전송 (0.4.0)",
+      "zh-CN": "模组设定的线路名称、颜色和站台仅由主机发送（0.4.0）",
+      "zh-TW": "模組設定的路線名稱、顏色和月台僅由主機傳送（0.4.0）"
     },
-    "Replayed builds shown to mods as made elsewhere (0.3.25)": {
-      "de": "Nachgebaute Bauten werden Mods als anderswo gebaut gemeldet (0.3.25)",
-      "es": "Las construcciones repetidas se muestran a los mods como hechas en otro lugar (0.3.25)",
-      "it": "Le costruzioni riprodotte appaiono alle mod come fatte altrove (0.3.25)",
-      "nl": "Nagespeelde bouwwerken worden aan mods getoond als elders gemaakt (0.3.25)",
-      "pl": "Odtworzone budowy są pokazywane modom jako wykonane gdzie indziej (0.3.25)",
-      "pt-BR": "Construções reproduzidas aparecem aos mods como feitas em outro lugar (0.3.25)",
-      "ru": "Повторённые постройки показываются модам как сделанные в другой игре (0.3.25)",
-      "ja": "再現された建設はMODに他所で行われたものとして通知（0.3.25）",
-      "ko": "재현된 건설은 모드에 다른 곳에서 한 것으로 표시 (0.3.25)",
-      "zh-CN": "重放的建造会告知模组为他处所建（0.3.25）",
-      "zh-TW": "重播的建造會告知模組為他處所建（0.3.25）"
+    "Replayed builds shown to mods as made elsewhere (0.4.0)": {
+      "de": "Nachgebaute Bauten werden Mods als anderswo gebaut gemeldet (0.4.0)",
+      "es": "Las construcciones repetidas se muestran a los mods como hechas en otro lugar (0.4.0)",
+      "it": "Le costruzioni riprodotte appaiono alle mod come fatte altrove (0.4.0)",
+      "nl": "Nagespeelde bouwwerken worden aan mods getoond als elders gemaakt (0.4.0)",
+      "pl": "Odtworzone budowy są pokazywane modom jako wykonane gdzie indziej (0.4.0)",
+      "pt-BR": "Construções reproduzidas aparecem aos mods como feitas em outro lugar (0.4.0)",
+      "ru": "Повторённые постройки показываются модам как сделанные в другой игре (0.4.0)",
+      "ja": "再現された建設はMODに他所で行われたものとして通知（0.4.0）",
+      "ko": "재현된 건설은 모드에 다른 곳에서 한 것으로 표시 (0.4.0)",
+      "zh-CN": "重放的建造会告知模组为他处所建（0.4.0）",
+      "zh-TW": "重播的建造會告知模組為他處所建（0.4.0）"
     },
     "Mods to fix: %s of %s": {
       "de": "Zu behebende Mods: %s von %s",
@@ -6566,18 +6566,18 @@
       "zh-CN": "未测试的脚本可能导致游戏不同步：届时 MPFever 会为所有人重新加载游戏。",
       "zh-TW": "未測試的腳本可能導致遊戲不同步：屆時 MPFever 會為所有人重新載入遊戲。"
     },
-    "Added signals are built once, by the game where the signal was placed (0.3.25).": {
-      "de": "Hinzugefügte Signale werden nur einmal gebaut, vom Spiel, in dem das Signal gesetzt wurde (0.3.25).",
-      "es": "Las señales añadidas se construyen una sola vez, en la partida donde se colocó la señal (0.3.25).",
-      "it": "I segnali aggiunti vengono costruiti una sola volta, dalla partita in cui è stato posato il segnale (0.3.25).",
-      "nl": "Toegevoegde seinen worden één keer gebouwd, door het spel waar het sein is geplaatst (0.3.25).",
-      "pl": "Dodane sygnały są budowane tylko raz, przez grę, w której postawiono sygnał (0.3.25).",
-      "pt-BR": "Os sinais adicionados são construídos uma só vez, pelo jogo onde o sinal foi colocado (0.3.25).",
-      "ru": "Добавленные сигналы строятся один раз — в игре, где был поставлен сигнал (0.3.25).",
-      "ja": "追加された信号は、信号を置いたゲームで一度だけ建設されます（0.3.25）。",
-      "ko": "추가된 신호는 신호를 놓은 게임에서 한 번만 건설됩니다 (0.3.25).",
-      "zh-CN": "添加的信号只会建造一次，由放置信号的那一方的游戏建造（0.3.25）。",
-      "zh-TW": "新增的號誌只會建造一次，由放置號誌的那一方的遊戲建造（0.3.25）。"
+    "Added signals are built once, by the game where the signal was placed (0.4.0).": {
+      "de": "Hinzugefügte Signale werden nur einmal gebaut, vom Spiel, in dem das Signal gesetzt wurde (0.4.0).",
+      "es": "Las señales añadidas se construyen una sola vez, en la partida donde se colocó la señal (0.4.0).",
+      "it": "I segnali aggiunti vengono costruiti una sola volta, dalla partita in cui è stato posato il segnale (0.4.0).",
+      "nl": "Toegevoegde seinen worden één keer gebouwd, door het spel waar het sein is geplaatst (0.4.0).",
+      "pl": "Dodane sygnały są budowane tylko raz, przez grę, w której postawiono sygnał (0.4.0).",
+      "pt-BR": "Os sinais adicionados são construídos uma só vez, pelo jogo onde o sinal foi colocado (0.4.0).",
+      "ru": "Добавленные сигналы строятся один раз — в игре, где был поставлен сигнал (0.4.0).",
+      "ja": "追加された信号は、信号を置いたゲームで一度だけ建設されます（0.4.0）。",
+      "ko": "추가된 신호는 신호를 놓은 게임에서 한 번만 건설됩니다 (0.4.0).",
+      "zh-CN": "添加的信号只会建造一次，由放置信号的那一方的游戏建造（0.4.0）。",
+      "zh-TW": "新增的號誌只會建造一次，由放置號誌的那一方的遊戲建造（0.4.0）。"
     },
     "TPF3-MP (another multiplayer mod) is installed on this PC.\n\nIt is INCOMPATIBLE with MPFever: it changes the same things, and a game where it is active keeps desynchronising.\n\nTurn it off in your savegames' mods (when loading the game) before playing with MPFever, or uninstall it.": {
       "de": "TPF3-MP (ein anderer Mehrspieler-Mod) ist auf diesem PC installiert.\n\nEr ist INKOMPATIBEL mit MPFever: Er verändert dieselben Dinge, und ein Spiel, in dem er aktiv ist, desynchronisiert sich ständig.\n\nDeaktiviere ihn in den Mods deiner Spielstände (beim Laden des Spiels), bevor du mit MPFever spielst, oder deinstalliere ihn.",

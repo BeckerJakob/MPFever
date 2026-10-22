@@ -3655,7 +3655,7 @@ end
 
 local function replayNativeStreet(a)
 	-- (a plain new street of the tool, see replayNative: when the tool's proposal cannot be made or is refused here, the
-	-- script forms are tried, as before 0.3.25)
+	-- script forms are tried, as before 0.4.0)
 	local fallback = a.plainStreet and G.replayForms or nil
 	local function failed(why)
 		if fallback then

@@ -65,8 +65,8 @@ namespace MPFever
             Fix("MPFEVER_EDITFORMS", "1", () => T("Éditions de gare jamais reconstruites par script (0.3.21)", "Station edits never rebuilt by script (0.3.21)")),
             Fix("MPFEVER_REPLAYUNUSED", "0", () => T("Constructions refusées décomptées en pause (0.3.21)", "Refused builds uncounted while paused (0.3.21)")),
             Fix("MPFEVER_RANK1OWN", "0", () => T("Niveau du siège de l'entreprise de l'hôte (0.3.21)", "Host company's headquarters level (0.3.21)")),
-            Fix("MPFEVER_MODHOST", "0", () => T("Noms, couleurs et terminaux de lignes des mods envoyés par l'hôte seul (0.3.25)", "Mods' line names, colours and terminals sent by the host only (0.3.25)")),
-            Fix("MPFEVER_MODEVENTS", "0", () => T("Constructions rejouées signalées aux mods comme faites ailleurs (0.3.25)", "Replayed builds shown to mods as made elsewhere (0.3.25)")),
+            Fix("MPFEVER_MODHOST", "0", () => T("Noms, couleurs et terminaux de lignes des mods envoyés par l'hôte seul (0.4.0)", "Mods' line names, colours and terminals sent by the host only (0.4.0)")),
+            Fix("MPFEVER_MODEVENTS", "0", () => T("Constructions rejouées signalées aux mods comme faites ailleurs (0.4.0)", "Replayed builds shown to mods as made elsewhere (0.4.0)")),
         };
 
         static Opt Fix(string key, string off, Func<string> name) => new Opt

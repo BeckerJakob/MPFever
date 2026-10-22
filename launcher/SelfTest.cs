@@ -77,6 +77,7 @@ namespace MPFever
             Check(us != null && us.ZipUrl.EndsWith("-server.zip"), "update: a dedicated server takes the server's archive");
             Check(Updater.Newest(json, "0.3.15-experimental") == null, "update: nothing newer than 0.3.15");
             Check(Updater.CompareVersions(Updater.ParseVersion("0.3.10"), Updater.ParseVersion("0.3.9")) > 0, "update: 0.3.10 is newer than 0.3.9");
+            Check(Updater.CompareVersions(Updater.ParseVersion("0.4.0"), Updater.ParseVersion("0.3.25")) > 0, "update: 0.4.0 is newer than 0.3.25");
             // (from 0.3.22 the archives lose "-experimental": the older launchers must still take them)
             var json2 = "[" + Rel("0.3.22", false, false, Asset("MPFever-0.3.22-server.zip"), Asset("MPFever-0.3.22.zip")) + ","
                 + Rel("0.3.21", false, false, Asset("MPFever-0.3.21-experimental-server.zip"), Asset("MPFever-0.3.21-experimental.zip")) + "]";

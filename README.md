@@ -65,7 +65,7 @@ Details, ports and troubleshooting: [INSTALL](docs/INSTALL.txt). Dedicated serve
 
 - **Mods that only add content** (vehicles, buildings, streets...), the interface or the game's data work when every player has the same version.
 - **Mods that change the game by themselves**, through a script, are shown as « untested script ». Each game runs the script on its own; if the mod does not decide the same thing on every game, the games drift apart and MPFever reloads the host's game for everybody.
-- Since 0.3.25, the mods that rename, recolour or update lines by themselves (*Auto Line Namer*, *Auto Color Lines*, *Auto Assign Terminals*, [issue #58](https://github.com/dkdknight/MPFever/issues/58)) work: only the host's game sends those changes, applied everywhere at the same step.
+- Since 0.4.0, the mods that rename, recolour or update lines by themselves (*Auto Line Namer*, *Auto Color Lines*, *Auto Assign Terminals*, [issue #58](https://github.com/dkdknight/MPFever/issues/58)) work: only the host's game sends those changes, applied everywhere at the same step.
 
 The list of the mods seen so far and what MPFever knows of them: [MODS](docs/MODS.md).
 
@@ -174,7 +174,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Version 0.3.25, still in active development. Supported game builds:
+Version 0.4.0, still in active development. Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.

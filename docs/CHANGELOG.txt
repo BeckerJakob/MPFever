@@ -1,7 +1,7 @@
 MPFever - Changelog
 ===================
 
-0.3.25 - mods: the same version for everybody, line mods made compatible; a settings window; reconnections
+0.4.0 - mods: the same version for everybody, line mods made compatible; a settings window; reconnections
   - NEW: the mods of a lobby. The host's launcher reads each mod of the savegame where the game installs it (mod.io,
     Steam Workshop, local mods), its version (a fingerprint of its files) and what it does (content, interface, data
     changed at load, or a script acting on the game). The multiplayer page lists them with what is wrong first: missing,

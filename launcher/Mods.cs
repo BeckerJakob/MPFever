@@ -27,10 +27,10 @@ namespace MPFever
         static readonly Dictionary<string, Func<Verdict>> Known = new Dictionary<string, Func<Verdict>>
         {
             ["tpf3mp_1"] = () => new Verdict { Level = "bad", Note = T("Autre mod multijoueur : il modifie les mêmes choses que MPFever. Désactivez-le.", "Another multiplayer mod: it changes the same things as MPFever. Turn it off.") },
-            ["auto_line_namer_1"] = () => new Verdict { Level = "fixed", Note = T("Les noms donnés par le jeu de l'hôte s'appliquent partout (0.3.25).", "The names given by the host's game apply everywhere (0.3.25).") },
-            ["zhenya_auto_color_lines"] = () => new Verdict { Level = "fixed", Note = T("Les couleurs données par le jeu de l'hôte s'appliquent partout (0.3.25).", "The colours given by the host's game apply everywhere (0.3.25).") },
-            ["zhenya_auto_assign_terminals"] = () => new Verdict { Level = "fixed", Note = T("Les quais choisis par le jeu de l'hôte s'appliquent partout (0.3.25).", "The platforms chosen by the host's game apply everywhere (0.3.25).") },
-            ["auto_signals_1"] = () => new Verdict { Level = "fixed", Note = T("Les signaux ajoutés ne sont construits qu'une fois, par le jeu qui a posé le signal (0.3.25).", "Added signals are built once, by the game where the signal was placed (0.3.25).") },
+            ["auto_line_namer_1"] = () => new Verdict { Level = "fixed", Note = T("Les noms donnés par le jeu de l'hôte s'appliquent partout (0.4.0).", "The names given by the host's game apply everywhere (0.4.0).") },
+            ["zhenya_auto_color_lines"] = () => new Verdict { Level = "fixed", Note = T("Les couleurs données par le jeu de l'hôte s'appliquent partout (0.4.0).", "The colours given by the host's game apply everywhere (0.4.0).") },
+            ["zhenya_auto_assign_terminals"] = () => new Verdict { Level = "fixed", Note = T("Les quais choisis par le jeu de l'hôte s'appliquent partout (0.4.0).", "The platforms chosen by the host's game apply everywhere (0.4.0).") },
+            ["auto_signals_1"] = () => new Verdict { Level = "fixed", Note = T("Les signaux ajoutés ne sont construits qu'une fois, par le jeu qui a posé le signal (0.4.0).", "Added signals are built once, by the game where the signal was placed (0.4.0).") },
         };
 
         public static Verdict Judge(string id, string kind)
