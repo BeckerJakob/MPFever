@@ -56,7 +56,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.4.0";
+        public const string Version = "0.4.1";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -808,6 +808,7 @@ namespace MPFever
             try { GameInstall.EnsureModActive(); } catch (Exception e) { Log.W("settings.lua: " + e.Message); }
             try { GameInstall.InstallMod(); } catch (Exception e) { Log.Warn(T("Installation du mod : ", "Mod installation: ") + e.Message); }
             if (!autotest && !ServerMode) WarnIncompatibleMods();
+            try { if (LoadSettings().TryGetValue("savedirs", out var sd)) GameInstall.AddGameSaveDirs(sd.Split('|')); } catch { }
             if (ServerMode)
             {
                 StartServerMode();
@@ -823,6 +824,25 @@ namespace MPFever
                 Guard(StartLocalTest);
                 new Thread(AutoTest) { IsBackground = true, Name = "Autotest" }.Start();
             }
+        }
+
+        /// <summary>The savegame folders the game gave to the MPFever page (save_dirs.txt): looked in for the host's savegame,
+        /// the one received from the host and the resynchronisations, and kept for the next start (issue #76: a game not
+        /// installed through Steam, whose savegames were never found).</summary>
+        void ReadGameSaveDirs()
+        {
+            try
+            {
+                var f = menuGame == null ? null : Path.Combine(menuGame.Dir, "save_dirs.txt");
+                if (f == null || !File.Exists(f)) return;
+                if (!GameInstall.AddGameSaveDirs(File.ReadAllLines(f, System.Text.Encoding.UTF8))) return;
+                lock (GameInstall.GameSaveDirs)
+                {
+                    Log.Dim(T("Dossiers des sauvegardes du jeu : ", "The game's savegame folders: ") + string.Join(", ", GameInstall.GameSaveDirs));
+                    SaveSetting("savedirs", string.Join("|", GameInstall.GameSaveDirs));
+                }
+            }
+            catch (Exception e) { Log.W("save_dirs: " + e.Message); }
         }
 
         /// <summary>Another multiplayer mod installed on this PC (TPF3-MP): told at start, in a window, since a savegame where it
@@ -1105,6 +1125,7 @@ namespace MPFever
             if (name == "") name = new string(Environment.UserName.Where(char.IsLetterOrDigit).ToArray());
             if (name == "") name = "Player";
             Log.Dim(F("Menu : {0} {1} ({2})", "Menu: {0} {1} ({2})", cmd, arg, name));
+            ReadGameSaveDirs();
             // a dedicated server's game: nobody hosts or joins from its menu (the console drives the server)
             if (server != null) { ServerMenuRequest(cmd); return; }
             // the name typed in the MPFever window is kept for next time and shown in the launcher window (the other
@@ -1910,6 +1931,28 @@ namespace MPFever
 
         /// <summary>The host numbers every chat line (a player's message, or a player who joined or left) and sends it to
         /// every game: its own (chat.txt) and the clients' ("chatmsg").</summary>
+        /// <summary>The game builds MPFever was made and checked for (an update of the game changes the engine's code: until
+        /// MPFever follows, its fixes may not all work there).</summary>
+        static readonly string[] KnownBuilds = { "40408", "40420", "40423" };
+        readonly HashSet<string> buildsWarned = new HashSet<string>();
+
+        /// <summary>A game ready on a build MPFever does not know (the game was updated): every player is told, once.</summary>
+        void WarnUnknownBuild(string payload)
+        {
+            try
+            {
+                var h = LuaLit.Parse(payload) as Dictionary<object, object>;
+                var build = h != null && h.TryGetValue("build", out var b) ? Convert.ToString(b, CultureInfo.InvariantCulture) : null;
+                if (string.IsNullOrEmpty(build) || KnownBuilds.Contains(build)) return;
+                lock (buildsWarned) if (!buildsWarned.Add(build)) return;
+                var text = F("Transport Fever 3 a été mis à jour (version {0}) : MPFever n'est pas encore adapté à cette version et des désynchronisations peuvent se produire. Une mise à jour de MPFever va suivre.",
+                    "Transport Fever 3 was updated (build {0}): MPFever is not adapted to this build yet, and desyncs may happen. An update of MPFever will follow.", build);
+                Log.Warn(text);
+                HostChat("msg", "MPFever", text);
+            }
+            catch { }
+        }
+
         void HostChat(string kind, string name, string text)
         {
             text = ChatClean(text);
@@ -2105,6 +2148,7 @@ namespace MPFever
                 case "hello":
                     lock (players) players.Add(m.From);
                     Log.W(F("{0} : jeu prêt {1}", "{0}: game ready {1}", m.From, m.Payload));
+                    WarnUnknownBuild(m.Payload);
                     // a game started again (resynchronisation): it needs its identity again
                     if (from != null) relay.Send(from, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(from.Name) + ",[\"role\"]=\"client\",[\"v\"]=" + LuaLit.Quote(Version) + ",[\"run\"]=" + LuaLit.Quote(myRun) + ",[\"opts\"]=" + LuaLit.Quote(Options.SessionPayload()) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods) + "}"));
                     // (a player who reconnected during the resynchronisation answers under its new name: Philippe#2 for Philippe#1)

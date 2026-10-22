@@ -1308,22 +1308,50 @@ namespace MPFever
             catch (IOException) { Log.Warn(L.T("Module natif : fermez Transport Fever 3 puis relancez MPFever pour le mettre à jour", "Native module: close Transport Fever 3, then restart MPFever to update it")); }
         }
 
-        /// <summary>The savegame folders of every Steam user of this PC (created if missing).</summary>
+        /// <summary>The savegame folders the game itself gave (save_dirs.txt of the MPFever page, kept in the settings): a
+        /// game not installed through Steam keeps its savegames elsewhere than Steam's userdata (issue #76).</summary>
+        public static readonly List<string> GameSaveDirs = new List<string>();
+
+        /// <summary>Adds the folders of a save_dirs.txt; true when one was new.</summary>
+        public static bool AddGameSaveDirs(IEnumerable<string> lines)
+        {
+            bool added = false;
+            lock (GameSaveDirs)
+                foreach (var l in lines)
+                {
+                    var d = (l ?? "").Trim().Replace('/', Path.DirectorySeparatorChar);
+                    try
+                    {
+                        if (d == "" || !Path.IsPathRooted(d) || !Directory.Exists(d)) continue;
+                        d = Path.GetFullPath(d).TrimEnd(Path.DirectorySeparatorChar);
+                    }
+                    catch { continue; }
+                    if (GameSaveDirs.Any(x => string.Equals(x, d, StringComparison.OrdinalIgnoreCase))) continue;
+                    GameSaveDirs.Add(d);
+                    added = true;
+                }
+            return added;
+        }
+
+        /// <summary>The savegame folders of every Steam user of this PC (created if missing), then those the game gave.</summary>
         public static List<string> SaveDirs()
         {
             var dirs = new List<string>();
             var steam = SteamPath();
-            if (steam == null) return dirs;
-            var userdata = Path.Combine(steam, "userdata");
-            if (!Directory.Exists(userdata)) return dirs;
-            foreach (var u in Directory.GetDirectories(userdata))
-            {
-                var local = Path.Combine(u, AppId, "local");
-                if (!Directory.Exists(local)) continue;
-                var save = Path.Combine(local, "save");
-                Directory.CreateDirectory(save);
-                dirs.Add(save);
-            }
+            var userdata = steam == null ? null : Path.Combine(steam, "userdata");
+            if (userdata != null && Directory.Exists(userdata))
+                foreach (var u in Directory.GetDirectories(userdata))
+                {
+                    var local = Path.Combine(u, AppId, "local");
+                    if (!Directory.Exists(local)) continue;
+                    var save = Path.Combine(local, "save");
+                    Directory.CreateDirectory(save);
+                    dirs.Add(save);
+                }
+            lock (GameSaveDirs)
+                foreach (var d in GameSaveDirs)
+                    if (!dirs.Any(x => string.Equals(Path.GetFullPath(x).TrimEnd(Path.DirectorySeparatorChar), d, StringComparison.OrdinalIgnoreCase)))
+                        dirs.Add(d);
             return dirs;
         }
 

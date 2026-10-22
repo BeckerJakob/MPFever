@@ -6669,6 +6669,32 @@
       "ko": "다른 멀티플레이 모드입니다: MPFever와 같은 부분을 변경해서 게임 동기화가 계속 어긋납니다. 호스트는 플레이하기 전에 저장 게임의 모드(게임을 불러올 때)에서 이 모드를 꺼야 합니다.",
       "zh-CN": "这是另一个多人模组：它修改与 MPFever 相同的内容，游戏会不断不同步。主机必须在游玩前于存档的模组中（加载游戏时）停用它。",
       "zh-TW": "這是另一個多人模組：它修改與 MPFever 相同的內容，遊戲會不斷不同步。主機必須在遊玩前於存檔的模組中（載入遊戲時）停用它。"
+    },
+    "The game's savegame folders: ": {
+      "de": "Spielstandordner des Spiels: ",
+      "es": "Carpetas de partidas guardadas del juego: ",
+      "it": "Cartelle dei salvataggi del gioco: ",
+      "nl": "Mappen met opgeslagen spellen van het spel: ",
+      "pl": "Foldery zapisów gry: ",
+      "pt-BR": "Pastas de jogos salvos do jogo: ",
+      "ru": "Папки сохранений игры: ",
+      "ja": "ゲームのセーブフォルダー：",
+      "ko": "게임의 저장 폴더: ",
+      "zh-CN": "游戏的存档文件夹：",
+      "zh-TW": "遊戲的存檔資料夾："
+    },
+    "Transport Fever 3 was updated (build {0}): MPFever is not adapted to this build yet, and desyncs may happen. An update of MPFever will follow.": {
+      "de": "Transport Fever 3 wurde aktualisiert (Version {0}): MPFever ist noch nicht an diese Version angepasst, es kann zu Desynchronisationen kommen. Ein Update von MPFever folgt.",
+      "es": "Transport Fever 3 se ha actualizado (versión {0}): MPFever aún no está adaptado a esta versión y pueden producirse desincronizaciones. Pronto llegará una actualización de MPFever.",
+      "it": "Transport Fever 3 è stato aggiornato (versione {0}): MPFever non è ancora adattato a questa versione e possono verificarsi desincronizzazioni. Seguirà un aggiornamento di MPFever.",
+      "nl": "Transport Fever 3 is bijgewerkt (versie {0}): MPFever is nog niet aangepast aan deze versie en het spel kan uit sync raken. Er volgt een update van MPFever.",
+      "pl": "Transport Fever 3 został zaktualizowany (wersja {0}): MPFever nie jest jeszcze dostosowany do tej wersji i mogą wystąpić rozsynchronizowania. Aktualizacja MPFever wkrótce.",
+      "pt-BR": "O Transport Fever 3 foi atualizado (versão {0}): o MPFever ainda não está adaptado a esta versão e podem ocorrer dessincronizações. Uma atualização do MPFever virá em breve.",
+      "ru": "Transport Fever 3 обновлён (версия {0}): MPFever ещё не адаптирован к этой версии, возможны рассинхронизации. Скоро выйдет обновление MPFever.",
+      "ja": "Transport Fever 3 が更新されました（バージョン {0}）：MPFever はまだこのバージョンに対応していないため、同期ずれが起きることがあります。MPFever の更新をお待ちください。",
+      "ko": "Transport Fever 3가 업데이트되었습니다 (버전 {0}): MPFever가 아직 이 버전에 맞춰지지 않아 동기화가 어긋날 수 있습니다. MPFever 업데이트가 곧 나옵니다.",
+      "zh-CN": "Transport Fever 3 已更新（版本 {0}）：MPFever 尚未适配此版本，可能会出现不同步。MPFever 的更新即将推出。",
+      "zh-TW": "Transport Fever 3 已更新（版本 {0}）：MPFever 尚未適配此版本，可能會出現不同步。MPFever 的更新即將推出。"
     }
   }
 }

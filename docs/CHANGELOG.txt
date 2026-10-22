@@ -1,6 +1,19 @@
 MPFever - Changelog
 ===================
 
+0.4.1 - game build 40423; savegames of a game not installed through Steam
+  - FIX: the signatures of the native module's places (native/mpfever_sigs.txt, tools/mksigs.py) were never shipped. On a
+    game build the module does not know, like the update 40423 of 2026-10-22, it then turned every hook off: no
+    determinism fixes, and the games drifted apart after a few builds (vehicles, towns: resyncs). The file is now in the
+    archives (and next to the launcher of the build folder). On 40423, every place is found but 4 readings of the local
+    player used by « one company per player »; CGame::Step comes from the built-in signature.
+  - NEW: a game on a build MPFever does not know (Transport Fever 3 was updated) is told to every player in the chat and
+    in the launcher's log, once per session: desyncs may happen until MPFever follows the update.
+  - FIX: a game installed elsewhere than Steam keeps its savegames in its own folder; the launcher only looked in Steam's
+    userdata: « savegame not found » when hosting (issue #76), and the host's game received by a player or a
+    resynchronisation could not be found either. The MPFever page now writes the folders of the savegames as the game
+    gives them (save_dirs.txt), and the launcher looks there too (kept in its settings for the next start).
+
 0.4.0 - mods: the same version for everybody, line mods made compatible; a settings window; reconnections
   - NEW: the mods of a lobby. The host's launcher reads each mod of the savegame where the game installs it (mod.io,
     Steam Workshop, local mods), its version (a fingerprint of its files) and what it does (content, interface, data

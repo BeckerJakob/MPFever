@@ -80,12 +80,33 @@ local function request(cmd, arg, name, option)
 	log("request " .. cmd .. " " .. tostring(arg))
 end
 
+-- the folders of the player's savegames, as the game gives them (save_dirs.txt, one per line): the launcher looks there
+-- too. A game not installed through Steam keeps them elsewhere than Steam's userdata, and the launcher found none of
+-- them (« savegame not found » when hosting, issue #76)
+local savedDirs = nil
+local function noteSaveDirs(list)
+	local seen, dirs = {}, {}
+	for _, s in ipairs(list) do
+		local d = type(s.path) == "string" and s.path:gsub(BS, "/"):match("^(.+)/[^/]*%.sav$") or nil
+		if d and d ~= "" and not seen[d] then seen[d] = true dirs[#dirs + 1] = d end
+	end
+	table.sort(dirs)
+	local text = table.concat(dirs, NL)
+	if text ~= savedDirs then
+		savedDirs = text
+		writeFile("save_dirs.txt", text .. NL)
+		log("savegame folders: " .. (text ~= "" and text:gsub(NL, " ; ") or ("none (first path: " .. tostring(list[1] and list[1].path) .. ")")))
+	end
+end
+
 local function listSaves()
 	local out = {}
 	local ok, err = pcall(function()
 		local ns = app.SaveGameNamespace.getSavegame()
 		local byName = {}
-		for _, s in ipairs(app.findAllSavegames(ns) or {}) do
+		local all = app.findAllSavegames(ns) or {}
+		pcall(noteSaveDirs, all)
+		for _, s in ipairs(all) do
 			-- one entry per savegame name, the most recent file
 			local name = s.saveName
 			if name and not name:find("^MPFever resync") and not name:find("^autosave_") and not name:find("^crash_") then
