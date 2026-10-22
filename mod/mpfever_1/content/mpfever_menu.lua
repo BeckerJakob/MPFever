@@ -130,11 +130,18 @@ local function encodeMods(mods)
 	return table.concat(parts, ";;")
 end
 
+-- MPFever.exe adds what it knows of each mod (see Mods.cs): "id|name|source|kind|level|here|note", kind = assets, load, ui
+-- or sim (a script acting on the game), level = ok, fixed, caution or bad, here = ok, differs or notfound (a player's PC)
 local function decodeMods(s)
 	local out = {}
 	for e in (s or ""):gmatch("[^;]+") do
-		local id, name, source = e:match("^([^|]*)|([^|]*)|?(.*)$")
-		if id and id ~= "" then out[#out + 1] = { id = id, name = name ~= "" and name or id, source = source or "" } end
+		local f = {}
+		for x in (e .. "|"):gmatch("([^|]*)|") do f[#f + 1] = x end
+		local id = f[1]
+		if id and id ~= "" then
+			out[#out + 1] = { id = id, name = (f[2] or "") ~= "" and f[2] or id, source = f[3] or "", kind = f[4] or "",
+				level = f[5] or "", here = f[6] or "", note = f[7] or "" }
+		end
 	end
 	return out
 end
@@ -611,35 +618,79 @@ local function setup()
 			local leftCol = { SavePicture{ save = lobbySave, size = { SIDE_W, SIDE_W * 9 / 16 }, fallback = "::/gui/menu/images/main.tga" } }
 			local mods = decodeMods(st.hostMods)
 			if #mods > 0 then
-				local missing, names = {}, {}
+				-- each mod with what is wrong first: missing here, another version than the host's, known to break a session,
+				-- then the untested scripts, the mods MPFever made work, and the others (models, interface, data)
+				local W = SIDE_W - 40
+				local groups = { {}, {}, {}, {}, {} }
 				for _, m in ipairs(mods) do
-					if not isHost and modInstalled(m.id) == false then missing[#missing + 1] = m end
+					-- (an incompatible mod first: the player is never told to install it)
+					if m.level == "bad" then m.state = "bad"
+					elseif not isHost and modInstalled(m.id) == false then m.state = "missing"
+					elseif m.here == "differs" then m.state = "differs"
+					else m.state = m.level ~= "" and m.level or "ok" end
+					local g = (m.state == "missing" or m.state == "differs" or m.state == "bad") and 1
+						or (m.state == "caution" and 2) or (m.state == "fixed" and 3) or 4
+					groups[g][#groups[g] + 1] = m
 				end
-				local function label(m) return m.name .. (m.source ~= "" and " (" .. m.source .. ")" or "") end
+				local blocking = #groups[1]
+				-- a mod known to break a session (another multiplayer mod, TPF3-MP): told in big, above the lobby's actions
+				for _, m in ipairs(groups[1]) do
+					if m.state == "bad" then
+						table.insert(right, 1, box(H, {
+							icon("::/gui/menu/icons/alert.tga"),
+							gap(8, 1),
+							box(V, {
+								text((T("%s est INCOMPATIBLE avec MPFever", "%s is INCOMPATIBLE with MPFever"):gsub("%%s", (m.name:gsub("%%", "%%%%")), 1)), "font-scale-title-3, error", PAGE_W - SIDE_W - 120),
+								text(T("C'est un autre mod multijoueur : il modifie les mêmes choses que MPFever et la partie se désynchronise sans cesse. L'hôte doit le désactiver dans les mods de la sauvegarde (au chargement de la partie) avant de jouer.",
+									"It is another multiplayer mod: it changes the same things as MPFever and the game keeps desynchronising. The host must turn it off in the savegame's mods (when loading the game) before playing."), "font-scale-body, warning", PAGE_W - SIDE_W - 120),
+							}),
+						}, nil, { padding = { 8, 8, 8, 8 }, background = { 0.6, 0.1, 0.1, 0.35 } }))
+						table.insert(right, 2, gap(1, 8))
+					end
+				end
 				local rows = {}
-				if #missing > 0 then
-					for _, m in ipairs(missing) do names[#names + 1] = label(m) end
+				if blocking > 0 then
 					rows[#rows + 1] = box(H, {
 						icon("::/gui/menu/icons/alert.tga"),
 						gap(8, 1),
-						text((T("Mods manquants : %s sur %s", "Missing mods: %s of %s"):gsub("%%s", tostring(#missing), 1):gsub("%%s", tostring(#mods), 1)), "font-scale-title-3, error"),
+						text((T("Mods à corriger : %s sur %s", "Mods to fix: %s of %s"):gsub("%%s", tostring(blocking), 1):gsub("%%s", tostring(#mods), 1)), "font-scale-title-3, error"),
 					})
-					rows[#rows + 1] = gap(1, 4)
-					rows[#rows + 1] = text(table.concat(names, ", "), "font-scale-title-4", SIDE_W - 40)
-					rows[#rows + 1] = gap(1, 4)
-					rows[#rows + 1] = text(T("Installez-les (Steam Workshop ou mod.io) avant que l'hôte lance la partie : sans eux, sa partie ne peut pas être chargée.",
-						"Install them (Steam Workshop or mod.io) before the host starts the game: without them, the host's game cannot be loaded."), "font-scale-body, warning", SIDE_W - 40)
 				else
-					for _, m in ipairs(mods) do names[#names + 1] = label(m) end
 					rows[#rows + 1] = text((T("Mods de la partie : %s", "Mods of the game: %s"):gsub("%%s", tostring(#mods), 1))
-						.. (isHost and "" or T(" (tous installés)", " (all installed)")), "font-scale-title-3")
-					rows[#rows + 1] = gap(1, 4)
-					rows[#rows + 1] = text(table.concat(names, ", "), "font-scale-body", SIDE_W - 40)
+						.. (isHost and "" or T(" (tous comme chez l'hôte)", " (all as on the host's PC)")), "font-scale-title-3")
 				end
 				rows[#rows + 1] = gap(1, 6)
-				rows[#rows + 1] = text(T("MPFever n'est pas encore prévu pour les mods : certains peuvent désynchroniser la partie.",
-					"MPFever is not made for mods yet: some can desynchronise the game."), "font-scale-body, warning", SIDE_W - 40)
-				local picH = 300
+				local LABEL = {
+					missing = { T("manquant", "missing"), "error" },
+					differs = { T("autre version que l'hôte", "other version than the host's"), "error" },
+					bad = { T("incompatible", "incompatible"), "error" },
+					caution = { T("script non testé", "untested script"), "warning" },
+					fixed = { T("rendu compatible", "made compatible"), "success" },
+				}
+				for gi = 1, 4 do
+					for _, m in ipairs(groups[gi]) do
+						local lab = LABEL[m.state]
+						local line = m.name .. (m.source ~= "" and m.source ~= "mod.io" and " (" .. m.source .. ")" or "")
+						if lab then
+							rows[#rows + 1] = text(line .. " : " .. lab[1], "font-scale-title-4, " .. lab[2], W)
+							local why = m.note
+							if m.state == "missing" then why = T("Installez-le (mod.io ou Steam Workshop) avant que l'hôte lance la partie.", "Install it (mod.io or Steam Workshop) before the host starts the game.")
+							elseif m.state == "differs" then why = T("Mettez-le à jour pour avoir la même version que l'hôte.", "Update it to have the host's version.") end
+							if why ~= "" then rows[#rows + 1] = text("   " .. why, "font-scale-body", W) end
+						else
+							rows[#rows + 1] = text(line, "font-scale-body", W)
+						end
+					end
+				end
+				rows[#rows + 1] = gap(1, 6)
+				if blocking > 0 and not isHost then
+					rows[#rows + 1] = text(T("Sans les mêmes mods que l'hôte, sa partie ne peut pas être chargée.",
+						"Without the host's mods, the host's game cannot be loaded."), "font-scale-body, warning", W)
+				elseif #groups[2] > 0 then
+					rows[#rows + 1] = text(T("Les scripts non testés peuvent désynchroniser la partie : MPFever la recharge alors chez tout le monde.",
+						"Untested scripts can desynchronise the game: MPFever then reloads it for everybody."), "font-scale-body, warning", W)
+				end
+				local picH = 220
 				leftCol = {
 					SavePicture{ save = lobbySave, size = { SIDE_W, picH }, fallback = "::/gui/menu/images/main.tga" },
 					gap(1, 8),

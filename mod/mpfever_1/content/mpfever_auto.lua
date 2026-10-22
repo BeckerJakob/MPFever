@@ -112,15 +112,28 @@ local function loadPending()
 		mods[#mods + 1] = m
 		if m.name == MOD_ID then has = true end
 	end
+	-- (tests: MPFEVER_ADDMODS=id1,id2 adds installed mods to the savegame, as the load screen does)
+	local added = {}
+	for id in tostring(os.getenv("MPFEVER_ADDMODS") or ""):gmatch("[^,%s]+") do
+		local dup = false
+		for _, m in ipairs(mods) do if m.name == id then dup = true end end
+		if not dup then
+			local m = api.type.ModId.new()
+			m.name = id
+			mods[#mods + 1] = m
+			added[#added + 1] = id
+		end
+	end
 	if not has then
 		local m = api.type.ModId.new()
 		m.name = MOD_ID
 		mods[#mods + 1] = m
-		details.mods = mods
 		log("loading savegame '" .. p.name .. "' with MPFever added to its mods")
 	else
 		log("loading savegame '" .. p.name .. "'")
 	end
+	if not has or #added > 0 then details.mods = mods end
+	if #added > 0 then log("test mods added: " .. table.concat(added, ", ")) end
 	app.loadGame(p.id, false, details)
 end
 

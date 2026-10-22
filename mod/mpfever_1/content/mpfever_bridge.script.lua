@@ -159,6 +159,33 @@ local function extendedParts(parts)
 				dump[#dump + 1] = "~station " .. (type(sg) == "number" and sg >= 0 and R.nameOf(sg) or "-") .. " = " .. f .. "@" .. tostring(p)
 			end
 		end)
+		-- the constructions (part "conParams" of the checks): how many of each kind, and every industry with its place, its
+		-- modules (a farm's fields, a fishing ground's nets) and its production level: an industry rebuilt or spawned in one
+		-- game only shows here
+		pcall(function()
+			local kinds = {}
+			for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
+				local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+				if c and not api.engine.getComponent(e, api.type.ComponentType.TOWN_BUILDING) then
+					local f = tostring(c.fileName)
+					kinds[f] = (kinds[f] or 0) + 1
+					if f:find("/industries/", 1, true) then
+						local mods, lvl = {}, "?"
+						pcall(function() for k in pairs(c.params.modules) do mods[#mods + 1] = tostring(k) end end)
+						table.sort(mods)
+						pcall(function()
+							for _, ind in ipairs(c.industries) do
+								local ic = api.engine.getComponent(ind, api.type.ComponentType.INDUSTRY)
+								if ic then lvl = tostring(ic.productionLevel) .. "/" .. tostring(ic.maxLevel) end
+							end
+						end)
+						local p = R.matPos(c.transf)
+						dump[#dump + 1] = string.format("~industry %s@%.0f,%.0f = modules {%s} level %s", f:match("[^/]*$"), p and p.x or 0, p and p.y or 0, table.concat(mods, ","), lvl)
+					end
+				end
+			end
+			for f, n in pairs(kinds) do dump[#dump + 1] = "~constructions " .. f .. " = " .. n end
+		end)
 		SDUMP.n = SDUMP.n + 1
 		table.sort(dump)
 		pcall(function()
@@ -583,6 +610,16 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 		result.err = "DESYNC unresolved: " .. table.concat(unresolved, ",")
 		log("action " .. tostring(a.uid) .. " " .. tostring(a.fn) .. " SKIPPED, " .. result.err)
 		return result
+	end
+	-- a mod's automatic command (see DET.installModCmds) names, colours or updates a line: on anything else (an id that is
+	-- another entity here) the engine asserts and the game closes. Skipped instead, the same on every game
+	if a.tok == "mod" and type(a.args) == "table" then
+		local okL, isLine = pcall(function() return api.engine.getComponent(a.args[1], api.type.ComponentType.LINE) ~= nil end)
+		if not (okL and isLine) then
+			result.err = "mod command on entity " .. tostring(a.args[1]) .. ", which is not a line here"
+			log("action " .. tostring(a.uid) .. " " .. tostring(a.fn) .. " SKIPPED, " .. result.err)
+			return result
+		end
 	end
 	local okm, missing = pcall(missingEntities, a.fn, a.args or {})
 	if okm and #missing > 0 then
@@ -1186,6 +1223,108 @@ local function installRandom()
 	log("deterministic math.random installed")
 end
 
+-- Mods that rename, recolour or update lines by themselves (Auto Line Namer, Auto Color Lines, Auto Assign Terminals, issue
+-- #58): their simulation script runs on every game, but decides on the computer's clock (os.time, os.clock), so each game
+-- sent its own commands at its own steps and the line names differed. In a session only the host's commands count: they
+-- are written to sim_mods.log, the interface half ships them like a player's (applied at the same step everywhere, the host
+-- too), and the other games drop their own. (MPFEVER_MODHOST=0: as before, every game applies its own)
+DET.mod = { hostOnly = { makeEntitySetNameCmd = true, makeEntitySetColorCmd = true, makeLineUpdateCmd = true } }
+function DET.installModCmds()
+	local MODCMD = DET.mod
+	if MODCMD.installed or os.getenv("MPFEVER_MODHOST") == "0" or not C.ACTIVE then return end
+	local getinfo = type(debug) == "table" and debug.getinfo or nil
+	if not getinfo then
+		if not MODCMD.warned then MODCMD.warned = true; log("mod commands: debug.getinfo missing, not intercepted") end
+		return
+	end
+	MODCMD.installed = true
+	local origSend = api.cmd.sendCommand
+	local tags = setmetatable({}, { __mode = "k" })
+	for name, _ in pairs(MODCMD.hostOnly) do
+		local fn = api.cmd[name]
+		if fn ~= nil then
+			pcall(function()
+				api.cmd[name] = function(...)
+					local cmd = fn(...)
+					if cmd ~= nil then tags[cmd] = { name = name, args = { n = select("#", ...), ... } } end
+					return cmd
+				end
+			end)
+		end
+	end
+	local seen, dropped = {}, 0
+	api.cmd.sendCommand = function(cmd, cb, ...)
+		local tag = cmd ~= nil and tags[cmd] or nil
+		-- (the first Lua function up the stack: MPFever applies the commands it ships through pcall, a C function)
+		local src = ""
+		if tag then
+			for lv = 2, 12 do
+				local info = getinfo(lv, "S")
+				if not info then break end
+				if info.what ~= "C" then src = tostring(info.source):gsub("\\", "/"); break end
+			end
+		end
+		-- (MPFever's own replays of these commands, and anything not tagged, go to the engine)
+		if tag == nil or src:find("mpfever", 1, true) or (C.ROLE ~= "host" and C.ROLE ~= "client") then return origSend(cmd, cb, ...) end
+		local file = src:match("([^/]*)$") or src
+		local okT, now = pcall(gameTime)
+		now = okT and now or 0
+		if not seen[file .. tag.name] then
+			seen[file .. tag.name] = true
+			log("mod command " .. tag.name .. " from " .. file .. " (" .. src:sub(1, 120) .. ") at t=" .. tostring(now) .. ": "
+				.. (C.ROLE == "host" and "shipped from the host's game" or "dropped here, the host's game sends it"))
+		end
+		if C.ROLE == "host" then
+			local okm, margs = pcall(function()
+				local r = { n = tag.args.n }
+				for i = 1, tag.args.n do r[i] = C.marshal(tag.args[i]) end
+				return r
+			end)
+			if not okm then
+				log("mod command " .. tag.name .. " from " .. file .. " cannot be shipped (" .. tostring(margs) .. "): applied here only (desync risk)")
+				return origSend(cmd, cb, ...)
+			end
+			C.appendFile(C.DIR .. BS .. "sim_mods.log", C.line("mod_req", { fn = tag.name, args = margs, mod = file, t = now }))
+		else
+			dropped = dropped + 1
+			if dropped % 200 == 0 then log("mod commands dropped here so far: " .. dropped) end
+		end
+		if cb then pcall(cb, nil, true, {}) end
+	end
+	log("mod commands intercepted in the simulation (" .. C.ROLE .. ")")
+end
+
+-- A build replayed here for another player is announced by the engine to every script as made by a player (the replays
+-- pass playerInitiated, as the tools do). Mods that answer a player's build with builds of their own (Auto Signals adds
+-- signals after a signal is placed) then did it on every game, and each game shipped its own: the signals were built
+-- several times. The mods' scripts (not the game's own, whose town reputation counts replayed builds too) are told that
+-- such a build was not made by a player here. (MPFEVER_MODEVENTS=0: not changed)
+function DET.wrapModEvents()
+	if os.getenv("MPFEVER_MODEVENTS") == "0" or type(game) ~= "table" or not C.ACTIVE then return end
+	for k, v in pairs(game) do
+		if type(k) == "string" and type(v) == "table" and type(v.handleEvent) == "function" and not v.__mpfEv
+			and k:sub(1, 3) ~= "::/" and not k:find("mpfever", 1, true) then
+			v.__mpfEv = true
+			local orig = v.handleEvent
+			v.handleEvent = function(u, st, src, id, name, param, ...)
+				if name == "onPostBuildProposal" and SIM.replayBuildAt ~= nil and type(param) == "table" and param[4] then
+					local okT, now = pcall(gameTime)
+					if okT and now == SIM.replayBuildAt then
+						local p2 = {}
+						for i, x in pairs(param) do p2[i] = x end
+						p2[4] = false
+						SIM.modEvTold = (SIM.modEvTold or 0) + 1
+						if SIM.modEvTold <= 10 then log("replayed build at t=" .. tostring(now) .. " announced to " .. k .. " as not made by a player here") end
+						return orig(u, st, src, id, name, p2, ...)
+					end
+				end
+				return orig(u, st, src, id, name, param, ...)
+			end
+			log("mod script events watched: " .. k)
+		end
+	end
+end
+
 -- (probe) how the game's scripts are reached: the global table `game` keeps every script module by its file name
 local function contractProbe()
 	if SIM.probeDone then return end
@@ -1356,6 +1495,9 @@ local function update(userParams, state, dt)
 	-- (scripts that kept the engine's own function draw from it: reseeded every step)
 	pcall(function() if DET.seed and math.randomseed == DET.seed then DET.origSeed(gameTime()) else math.randomseed(gameTime()) end end)
 	installRandom()
+	pcall(DET.installModCmds)
+	SIM.evTick = (SIM.evTick or 0) + 1
+	if SIM.evTick % 50 == 1 then pcall(DET.wrapModEvents) end
 	if not SIM.subscribed then
 		SIM.subscribed = true
 		pcall(function() state:subscribeToAllEvents() end)
@@ -1524,6 +1666,7 @@ local function captureNativeBuild(state, param)
 	local st = state:get() or {}
 	R.CO = st.co
 	local now = gameTime()
+	SIM.replayBuildAt = nil   -- (see DET.wrapModEvents)
 	-- diagnostic: what the game's town script takes from every player build (town reputation, see town_util.getProposalStats)
 	-- and what it costs, on the builder's game and on the replaying ones alike: a replay that differs here makes the towns
 	-- (script:towns) and the money drift apart
@@ -1570,6 +1713,7 @@ local function captureNativeBuild(state, param)
 	end)
 	if st.replay and st.replay.at == now and st.replay.n > 0 then
 		st.replay.n = st.replay.n - 1     -- our own replay of a shipped action
+		SIM.replayBuildAt = now
 		-- (what it costs here, for the refund of a shipped native build: see REFUND.book)
 		local rc = st.rcost and st.rcost[#st.rcost]
 		local cl = REFUND.costOf(param)
@@ -2035,7 +2179,7 @@ local G = {
 	stillLog = os.getenv("MPFEVER_STEPLOG") ~= nil,
 	-- (experimental, off by default: the builder leads, see buildLeadState; read once, every new path below is guarded by it)
 	buildLead = os.getenv("MPFEVER_BUILDLEAD") == "1",
-	inOff = 0, uiOff = 0, frames = 0, started = false, me = C.NAME, connected = false,
+	inOff = 0, uiOff = 0, modOff = 0, frames = 0, started = false, me = C.NAME, connected = false,
 	session = { speed = 0, pauseAt = nil, started = false },
 	peers = {},                -- other players' clocks (barrier)
 	oseq = 0, outSent = 0, lastClock = -1,
@@ -3089,6 +3233,30 @@ local function logRefusal(a, res)
 			local okt, tf = pcall(function() return api.engine.getComponent(ent, api.type.ComponentType.CONSTRUCTION) end)
 			if okt and tf then log("NATIVE REPLAY " .. tostring(a.uid) .. " refusal: construction " .. tostring(tf.fileName)) end
 		end)
+		-- every colliding entity, once: what it is and where
+		pcall(function()
+			local seen, out = {}, {}
+			for _, ce in ipairs(rpd.collisionInfo.collisionEntities) do
+				local ent = ce.entity
+				if not seen[ent] then
+					seen[ent] = true
+					local d = tostring(ent)
+					pcall(function()
+						local be = api.engine.getComponent(ent, api.type.ComponentType.BASE_EDGE)
+						if be then
+							local p = api.engine.getComponent(be.node0, api.type.ComponentType.BASE_NODE).position
+							d = d .. " edge(" .. string.format("%.0f %.0f", p.x, p.y) .. ")" .. tostring(be.roadTemplate):match("[^/]*$")
+						end
+					end)
+					pcall(function()
+						local c = api.engine.getComponent(ent, api.type.ComponentType.CONSTRUCTION)
+						if c then d = d .. " con " .. tostring(c.fileName):match("[^/]*$") .. string.format("(%.0f %.0f)", c.transf[13], c.transf[14]) end
+					end)
+					out[#out + 1] = d
+				end
+			end
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " refusal: " .. #out .. " colliding entities: " .. table.concat(out, " | "):sub(1, 1500))
+		end)
 	end)
 end
 
@@ -3236,7 +3404,7 @@ end
 
 local function replayNativeConstruction(a)
 	local m0 = a.args[1]
-	if not hasConstructionSegments(m0) then return false end
+	if not hasConstructionSegments(m0) and not a.industryEdit then return false end
 	local cArgs = C.deser(C.ser(a.args))
 	local miss = R.translateIn(cArgs, G.bind)
 	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: unresolved " .. table.concat(miss, ",")) return false end
@@ -3246,16 +3414,19 @@ local function replayNativeConstruction(a)
 	local cons = {}
 	do
 		local one = spCon.constructionsToAdd
-		cons[1] = one[1]
+		-- (every construction of the build, in the tool's order: a junction and the farm it cuts, see
+		-- C.rebuildNativeWithConstruction; then the first one again, the collision)
+		local nc = os.getenv("MPFEVER_ALLCONS") ~= "0" and #one or 1
+		for i = 1, nc do cons[i] = one[i] end
 		local two = C.rebuildProposal(m, { noStreet = true, seed = 7919 }).constructionsToAdd
-		cons[2] = two[1]
+		cons[nc + 1] = two[1]
 		spCon.constructionsToAdd = cons
 	end
 	local ctx = api.type.Context.new()
 	ctx.checkTerrainAlignment = false
 	ctx.cleanupStreetGraph = false
 	ctx.gatherBuildings = true
-	ctx.gatherFields = true
+	ctx.gatherFields = os.getenv("MPFEVER_CONVFIELDS") ~= "0"
 	ctx.player = api.engine.util.getPlayer()
 	G.refundInto(ctx)
 	local okc, dry = pcall(function() return api.cmd.makeWorldBuildProposalCmd(spCon, ctx, false, true) end)
@@ -3284,6 +3455,16 @@ local function replayNativeConstruction(a)
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: the engine's conversion has " .. tostring(eoNative and #eoNative or "no")
 				.. " edge object(s), the tool's build " .. #m.proposal.edgeObjectsToAdd)
 		end
+		pcall(function()
+			local function keys(p)
+				local t = {}
+				pcall(function() for k in pairs(p.modules) do t[#t + 1] = tostring(k) end end)
+				table.sort(t)
+				return table.concat(t, ",")
+			end
+			local cp = conv.toAdd[1].params
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: modules tool {" .. keys(m.toAdd[1].params) .. "} converted {" .. keys(cp) .. "} seed " .. tostring(m.toAdd[1].params.seed) .. "/" .. tostring(cp.seed))
+		end)
 		local okn, nconv = pcall(function() return #conv.toAdd end)
 		if not okn or nconv < 1 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: no converted construction in the result (" .. tostring(nconv) .. ")") replayFailed(a, "no converted construction") return end
 		-- the removed segments as the engine's own removal proposal makes them
@@ -3348,6 +3529,8 @@ local function replayNativeConstruction(a)
 			local notes = {}
 			for _, e in ipairs(C.errors) do if not tostring(e):find("no writable member 'params'", 1, true) then notes[#notes + 1] = e end end
 			if #notes > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: rebuild notes " .. table.concat(notes, "; ")) end
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: frozen nodes of the first construction " .. tostring(C.frozenHow))
+			if C.replacedCons then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: replaced as the engine replaces them: " .. C.replacedCons) end
 		end
 		if not cmd then okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx2, false, true) end) end
 		if (not okk or not cmd) and os.getenv("MPFEVER_DEPOTEXP") then
@@ -3471,6 +3654,17 @@ G.placeStopsAfter = function(a)
 end
 
 local function replayNativeStreet(a)
+	-- (a plain new street of the tool, see replayNative: when the tool's proposal cannot be made or is refused here, the
+	-- script forms are tried, as before 0.3.25)
+	local fallback = a.plainStreet and G.replayForms or nil
+	local function failed(why)
+		if fallback then
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: " .. why .. ", the script forms are tried")
+			a.plainStreet, a.noNativeStreet = nil, true
+			return fallback(a, 1)
+		end
+		replayFailed(a, why)
+	end
 	local cArgs = C.deser(C.ser(a.args))
 	local miss = R.translateIn(cArgs, G.bind)
 	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: unresolved " .. table.concat(miss, ",")) replayFailed(a, "unresolved references") return end
@@ -3518,16 +3712,16 @@ local function replayNativeStreet(a)
 		end
 		if okk and cmd then break end
 	end
-	if not okk or not cmd then replayFailed(a, "native street command") return end
+	if not okk or not cmd then failed("native street command") return end
 	local edgesBefore = #R.allEdges()
 	toSim("replaying", {})
 	replaySend(cmd, function(res, success)
 		if not success then
 			local why = ""
 			pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
-			log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: refused " .. why .. " (desync)")
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: refused " .. why .. (a.plainStreet and "" or " (desync)"))
 			logRefusal(a, res)
-			replayFailed(a, "native street refused " .. why)
+			failed("native street refused " .. why)
 			return
 		end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " native street BUILT (" .. label .. ")")
@@ -3642,6 +3836,7 @@ function replayTwoStep(a)
 end
 
 local function replayNative(a, formIndex)
+	G.replayForms = G.replayForms or replayNative
 	if formIndex == 1 then
 		pcall(function()
 			local m = a.args[1]
@@ -3740,6 +3935,32 @@ local function replayNative(a, formIndex)
 			log("NATIVE REPLAY " .. tostring(a.uid) .. ": stops placed again on a street build (" .. tostring(plan) .. "): the street first, then "
 				.. #(stp.edgeObjectsToAdd or {}) .. " stop(s) on " .. #a.stopsAfter .. " new segment(s)")
 		end
+		-- an industry edited alone (a fishing net or a farm's field taken away with the bulldozer): the engine's replacement of
+		-- the existing industry with the tool's parameters. Rebuilt by the script forms as a new industry, its slots filled
+		-- themselves again (the nets came back on the replaying game, and the games differed: conParams, a manual test on
+		-- 2026-10-22). MPFEVER_REPLACECON=0: as before
+		local m1 = probe[1]
+		if #missing == 0 and stp and m1 and #(m1.toAdd or {}) == 1 and #(m1.toRemove or {}) == 1 and #(stp.addedSegments or {}) == 0
+			and #(stp.removedSegments or {}) == 0 and #(stp.addedNodes or {}) == 0 and type(m1.toAdd[1].params) == "table"
+			and tostring(m1.toAdd[1].fileName):find("/industries/", 1, true) and type(m1.toRemove[1]) == "number"
+			and os.getenv("MPFEVER_REPLACECON") ~= "0" then
+			return engineReplay(a, "edit of the industry " .. m1.toRemove[1] .. " (" .. tostring(m1.toAdd[1].fileName):match("[^/]*$") .. ")", function()
+				return api.engine.util.proposal.createProposalReplaceConstruction(m1.toRemove[1], C.plain(m1.toAdd[1].params))
+			end)
+		end
+		-- a street build that reshapes an industry (a road through a farm's field or a forest): the industry is replaced as the
+		-- engine replaces it, in the tool's proposal (see C.rebuildNativeWithConstruction). By the script forms, it was built as a
+		-- new industry whose slots filled themselves again
+		if #missing == 0 and m1 and #(m1.toAdd or {}) > 0 and type(m1.old2newByRank) == "table" and os.getenv("MPFEVER_REPLACECON") ~= "0" then
+			for _, v in pairs(m1.old2newByRank) do
+				local ce = type(v) == "number" and m1.toAdd[v + 1]
+				if type(ce) == "table" and tostring(ce.fileName):find("/industries/", 1, true) then a.industryEdit = true end
+			end
+			if a.industryEdit and not hasConstructionSegments(a.args[1]) then
+				log("NATIVE REPLAY " .. tostring(a.uid) .. ": the build reshapes an industry: the tool's proposal with the industry replaced")
+				if replayNativeConstruction(a) then return end
+			end
+		end
 		-- a construction with its street connection: not replayable as one rebuilt proposal (see replayTwoStep)
 		if hasConstructionSegments(a.args[1]) then
 			if replayNativeConstruction(a) then return end
@@ -3769,6 +3990,16 @@ local function replayNative(a, formIndex)
 		if stp and C.hasReplaceMaps(stp) and (#(a.args[1].toAdd or {}) == 0 or a.townAuto)
 			and #(stp.edgeObjectsToAdd or {}) == 0 and os.getenv("MPFEVER_MAPREPLAY") ~= "0" then
 			log("NATIVE REPLAY " .. tostring(a.uid) .. ": the tool's replacement maps" .. C.mapSizes(a.args[1]) .. ": native street proposal")
+			return replayNativeStreet(a)
+		end
+		-- a new street of the street tool (nothing replaced, no station, no stop): the tool's own proposal too. Rebuilt by the
+		-- script forms, a street laid with the slope tool cost a quarter less on the other game and its segments differed
+		-- (a manual test with mods, 2026-10-22: edges differed after three roads). MPFEVER_NATIVEROAD=0: as before
+		if stp and a.natId ~= nil and not a.noNativeStreet and #(a.args[1].toAdd or {}) == 0 and #(a.args[1].toRemove or {}) == 0
+			and #(stp.edgeObjectsToAdd or {}) == 0 and #(stp.edgeObjectsToRemove or {}) == 0 and #(stp.addedSegments or {}) > 0
+			and not C.movesObjects(stp) and os.getenv("MPFEVER_NATIVEROAD") ~= "0" then
+			a.plainStreet = true
+			log("NATIVE REPLAY " .. tostring(a.uid) .. ": a new street of the tool: native street proposal")
 			return replayNativeStreet(a)
 		end
 		if C.movesObjects(stp) then
@@ -4897,6 +5128,38 @@ local function stampHeld()
 			send(kind, p)
 		elseif p and kind == "terrain_tool" then
 			terrainLead("tool " .. tostring(p.tool))
+		end
+	end
+	-- the host's automatic mod commands, written by its simulation (see DET.installModCmds): shipped like a player's. Their
+	-- line goes to the other games as a player's command names it: a line made during the session by its creation key (the
+	-- ids of new entities differ between games; the command waits up to 30 frames for the simulation to bind it), a line of
+	-- the savegame by its id, the same everywhere. (A wrong id is skipped by the other games, see executeActionOnce)
+	G.modWait = G.modWait or {}
+	for _, line in ipairs(readLines("sim_mods.log", "modOff")) do
+		local kind, _, payload = parseLine(line)
+		local p = payload and C.deser(payload)
+		if p and kind == "mod_req" and C.ROLE == "host" then p.frame = G.frames; G.modWait[#G.modWait + 1] = p end
+	end
+	local waiting = G.modWait
+	G.modWait = {}
+	for _, p in ipairs(waiting) do
+		local e = type(p.args) == "table" and p.args[1] or nil
+		if type(e) == "number" and G.rev[e] == nil and G.frames - p.frame < 30 then
+			G.modWait[#G.modWait + 1] = p
+		else
+			pcall(R.translateOut, p.fn, p.args, G.rev)
+			local now = gameTime()
+			G.oseq = G.oseq + 1
+			G.modSeq = (G.modSeq or 0) + 1
+			local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt and gameSpeed() == 0
+			local a = { tok = "mod", id = G.modSeq, fn = p.fn, args = p.args, origin = G.me, oseq = G.oseq, co = G.myCo,
+				uid = G.me .. ":" .. G.oseq, at = paused and pausedStamp(now) or stampFor(now), paused = paused or nil, mod = p.mod }
+			send("act", a)
+			queueLocal(a)
+			if G.modSeq <= 20 or G.modSeq % 100 == 0 then
+				log("mod command #" .. G.modSeq .. " " .. tostring(p.fn) .. " of " .. tostring(p.mod) .. " on " .. tostring(e)
+					.. (G.rev[e] and (" (" .. tostring(G.rev[e]) .. ")") or "") .. " (sent at t=" .. tostring(p.t) .. ") stamped " .. a.uid .. " for t=" .. tostring(a.at))
+			end
 		end
 	end
 end
@@ -7342,7 +7605,8 @@ end
 
 H.replayfile = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
-	if C.ROLE ~= "host" then AUTO.results = { "host only" }; return autoFinish() end
+	-- (MPFEVER_REPLAYBOTH=1: every game replays the file, the checks then compare what each made of it)
+	if C.ROLE ~= "host" and os.getenv("MPFEVER_REPLAYBOTH") ~= "1" then AUTO.results = { "host only" }; return autoFinish() end
 	local ok, err = pcall(runReplayFile, p)
 	if not ok then
 		log("REPLAYFILE failed: " .. tostring(err))
@@ -9769,6 +10033,7 @@ local function resumeAfterLoad(state)
 	end)
 	-- commands the UI hook held before the reload were already shipped and applied: never again
 	G.uiOff = fileSize("ui.log")
+	G.modOff = fileSize("sim_mods.log")
 	G.natOff = fileSize("native_events.log")
 	local f = C.IO.open(C.DIR .. BS .. "native_ctl.txt", "rb")
 	if f then

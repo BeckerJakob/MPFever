@@ -21,6 +21,36 @@ C.ROLE = os.getenv("MPFEVER_ROLE") or "solo"
 C.SERVER = os.getenv("MPFEVER_SERVER") == "1"
 C.ACTIVE = C.DIR ~= nil and C.DIR ~= "" and C.IO ~= nil
 
+-- Settings of the launcher's settings window (settings.txt in the session folder, "KEY=value" lines, written by MPFever.exe:
+-- the host's session settings, the same on every game, and this player's own). They take the place of the environment
+-- variables of the same name: os.getenv is wrapped in this Lua state. An empty value means unset.
+C.SETTINGS = {}
+-- (the original os.getenv, kept once per Lua state: this module loaded again must not wrap its own wrapper)
+local rawGetenv = os.getenv
+pcall(function()
+	if package.loaded["mpfever_rawgetenv"] then rawGetenv = package.loaded["mpfever_rawgetenv"] else package.loaded["mpfever_rawgetenv"] = rawGetenv end
+end)
+function C.loadSettings()
+	local t = {}
+	local f = C.ACTIVE and C.IO.open(C.DIR .. BS .. "settings.txt", "rb")
+	if f then
+		local s = f:read("*a") or ""
+		f:close()
+		for line in s:gmatch("[^" .. NL .. "]+") do
+			local k, v = line:match("^([%w_]+)=(.-)" .. CR .. "?$")
+			if k then t[k] = v end
+		end
+	end
+	C.SETTINGS = t
+	return t
+end
+C.loadSettings()
+os.getenv = function(k)
+	local v = C.SETTINGS[k]
+	if v ~= nil then if v == "" then return nil end return v end
+	return rawGetenv(k)
+end
+
 -- Texts: French and English are written in the code as T("français", "English"); the other languages come from
 -- lang.txt in the session folder, written by MPFever.exe: "@lang TAB code", then "English TAB translation" lines.
 C.LANG, C.LANGCODE = {}, os.getenv("MPFEVER_LANG") or "en"
@@ -1108,6 +1138,12 @@ end
 function C.frozenNodesOf(m, i)
 	local ce = m.toAdd and m.toAdd[i or 1]
 	if type(ce) == "table" and type(ce.frozenNodes) == "table" and #ce.frozenNodes > 0 then return ce.frozenNodes, "captured" end
+	-- captured empty (a road junction of the street tool: its streets are ordinary streets, it keeps no node): nothing is
+	-- guessed. Guessed, the junction took the entrance node of the farm whose field it cut, stayed a construction on the
+	-- replaying games only (one construction more: conParams, then a resynchronisation, a manual test 2026-10-22)
+	if type(ce) == "table" and type(ce.frozenNodes) == "table" and ce.segmentsBefore ~= nil and os.getenv("MPFEVER_FROZENGUESS") ~= "1" then
+		return {}, "captured (none)"
+	end
 	local st = m.proposal or {}
 	local index = {}
 	for k, n in ipairs(st.addedNodes or {}) do if type(n) == "table" and type(n.entity) == "number" then index[n.entity] = k - 1 end end
@@ -1189,8 +1225,38 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 	if conv then
 		local conList = {}
 		local ce = conv.toAdd[1]
+		-- an industry the build reshapes (a street through a farm's field: the farm without that field) is the engine's own
+		-- replacement of the existing one with the tool's parameters: the conversion builds it as a new industry, whose field
+		-- slots fill themselves (autofill), all 20 fields back, on the streets around: refused, "Collision". MPFEVER_REPLACECON=0: off
+		C.replacedCons = nil
+		C.replaceKeep = {}
+		local function replaced(i)
+			local t = type(m.toAdd) == "table" and m.toAdd[i]
+			if os.getenv("MPFEVER_REPLACECON") == "0" or type(t) ~= "table" or type(t.params) ~= "table"
+				or not tostring(t.fileName):find("/industries/", 1, true) or type(m.old2newByRank) ~= "table" then return nil end
+			local old = nil
+			for r, e in ipairs(entityList(m.toRemove or m.constructionsToRemove)) do
+				local v = m.old2newByRank[r] or m.old2newByRank[tostring(r)]
+				if v == i - 1 then old = e end
+			end
+			if type(old) ~= "number" or old < 0 then return nil end
+			local okp, rp = pcall(function() return api.engine.util.proposal.createProposalReplaceConstruction(old, plain(t.params)) end)
+			local okc, c = pcall(function() return okp and rp and rp.toAdd[1] end)
+			if not okp or not okc or not c then
+				C.errors[#C.errors + 1] = "replacement of " .. tostring(old) .. ": " .. tostring(okp and c or rp):sub(1, 120)
+				return nil
+			end
+			C.replaceKeep[#C.replaceKeep + 1] = rp
+			local n = 0
+			pcall(function() for _ in pairs(c.construction.params.modules) do n = n + 1 end end)
+			C.replacedCons = (C.replacedCons and (C.replacedCons .. ", ") or "") .. tostring(t.fileName):match("[^/]*$") .. " " .. old .. " (" .. n .. " modules)"
+			return c
+		end
+		local r1 = replaced(1)
+		if r1 then ce = r1 end
 		-- the engine's conversion numbers the construction's nodes in its own proposal: they are this build's (see C.frozenNodesOf)
 		local how
+		C.frozenHow = nil
 		fz, how = C.frozenNodesOf(m, 1)
 		if fz and not opts.keepFrozen then
 			local okf, ef = pcall(function()
@@ -1203,6 +1269,28 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 			C.frozenHow = okf and how or ("not written: " .. tostring(ef):sub(1, 80))
 		end
 		conList[1] = ce
+		-- the other constructions of the build (a junction cutting a farm's field: the farm rebuilt without that field), in the
+		-- tool's order: the removed farm's old2new points at them. With the first one only, the command could not be made
+		-- ("Unknown exception") and the junction was not reproduced
+		if os.getenv("MPFEVER_ALLCONS") ~= "0" then
+			for i = 2, #(m.toAdd or {}) do
+				local c = replaced(i)
+				if not c then c = conv.toAdd[i] end
+				-- (its own frozen nodes and segment count as the tool gave them: the farm's entrance, see C.frozenNodesOf)
+				local fzi = C.frozenNodesOf(m, i)
+				if fzi and not opts.keepFrozen then
+					local okf, ef = pcall(function()
+						local l = {}
+						for k, v in ipairs(fzi) do l[k] = v end
+						c.frozenNodes = l
+						local sb = m.toAdd[i].segmentsBefore
+						c.segmentsBefore = type(sb) == "number" and sb or 0
+					end)
+					if not okf then C.errors[#C.errors + 1] = "frozenNodes of " .. i .. ": " .. tostring(ef):sub(1, 80) end
+				end
+				conList[i] = c
+			end
+		end
 		P.toAdd = conList
 	end
 	-- an edited construction (a module added to a street station): the old one is replaced, and old2new keeps its

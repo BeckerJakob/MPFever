@@ -59,14 +59,15 @@ Details, ports and troubleshooting: [INSTALL](docs/INSTALL.txt). Dedicated serve
 
 ## Mods
 
-MPFever is not made to be used with other mods yet. Making it work with mods is planned, but it is not the priority for now.
+> ⚠️ **TPF3-MP is incompatible with MPFever.** It is another multiplayer mod that changes the same things: a game where it is active keeps desynchronising. Turn it off in the savegame's mods before playing with MPFever.
 
-- **Mods that only add content** (vehicles, buildings, streets...) usually work if every player has them.
-- **Mods that change the game by themselves**, through a script, can break the synchronisation. Such a mod renames lines, assigns terminals, changes colours, or builds and edits things on its own. It does so on each player's game separately, at different moments, so the games drift apart. MPFever then has to resynchronise them again and again. Example: *Auto Line Namer* ([issue #58](https://github.com/dkdknight/MPFever/issues/58)).
+**Every player needs the same mods, in the same version.** When you join a lobby, the multiplayer page lists the mods of the host's savegame, the ones to fix first: missing on your PC, installed in another version than the host's, or known to break a session. The host's game is not loaded while one is missing or in another version: install or update it, then join again. In the host's lobby, a player whose mods differ shows as « (different mods) ».
 
-**Every player needs the same mods.** When you join a lobby, the multiplayer page lists the mods of the host's savegame and shows in red those missing on your PC. The host's game is not loaded while one is missing: install it, then join again.
+- **Mods that only add content** (vehicles, buildings, streets...), the interface or the game's data work when every player has the same version.
+- **Mods that change the game by themselves**, through a script, are shown as « untested script ». Each game runs the script on its own; if the mod does not decide the same thing on every game, the games drift apart and MPFever reloads the host's game for everybody.
+- Since 0.3.25, the mods that rename, recolour or update lines by themselves (*Auto Line Namer*, *Auto Color Lines*, *Auto Assign Terminals*, [issue #58](https://github.com/dkdknight/MPFever/issues/58)) work: only the host's game sends those changes, applied everywhere at the same step.
 
-If a game keeps resynchronising, try it without the mods that act by themselves.
+The list of the mods seen so far and what MPFever knows of them: [MODS](docs/MODS.md).
 
 ### Mod authors: let's make your mod compatible
 
@@ -173,7 +174,7 @@ The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, wit
 
 ## Status
 
-Version 0.3.24, still in active development. Supported game builds:
+Version 0.3.25, still in active development. Supported game builds:
 
 - **40420**, the current Steam version: supported, with the Lua seed fix.
 - **40408**: supported, but the Lua seed fix is only applied on 40420.

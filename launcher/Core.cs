@@ -480,6 +480,15 @@ namespace MPFever
         }
 
         /// <summary>State shown by the MPFever window of the game's main menu (menu_state.txt, key=value lines).</summary>
+        /// <summary>The settings of the settings window for the mod (settings.txt, read when a game loads): the session's
+        /// (the host's once received) and this player's own. Not written for the autotests (their variables decide).</summary>
+        public void WriteSettings()
+        {
+            if (Options.Disabled) return;
+            try { lock (writeGate) File.WriteAllText(Path.Combine(Dir, "settings.txt"), Options.ModFile(), Utf8); }
+            catch (Exception e) { Log.W("settings.txt: " + e.Message); }
+        }
+
         /// <summary>The texts of the current language for the mod (lang.txt, read by its Lua code).</summary>
         public void WriteLang()
         {
@@ -610,6 +619,7 @@ namespace MPFever
             if (File.Exists(sigs)) psi.EnvironmentVariables["MPFEVER_SIGS"] = sigs;
             if (Server) psi.EnvironmentVariables["MPFEVER_SERVER"] = "1";
             WriteLang();
+            WriteSettings();
             // application script: starts the host's savegame after a resynchronisation (and loads the autotest save)
             psi.Arguments = "--script mpfever_1::/mpfever_auto.lua";
             if (AutoSave != null) psi.EnvironmentVariables["MPFEVER_SAVE"] = AutoSave;
@@ -1186,7 +1196,7 @@ namespace MPFever
             return cands.FirstOrDefault(c => !string.IsNullOrEmpty(c))?.Replace('/', Path.DirectorySeparatorChar);
         }
 
-        static IEnumerable<string> SteamLibraries()
+        public static IEnumerable<string> SteamLibraries()
         {
             var steam = SteamPath();
             if (steam == null) yield break;

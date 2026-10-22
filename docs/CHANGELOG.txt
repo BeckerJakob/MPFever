@@ -1,6 +1,62 @@
 MPFever - Changelog
 ===================
 
+0.3.25 - mods: the same version for everybody, line mods made compatible; a settings window; reconnections
+  - NEW: the mods of a lobby. The host's launcher reads each mod of the savegame where the game installs it (mod.io,
+    Steam Workshop, local mods), its version (a fingerprint of its files) and what it does (content, interface, data
+    changed at load, or a script acting on the game). The multiplayer page lists them with what is wrong first: missing,
+    another version than the host's, known to break a session (TPF3-MP), untested script. A player with another version
+    of a mod cannot load the host's game (it is told which mods to update) and shows as « (different mods) » in the
+    host's lobby. docs/MODS.md lists the mods seen in the issue reports.
+  - NEW: TPF3-MP (another multiplayer mod) is told loudly: a red box at the top of the lobby when the host's savegame has
+    it (the host must turn it off in the savegame's mods), a window when the launcher starts on a PC where it is installed
+    (once per version of MPFever), and errors in the launcher's log. A player is never told to install it.
+  - FIX: every build that reshaped an industry desynchronised the game, then the host's game was reloaded and the build
+    of a player other than the host was lost: a street or a junction through a farm's field, a field or a fishing net
+    taken away with the bulldozer. The tool's build replaces the industry with fewer fields (modules); replayed, it was
+    built as a new industry, whose field slots fill themselves: all 20 fields came back, lying on the streets around
+    ("Collision", refused), or the nets came back later (conParams). The industry is now replaced the way the engine
+    replaces it (api.engine.util.proposal.createProposalReplaceConstruction, with the tool's parameters), in the tool's
+    proposal. MPFEVER_REPLACECON=0: as before. Tested by replaying the builds of a manual test on both games.
+  - FIX: a build with two constructions (a T interchange and the farm whose field it cuts) was replayed with the first one
+    only: the command could not be made ("Unknown exception") and the junction was not reproduced. MPFEVER_ALLCONS=0: as
+    before.
+  - FIX: a road junction of the street tool (roundabout, T interchange...) next to a construction with an entrance (the farm
+    whose field it cut) stayed a construction on the replaying games only: the tool gives the junction no frozen node, the
+    replay guessed one and took the farm's entrance. One construction more there (conParams), then the host's game was
+    reloaded. A captured empty list is now kept as it is, and each construction of the build gets its own captured frozen
+    nodes. MPFEVER_FROZENGUESS=1: as before.
+  - Diagnostic: the state dumps of the checks (sdump_ring_*.txt) list the constructions of each kind and every industry
+    with its modules and production level.
+  - FIX: mods that rename, recolour or update lines by themselves (Auto Line Namer, Auto Color Lines, Auto Assign
+    Terminals, #58): their simulation script runs on every game but decides on the computer's clock, so each game sent
+    its own commands at its own steps and the lines differed. Those commands now come from the host's game only and are
+    applied on every game at the same step, like a player's; the other games drop theirs. MPFEVER_MODHOST=0: as before.
+  - FIX: a build replayed for another player was announced to every script as a player's build: a mod answering a
+    player's build (Auto Signals adds signals) did it on every game. The mods' scripts (not the game's own) are now told
+    that a replayed build was not made by a player there. MPFEVER_MODEVENTS=0: as before. Tested with Auto Signals' tool:
+    the signals are added once and replayed on the other game.
+  - FIX: a new road laid with the street tool (nothing replaced, no station or stop) was rebuilt on the other games by
+    the script forms: with the slope tool it cost a quarter less there and its segments differed (a manual test: a
+    desync after three roads). It is now replayed as the tool's own proposal, as roads that replace segments already
+    were; if that proposal cannot be made or is refused, the script forms are tried as before. MPFEVER_NATIVEROAD=0: as
+    before.
+  - The commands of the line mods name a line made during the session by its creation key, as a player's command does
+    (the ids of new entities differ between games: a client renamed another entity and its game closed, found in a
+    test); a mod's command on something that is not a line is skipped on every game.
+  - Tests: MPFEVER_ADDMODS=id1,id2 adds installed mods to the savegame of an autotest (the dedicated "Leawood Mods").
+  - NEW: « ⚙ Settings » in the launcher (all the game's languages). Game settings, chosen by the host and sent to every
+    player (the same on every game): responsive builds (the builder leads of pull request #52, off by default, tested in
+    sync), balanced refunds, stops and signals at the tool's price. Your own settings: smooth pacing, slow PC mode,
+    detailed logs, automatic update, UPnP, public IP lookup. Expert settings (hidden): the switches of the recent fixes,
+    to turn one off when asked to in an issue. The mod reads them from settings.txt in the session folder (they take the
+    place of the MPFEVER_ variables; not written for the autotests, MPFEVER_OPTIONS=1 to test them). Problem reports
+    list the settings that are not at their default.
+  - FIX: a player whose connection dropped while receiving the host's game received it again from the start, and a new
+    resynchronisation started at each reconnection (#60: 51 MB every 20 s). The parts already received are kept (same
+    host run), the player says which ones are missing, and the host sends only those. The host also waited up to 10
+    minutes for the player under its old name (Philippe#1 for Philippe#2).
+
 0.3.24 - town street upgrades no longer crash the host
   - FIX: upgrading a town street that moves town buildings (#75, #74): when the engine's own street upgrade could not be
     used, the replay fell back to the script forms. While making the command, the engine asserted on the street's lanes
