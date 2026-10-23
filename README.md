@@ -1,207 +1,211 @@
 # MPFever – Multiplayer for Transport Fever 3
 
-Multiplayer for Transport Fever 3. Several players play the same world, each in their own copy of the game, over the internet or a local network. They play either:
+**Play Transport Fever 3 with your friends, in the same world, over the internet or a local network.**
 
-- in **one shared company** (co-op);
-- or **each with their own company**. This second mode is still in development and has many bugs: use it to test and help.
+[![Latest release](https://img.shields.io/github/v/release/dkdknight/MPFever?label=download)](https://github.com/dkdknight/MPFever/releases/latest)
+[![Nexus Mods](https://img.shields.io/badge/Nexus-MPFever-orange)](https://www.nexusmods.com/transportfever3/mods/4)
+[![Ko-fi](https://img.shields.io/badge/support-Ko--fi-ff5e5b)](https://ko-fi.com/knighthd)
 
-The game starts from `MPFever.exe`. A multiplayer page in the main menu, in the game's own style, lets you open a lobby with one of your savegames or join a host by IP address. The players gather in the lobby, then the host starts the game and every game loads it at the same time; the host's game is received automatically. Joining a game already running works too, and Steam invitations are supported.
+![MPFever in game](docs/Ingame.jpg)
 
-A world can also run on a **dedicated server** (`MPFever.exe --server`): a PC of its own runs the world, nobody plays on it, and the players join it as they join a host. See [SERVER](docs/SERVER.txt).
+Each player plays in their own copy of the game. MPFever replays every player's actions in every game at the same moment, checks that the games stay identical, and repairs them by itself when they don't.
 
-Enjoying MPFever? You can support its development on [Ko-fi](https://ko-fi.com/knighthd).
+> **MPFever is still in active development.** Most sessions run for hours, but desyncs still happen. **Back up your savegames**, and please [report problems](#reporting-a-problem) with your logs: every report helps.
 
-Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL](docs/INSTALL.txt), [SERVER](docs/SERVER.txt), [ROADMAP](docs/ROADMAP.txt) and [CHANGELOG](docs/CHANGELOG.txt). What we learned about the engine, the causes of desyncs and what must be synchronised in each mode is in [RESEARCH](docs/RESEARCH.md).
+---
 
-## Features
+## Contents
 
-- **Two ways to play**, chosen by the host:
-  - "One company for everybody": shared money, vehicles and lines.
-  - "One company per player": own money, roads, stations, depots, vehicles, lines, loans and contracts, and a colour per company. The company belongs to the player's Steam account and is found again after a reconnection.
-    - What belongs to another company cannot be sold, edited, renamed or bought from (its vehicles, lines, stations and depots): refused the same way on every game.
-    - Each company has its own rank, score and permits, computed the same way on every game.
-- **Everything is replicated exactly** in every game, at the same game time:
-  - roads, tracks, tram tracks, signals, stops, stations, depots, buildings;
-  - terrain edits, trees of the brush, the bulldozer;
-  - vehicle purchases, lines, game speed and pause.
-- **Refunds on demolition.** Demolishing what you have just built gives the money back on every game, as in a solo game.
-- **Shared stations** (separate companies). Every station is shared at $100 per stop by default. Its owner sets the fee in the station window, from a list. Other companies' lines stop there and pay the fee.
-- **In-game MPFever window**, opened from a card in the pause menu. It shows:
-  - the players and their link (connected, behind, not responding, loading, left);
-  - the sync state;
-  - for the host, Steam invites.
+- [Before you start](#before-you-start)
+- [Install and play](#install-and-play)
+- [What you can do](#what-you-can-do)
+- [Mods](#mods)
+- [Known limitations](#known-limitations)
+- [Troubleshooting](#troubleshooting)
+- [Reporting a problem](#reporting-a-problem)
+- [For developers](#for-developers)
+- [Credits and support](#credits-and-support)
 
-  It stays open while playing.
-- **In-game chat**, from a card in the pause menu. New messages show for a few seconds at the left of the screen.
-- **Report a problem in one click.** A button in the in-game MPFever window and in the launcher puts every log into one zip and opens a GitHub issue already filled in (see [Reporting a problem](#reporting-a-problem)).
-- **Host authority.** The games compare their state every 10 seconds. Money is corrected at once. A lasting difference reloads the host's game for everybody (about 20 seconds).
-- **Joining and reconnecting.** Joining a session already running works. A lost connection reconnects by itself for 5 minutes.
-- **No port to forward, most of the time.** The host's port is opened on the router by itself (UPnP / NAT-PMP) while a session runs. The launcher's log says when the provider shares one address among several customers (CGNAT): then only IPv6, a dedicated server elsewhere or a tunnel work.
-- **Automatic updates.** A new release on GitHub is installed by itself: at startup, when the game closes, or by a dedicated server once nobody is connected.
-- **Smooth game speed.** A game close to the slowest player slows down a little instead of stopping, so vehicles no longer move, stop and move again.
-- **Dedicated server** (separate archive, `MPFever.exe --server`), in the spirit of the Minecraft, Satisfactory and Factorio servers:
-  - the world runs on a PC of its own, without the PC of a player, and waits while nobody is connected;
-  - settings in `mpfever_server.properties`: world, port, password, players at most, company mode, message of the day;
-  - autosave with backups, restart of the game after a crash or a freeze, players reconnected by themselves;
-  - a console in the server window: `status`, `say`, `save`, `pause`, `speed`, `kick`, `resync`, `restart`, `stop`.
-- **In the game's 13 languages.** The launcher and the in-game windows follow the language of Transport Fever 3.
+---
 
-## Getting started
+## Before you start
 
-1. Download `MPFever-<version>.zip` from the [releases](https://github.com/dkdknight/MPFever/releases) and unzip it anywhere (a dedicated server takes `MPFever-<version>-server.zip`). Every player needs the same version.
-2. Start `MPFever.exe`: it finds the game, installs the mod and starts Transport Fever 3.
-3. In the game's main menu, click the **Multiplayer** card (top left). On the multiplayer page, the host clicks **Host** under one of their savegames to open a lobby; the others join the host's address or accept a Steam invitation.
-4. The host clicks **Start the game**, and every game loads it.
+| Requirement | Why |
+|---|---|
+| **Transport Fever 3 on Steam, Windows** | MPFever is tested on the Steam version only. Other stores (Epic...) are not supported yet. |
+| **The same game version on every PC** | Two different game builds don't simulate the world the same way. Supported: **40423** (current) and **40420**. Make sure Steam has updated the game on every PC. |
+| **The same MPFever version on every PC** | MPFever updates itself; every player just needs a recent version (0.3.15 or later). |
+| **The same mods, in the same version** | MPFever checks it in the lobby and tells you what to fix. |
+| **TPF3-MP turned off** | ⚠️ TPF3-MP is another multiplayer mod. It changes the same parts of the game: a savegame where it is active keeps desynchronising. |
 
-From 0.3.15 on, MPFever updates itself: a new release is installed at startup (your settings and logs are kept), so every player stays on the same version. `autoupdate=ask` in `mpfever_settings.txt` asks first, `autoupdate=0` turns it off.
+## Install and play
 
-Details, ports and troubleshooting: [INSTALL](docs/INSTALL.txt). Dedicated server: [SERVER](docs/SERVER.txt).
+1. Download **`MPFever-<version>.zip`** from the [releases](https://github.com/dkdknight/MPFever/releases/latest).
+2. **Extract the whole folder** anywhere, for example on your desktop.
+   Always start `MPFever.exe` **from that folder**. Don't move the `.exe` out of it, use a shortcut instead: MPFever needs the files next to it to update itself and to stay in sync.
+3. Start **`MPFever.exe`**. It finds the game, installs the mod and starts Transport Fever 3.
+4. In the main menu, click the **Multiplayer** card (top left).
+   - **The host** clicks **Host** under one of their savegames to open a lobby.
+   - **The others** join the host's address, or accept the host's Steam invitation.
+5. When everybody is in the lobby, the host clicks **Start the game**. Every game loads the host's world at the same time.
+
+Players can also join a game already running, and a lost connection reconnects by itself.
+
+**Ports:** most of the time there is nothing to do. MPFever opens the host's port (28090, TCP) on the router by itself. If it can't (some providers share one address between customers), the launcher's log says so: forward the port by hand, use IPv6, or use a dedicated server. Details: [INSTALL](docs/INSTALL.txt).
+
+## What you can do
+
+### Two ways to play, chosen by the host
+
+- **One company for everybody** (co-op): shared money, vehicles and lines. This is the stable mode.
+- **One company per player** (experimental): each player has their own money, network, vehicles, lines, loans and contracts, and their own colour.
+  - What belongs to another company can't be sold, edited or used.
+  - Stations are shared: other companies' lines can stop there and pay a fee set by the owner.
+
+### Everything is replicated
+
+- Roads, tracks, trams, signals, stops, stations, depots and buildings.
+- Terrain edits, trees and the bulldozer.
+- Vehicles, lines, game speed and pause.
+- Demolishing what you just built gives the money back, as in a solo game.
+
+### In-game tools
+
+The MPFever card in the pause menu opens:
+
+- **the MPFever window:** the players, their connection, the sync state, Steam invites, and the **Report a problem** button;
+- **the chat:** new messages show for a few seconds on the left of the screen.
+
+![Pause menu](docs/ESC-Menu.jpg)
+
+### Repairs itself
+
+- The games compare their state every 10 seconds, and money is corrected at once.
+- A lasting difference reloads the host's world for everybody, in about 20 seconds.
+
+### Dedicated server
+
+A PC of its own can run the world without anybody playing on it: download **`MPFever-<version>-server.zip`** and start `MPFever.exe --server`. It includes:
+
+- a password and a player limit;
+- autosaves with backups;
+- a restart after a crash;
+- a console.
+
+See [SERVER](docs/SERVER.txt).
+
+### And also
+
+- Automatic updates of MPFever.
+- Smooth game speed between players.
+- The 13 languages of the game.
 
 ## Mods
 
-> ⚠️ **TPF3-MP is incompatible with MPFever.** It is another multiplayer mod that changes the same things: a game where it is active keeps desynchronising. Turn it off in the savegame's mods before playing with MPFever.
+**Every player needs the same mods, in the same version.** When you join, the lobby lists what to fix: mods missing on your PC, in another version than the host's, or known to break a session. The host's world isn't loaded until it's fixed.
 
-**Every player needs the same mods, in the same version.** When you join a lobby, the multiplayer page lists the mods of the host's savegame, the ones to fix first: missing on your PC, installed in another version than the host's, or known to break a session. The host's game is not loaded while one is missing or in another version: install or update it, then join again. In the host's lobby, a player whose mods differ shows as « (different mods) ».
+| Kind of mod | Works? |
+|---|---|
+| **Content** (vehicles, buildings, streets, textures...), interface, game data | ✅ When every player has the same version. |
+| **Mods that name, colour or assign lines by themselves** (*Auto Line Namer*, *Auto Color Lines*, *Auto Assign Terminals*...) | ✅ Only the host's game makes the changes, shared with everybody. |
+| **Other mods with a script that changes the game by itself** | ⚠️ Shown as « untested script ». They may make the games drift apart. |
+| **TPF3-MP** | ❌ Incompatible: turn it off. |
 
-- **Mods that only add content** (vehicles, buildings, streets...), the interface or the game's data work when every player has the same version.
-- **Mods that change the game by themselves**, through a script, are shown as « untested script ». Each game runs the script on its own; if the mod does not decide the same thing on every game, the games drift apart and MPFever reloads the host's game for everybody.
-- Since 0.4.0, the mods that rename, recolour or update lines by themselves (*Auto Line Namer*, *Auto Color Lines*, *Auto Assign Terminals*, [issue #58](https://github.com/dkdknight/MPFever/issues/58)) work: only the host's game sends those changes, applied everywhere at the same step.
+The mods tested so far are listed in [MODS](docs/MODS.md).
 
-The list of the mods seen so far and what MPFever knows of them: [MODS](docs/MODS.md).
+**Mod authors:** if your mod breaks a session, open an [issue](https://github.com/dkdknight/MPFever/issues). We can work together on a simple way for your mod to know it runs in MPFever and to act on the host only.
 
-### Mod authors: let's make your mod compatible
+## Known limitations
 
-If you use a mod that breaks the synchronisation, you can tell its author about MPFever and ask them to get in touch through a [GitHub issue](https://github.com/dkdknight/MPFever/issues). Together we can look at:
+- **A bus stop placed on a bridge** reshapes the ground a little on the other games. The towns drift apart, and MPFever reloads the world after a few checks.
+- **One company per player** is experimental:
+  - the Company window's actions only work for the host's company;
+  - there is no money transfer between companies.
+- **Steam and Windows only.**
+- **Small drifts of vehicles and passengers** can happen. They are repaired by a reload if they last.
 
-- a simple way for the mod to know that it runs in an MPFever session, so that it can turn its automatic changes off, or make them on the host only;
-- making the mod's automatic changes once and sharing them through MPFever, instead of letting each game make them;
-- a list of mods tested with MPFever: works, works when every player has it, or breaks the synchronisation.
+What's planned: [ROADMAP](docs/ROADMAP.txt). What changed: [CHANGELOG](docs/CHANGELOG.txt).
+
+## Troubleshooting
+
+| Problem | What to do |
+|---|---|
+| Resyncs every few minutes, even without building anything | Check that every player has the **same game build**: it's written at the top of each report and in the host's launcher log (« game ready ... build »). Update the game in Steam (*Properties → Installed Files → Verify integrity*). |
+| The launcher's log says « MPFever.exe is not in a version folder » or « winhttp.dll missing » | `MPFever.exe` was started outside its folder. Extract the whole zip again and start it from there. |
+| « Savegame not found » when hosting | Update to 0.4.1 or later. |
+| The guest can't connect | Check the port (above), or try the host's IPv6 address shown in the launcher. |
+| A « (different mods) » player in the lobby | That player must install or update the listed mods, then join again. |
 
 ## Reporting a problem
 
-Please open an [issue](https://github.com/dkdknight/MPFever/issues) with the files below. **Without logs, a desync or a crash can rarely be found**; with them, most bugs are fixed in the next version.
+Open an [issue](https://github.com/dkdknight/MPFever/issues) with your logs. **Without logs, a desync or a crash can rarely be found.** With them, most bugs are fixed in the next version.
 
-**The easy way:** click **Report a problem (logs)** in the MPFever window of the game (pause menu), or **Report a problem** in the launcher. MPFever puts every file below (except the savegame) into one zip, shows it in the Explorer and opens a new issue with its text filled in: describe what you did and when, drag the zip into the issue, send. After a crash of the game it offers it by itself. Every player can send theirs the same way.
+1. **Click « Report a problem »:** in the MPFever window of the game, or in the launcher. MPFever zips every log, shows the zip and opens an issue already filled in. After a crash, it offers it by itself.
+2. **Say what you did just before, and when** (your clock): built a station, bulldozed a road... Say who was the host.
+3. **Ask every player to send theirs**, the host's above all.
+4. **The savegame helps a lot.** With it, we can replay the problem here. It's usually over 25 MB: share it through Google Drive, Dropbox or WeTransfer. After a resync, add `MPFever resync.sav` too.
 
-### 1. Say what happened
+The savegames are in `Steam\userdata\<number>\3493540\local\save\`.
 
-- Your **MPFever version** (shown in the title of the MPFever window) and the **company mode** (one company, or one per player).
-- **What you did** just before: built a station, bulldozed a road, bought a vehicle...
-- **At what time**, on your clock. The logs are timed, so the time lets us find the moment.
-- Who was the host, how many players there were, and whether it happens again.
+---
 
-### 2. Send the logs, of every player if you can
+## For developers
 
-Close the game first, since some files are only complete then. Then zip:
-
-| What | Where |
-|---|---|
-| **Session folder** of the game in question (the newest one) | `%TEMP%\mpfever\<name>-<time>-<id>\`. Paste `%TEMP%\mpfever` in the Explorer address bar. |
-| **Launcher log** | `logs\launcher-<date>-<time>.log`, in the folder where `MPFever.exe` is. |
-| **Game log** | `C:\Program Files (x86)\Steam\userdata\<number>\3493540\local\crash_dump\stdout.txt`. It is rewritten each time the game starts: copy it **before** starting the game again. |
-| After a **crash** | In the same `crash_dump` folder, the newest `.dmp` file; in `local\save\`, the `crash_<world>_<date>.sav` the game wrote. |
-
-The host's files matter most: they hold the checks of every game. The files of the player who built or bulldozed something show what that player's game did.
-
-### 3. Send the savegame, ideally
-
-With the savegame, we can replay the problem on two games here, which is the fastest way to a fix.
-
-- The world you played: `C:\Program Files (x86)\Steam\userdata\<number>\3493540\local\save\<world>.sav`, with its `.jpg`.
-- After a resynchronisation, also `MPFever resync.sav` from the same folder: the world as every game reloaded it.
-
-Savegames are often larger than GitHub's 25 MB limit. Upload the zip to Google Drive, Dropbox, WeTransfer or similar, and put the link in the issue. If the savegame uses mods, list them.
-
-## How it works
+### How it works
 
 | Part | Folder | Role |
 |---|---|---|
-| Launcher | `launcher/` (C#, .NET Framework 4.8, WinForms) | Hosts or joins a session over TCP and starts the game. It installs the mod and the native module, relays player actions and the session status, compares the games' state and runs resynchronisations from the host's savegame. With `--server` it runs a dedicated server (`Server.cs`): it hosts one world by itself, saves it, restarts the game when needed and has a console. |
-| Game mod | `mod/mpfever_1/` (Lua) | Game script and UI hook. It captures player actions and replays them in every game at the same game time (barrier lockstep). It computes state checksums, corrects money, manages the companies and shared stations, and saves or loads for resynchronisation. It draws the multiplayer page of the main menu and the in-game MPFever window. It does nothing unless the game was started by the launcher. |
-| Native module | `native/` (freestanding C++, no CRT) | Built as `winhttp.dll` and placed in the game folder, where the game loads it itself (the game imports `WINHTTP.dll`). Every WinHTTP call is passed unchanged to the system library. With an MPFever session only, it does three things: it holds construction commands so they run at the same step in every game, it copies terrain edits, and it splits the "local player" between the simulation and the interface. It also fixes the Lua hash seed and smooths the game's pacing. On a game build it does not know, it finds its places in the game's code again by their signatures (`mpfever_sigs.txt`, see below) and leaves off whatever it cannot find. |
-| Tests | `tests/` (Python + lupa) | Language file check (`test_lang.py`), and two simulated games running the real Lua bridge (`test_lockstep.py`). |
+| Launcher | `launcher/` (C#, .NET Framework 4.8) | Hosts or joins over TCP, starts the game, installs the mod and the native module. It relays actions, compares the games' state and runs the resyncs. With `--server`, it is the dedicated server. |
+| Game mod | `mod/mpfever_1/` (Lua) | Captures player actions and replays them in every game at the same game time (barrier lockstep). It computes the state checksums and manages the companies. It also draws the multiplayer page and the in-game windows. It does nothing unless the game was started by the launcher. |
+| Native module | `native/` (C++, no CRT) | `winhttp.dll` in the game folder, a pass-through proxy. In a session, it holds construction commands until the shared step, copies terrain edits, separates each player's company, and fixes the game's sources of randomness and its pacing. |
+| Tests | `tests/` (Python + lupa) | Language files and a simulated lockstep. |
 
-The launcher and the game talk through files in a per-session folder (`%TEMP%\mpfever\...`): `in.log` and `out.log`, plus control and status files. No process injection is used.
+The launcher and the game talk through files in `%TEMP%\mpfever\<session>\`. No process injection is used.
 
-## Building from source
+What we learned about the engine, the causes of desyncs and what each mode must synchronise is in [RESEARCH](docs/RESEARCH.md).
 
-Requirements:
+### Building
 
-- Windows 10/11.
-- Visual Studio 2022 or later, with these workloads:
-  - **Desktop development with C++**;
-  - **.NET desktop development**, including the .NET Framework 4.8 targeting pack.
-
-From the repository folder, run:
+You need Windows 10/11 and Visual Studio 2022 or later, with *Desktop development with C++* and *.NET desktop development* (.NET Framework 4.8). Then run:
 
 ```bat
 build.bat
 ```
 
-It builds:
+It builds `native\out\winhttp.dll`, `launcher\bin\Release\MPFever.exe` and the archives in `release\`.
 
-1. `native\out\winhttp.dll` (via `native\build.bat`);
-2. `launcher\bin\Release\MPFever.exe` (MSBuild);
-3. the release archive `release\MPFever-<version>.zip` (with `release\dist\MPFever\`).
+### Game updates and signatures
 
-The release archive contains the launcher, `winhttp.dll`, the mod folder and the player documentation, exactly as published.
+The native module finds the places it patches in the game's code by their signatures, in `mpfever_sigs.txt`, shipped next to `MPFever.exe`. A feature whose places are not all found stays off, and `native.log` says so.
 
-## After a game update: the native module's signatures
-
-The native module knows builds 40408 and 40420 by their addresses. For any other build (a game update) it looks for every place it patches by a signature, in `mpfever_sigs.txt` (shipped next to `MPFever.exe`, built from `native/mpfever_sigs.txt`). A place counts only when its signature matches exactly once; a feature whose places are not all found stays off, and `native.log` lists what was found ("game build ...: signatures from ...").
-
-The signatures are made from the last build the module knows, with Python (`pip install pefile capstone`):
+After a game update, check which places the new build still has (needs `pip install pefile capstone`):
 
 ```bat
-python tools\mksigs.py make "C:\Program Files (x86)\Steam\steamapps\common\Transport Fever 3\TransportFever3.exe"
+python tools\mksigs.py check "<path>\TransportFever3.exe"
 ```
 
-It writes `native/mpfever_sigs.txt` (the places are listed in `tools/targets_40420.txt` and `native/sites20c.h`). Commit it with the release. After a game update, `python tools\mksigs.py check "<the new TransportFever3.exe>"` says which places the new build still has. `MPFEVER_SIGTEST=1` makes the module use the signatures on a known build too, to check the file in a real game.
+### Tests
 
-## Running the tests
+- `python tests\test_lang.py`: the language files.
+- `MPFever.exe --selftest`: the relay, the client and the server settings, without the game.
+- `MPFever.exe --autotest <savegame>`: two real games on one PC, with scenarios chosen by environment variables. See [RESEARCH](docs/RESEARCH.md).
 
-```bat
-pip install lupa
-python tests\test_lang.py
-python tests\test_lockstep.py
-```
+---
 
-`test_lockstep.py` has not been updated for the companies module (0.3.x) yet and currently stops at start-up.
+## Credits and support
 
-`MPFever.exe --selftest` checks the relay and the client without the game: messages between two simulated games, and the dedicated server's settings file and who it lets in (password, version, players at most, kick).
+- **[dkdknight](https://github.com/dkdknight)**: author and maintainer.
+- **[SlikerDev](https://github.com/SlikerDev)**:
+  - dedicated server, automatic updates, IPv6;
+  - the launcher's design;
+  - the translations into 13 languages;
+  - the in-game window and the chat.
+- **[Steelworm](https://github.com/Steelworm)**: build timing fixes, the builder lead, in-depth issue analyses.
+- **[Juliansgith](https://github.com/Juliansgith)**: [Transport Fever 3 Multiplayer Mod](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod) (MIT), the source of several order fixes, the smooth pacing, the signatures and the company rules.
+- **Every tester who sent reports and savegames**: most fixes came from them. Thank you!
 
-The real tests run two games on one PC: `MPFever.exe --autotest <savegame>`, with scenarios chosen by environment variables. See [RESEARCH](docs/RESEARCH.md) for the determinism test and the census.
-
-## Status
-
-Version 0.4.3, still in active development. Supported game builds:
-
-- **40423**, the current Steam version (update of 2026-10-22): supported through the signatures shipped with MPFever (`mpfever_sigs.txt`).
-- **40420**: supported, with the Lua seed fix.
-- **40408**: supported, but the Lua seed fix is only applied on 40420.
-
-See [`docs/ROADMAP.txt`](docs/ROADMAP.txt).
-
-## Support the project
-
-MPFever is free and open source, developed on free time. If you enjoy playing Transport Fever 3 with your friends and want to help the development, you can support it on Ko-fi:
+MPFever is free and open source. If you enjoy it, you can support its development on [Ko-fi](https://ko-fi.com/knighthd) or leave a comment on [Nexus](https://www.nexusmods.com/transportfever3/mods/4?tab=posts).
 
 [![Support MPFever on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/knighthd)
 
-Testing and reporting problems with your logs helps just as much: thank you!
-
-## Credits
-
-- **[dkdknight](https://github.com/dkdknight)** – author and maintainer.
-- **[Steelworm](https://github.com/Steelworm)** – contributor: build timing fixes and the experimental builder lead, detailed issue analyses.
-- **[SlikerDev](https://github.com/SlikerDev)** – contributor (dedicated server, automatic updates, IPv6, connection fixes):
-  - the redesigned launcher window and its icon;
-  - the translation of MPFever into the 13 languages of the game (the launcher follows the game's language);
-  - the in-game MPFever window (pause-menu card, players, sync state, Steam invites);
-  - the in-game chat;
-  - the fee list of the station windows.
-- **[Juliansgith](https://github.com/Juliansgith)** – [Transport Fever 3 Multiplayer Mod](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod) (MIT), the source of the order fixes, the smooth pacing, the signatures and the company rules ported into MPFever.
-
-Thanks to everyone who tests MPFever and reports problems in the [issues](https://github.com/dkdknight/MPFever/issues) (see [Reporting a problem](#reporting-a-problem)): every report with logs helped find a bug.
-
-MPFever is not affiliated with Urban Games. Transport Fever 3 is a trademark of its owners.
+*MPFever is not affiliated with Urban Games. Transport Fever 3 is a trademark of its owners.*
