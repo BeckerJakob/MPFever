@@ -574,7 +574,8 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 	local result = { tok = a.tok, id = a.id, uid = a.uid, fn = a.fn, success = false }
 	-- companies mode: a new line takes its company's colour (a little darker for each line the company already has), so that the
 	-- lines of each company can be told apart on the map and in the line lists
-	if a.fn == "makeLineCreateCmd" and a.co and R.CO and type(a.args) == "table" then
+	-- (MPFEVER_LINECOLOR=1: the players do not see the other companies' lines, so a line keeps the colour its player gave it)
+	if a.fn == "makeLineCreateCmd" and a.co and R.CO and type(a.args) == "table" and os.getenv("MPFEVER_LINECOLOR") == "1" then
 		pcall(function()
 			local c = CO.find(R.CO, a.co)
 			if not c then return end
@@ -2158,7 +2159,7 @@ local function handleEvent(userParams, state, src, id, name, param)
 			if c and CO.colorFree(reg, param.color, c.id) then
 				c.color = tonumber(param.color)
 				c.colorPicked = true
-				pcall(SIM.coRecolor, st, c)
+				pcall(SIM.coRecolor, st, c, os.getenv("MPFEVER_LINECOLOR") == "1")
 			else
 				log("companies: colour " .. tostring(param.color) .. " refused to company " .. tostring(param.mpfCo))
 			end

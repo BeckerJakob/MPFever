@@ -470,15 +470,18 @@ local function setup()
 		writeFile(COLOR_KEPT, tostring(n) .. NL)
 		writeFile("company_color.txt", tostring(n) .. NL)
 	end
-	local function colorRow(current, onPick, note, compact)
+	local function colorRow(current, onPick, note, compact, taken)
 		local label = text(T("Couleur de votre entreprise", "Your company's colour") .. (compact and note and ("  " .. note) or ""), "font-scale-title-4")
 		local items = compact and {} or { label, gap(12, 1) }
 		local bw, bh = compact and 32 or 38, compact and 28 or 34
 		for i, c in ipairs(PALETTE) do
 			local sel = current == i
+			local busyC = taken and taken[i]
 			items[#items + 1] = builtin.Button{
-				meta = { class = sel and "primary" or "secondary", styleSheet = style{ size = { bw, bh }, padding = { 4, 4, 4, 4 } } },
-				content = builtin.Component{ meta = { styleSheet = style{ size = { bw - (sel and 10 or 16), bh - (sel and 10 or 16) }, background = { c[1], c[2], c[3], 1 } } } },
+				meta = { class = sel and "primary" or "secondary", enabled = not busyC,
+					tooltip = busyC and T("Déjà prise par un autre joueur", "Already taken by another player") or nil,
+					styleSheet = style{ size = { bw, bh }, padding = { 4, 4, 4, 4 } } },
+				content = builtin.Component{ meta = { styleSheet = style{ size = { bw - (sel and 10 or 16), bh - (sel and 10 or 16) }, background = { c[1], c[2], c[3], busyC and 0.25 or 1 } } } },
 				onClick = function() onPick(i) end,
 			}
 			items[#items + 1] = gap(4, 1)
@@ -521,11 +524,13 @@ local function setup()
 			if n then writeFile("company_color.txt", tostring(n) .. NL) end
 			return n
 		end)
+		-- (in the lobby: MPFever.exe keeps it when no other player has it; the lobby's list then says it, see below)
 		local function pickColor(i)
 			coColor:set(i)
-			writeColor(i)
-			log("company colour " .. i)
+			request("color", tostring(i))
+			log("company colour " .. i .. " asked")
 		end
+		local colorAsked = react.useRef(false)
 		local addr = react.useState(st0.addr or "")
 		local password = react.useState("")            -- joining: the password of a dedicated server (none: empty)
 		local state = react.useState(st0)
@@ -650,19 +655,43 @@ local function setup()
 				p = p:gsub("^%s+", ""):gsub("%s+$", "")
 				if p ~= "" then players[#players + 1] = p end
 			end
+			-- one company per player: each player's colour (picked here, before the game starts)
+			local separate = st.cmode == "separate" and (st.lobby == "host" or st.lobby == "client")
+			local colorOf, taken, mine = {}, {}, nil
+			for nm, ix in (st.colors or ""):gmatch("([^,:]+):(%d+)") do colorOf[nm] = tonumber(ix) end
+			local me = st.name or playerName()
+			for nm, ix in pairs(colorOf) do if nm == me then mine = ix else taken[ix] = true end end
+			if separate then
+				if mine and mine ~= readColor() then writeColor(mine) elseif mine then writeFile("company_color.txt", tostring(mine) .. NL) end
+				-- (the colour kept from last time, asked once when the player enters a lobby without one)
+				if not mine and not colorAsked:get() then
+					colorAsked:set(true)
+					local pref = readColor()
+					if pref and not taken[pref] then request("color", tostring(pref)) end
+				end
+			end
 			if #players > 0 then
 				right[#right + 1] = gap(1, 16)
 				right[#right + 1] = text(T("Joueurs", "Players") .. " (" .. #players .. ")", "font-scale-title-3")
 				right[#right + 1] = gap(1, 6)
 				for i, p in ipairs(players) do
+					local base = p:gsub("%s*%(.*$", "")
+					local ix = separate and colorOf[base] or nil
+					local pc = ix and PALETTE[ix] or nil
+					-- (the colour square is the icon's place when the player has one: no hole in the list of children)
 					right[#right + 1] = box(H, {
-						icon("::/gui/menu/icons/profile.tga"),
+						pc and builtin.Component{ meta = { styleSheet = style{ size = { 22, 22 }, background = { pc[1], pc[2], pc[3], 1 } } } }
+							or icon("::/gui/menu/icons/profile.tga"),
 						gap(10, 1),
 						text(p, "font-scale-title-4"),
 						hfill(),
 						i == 1 and (st.lobby == "host" or st.lobby == "client") and text(T("hôte", "host"), "font-scale-body") or nil,
 					}, nil, { padding = { 4, 10, 4, 10 }, background = { 1, 1, 1, i % 2 == 1 and 0.06 or 0.02 }, size = { PAGE_W - SIDE_W - 60, -1 } })
 				end
+			end
+			if separate then
+				right[#right + 1] = gap(1, 14)
+				right[#right + 1] = colorRow(mine, pickColor, nil, true, taken)
 			end
 			right[#right + 1] = vfill()
 			-- the buttons
@@ -787,15 +816,10 @@ local function setup()
 					T("Tout le monde construit et gère la même entreprise, avec le même argent.", "Everybody builds and runs the same company, with the same money."),
 					function() companies:set("shared") end, true),
 				gap(8, 1),
-				choice(companies:old() == "separate", T("Une entreprise par joueur (expérimental)", "One company per player (experimental)"),
-					T("En cours de développement : il reste énormément de bugs. Surtout pour tester et aider au développement du mod.", "Still in development: many bugs remain. Mainly to test it and help the development of the mod."),
-					function() companies:set("separate") end, true, true),
+				choice(companies:old() == "separate", T("Une entreprise par joueur", "One company per player"),
+					T("Chacun son argent, son réseau, ses véhicules et sa couleur, sur la même carte. Les gares peuvent être partagées.", "Everyone has their own money, network, vehicles and colour, on the same map. Stations can be shared."),
+					function() companies:set("separate") end, true),
 			})
-			if companies:old() == "separate" then
-				body[#body + 1] = gap(1, 8)
-				body[#body + 1] = colorRow(coColor:old(), pickColor,
-					T("Si un autre joueur l'a déjà, vous recevez la première libre.", "If another player already has it, you get the first free one."))
-			end
 			body[#body + 1] = gap(1, 12)
 			local list = {}
 			local f = (filter:old() or ""):lower()
@@ -870,8 +894,6 @@ local function setup()
 					text(T("Mot de passe", "Password"), "font-scale-title-4"),
 					gap(1, 4),
 					input(password:old(), T("seulement si le serveur en a un", "only if the server has one"), function(v) password:set(v) end, formW - 20),
-					gap(1, 14),
-					colorRow(coColor:old(), pickColor, T("(une entreprise par joueur)", "(one company per player)"), true),
 					gap(1, 20),
 					button(T("Rejoindre", "Join"), join, { primary = true, enabled = canJoin, icon = "::/gui/menu/icons/menu_play.tga", font = "font-scale-title-3" }),
 					vfill(),

@@ -58,10 +58,12 @@ Players can also join a game already running, and a lost connection reconnects b
 
 ### Two ways to play, chosen by the host
 
-- **One company for everybody** (co-op): shared money, vehicles and lines. This is the stable mode.
-- **One company per player** (experimental): each player has their own money, network, vehicles, lines, loans and contracts, and their own colour.
+- **One company for everybody** (co-op): shared money, vehicles and lines.
+- **One company per player**: each player has their own money, network, vehicles, lines, loans, contracts and Company window.
+  - Each player picks their company's colour in the lobby; the map's icons show who owns what.
   - What belongs to another company can't be sold, edited or used.
   - Stations are shared: other companies' lines can stop there and pay a fee set by the owner.
+  - Companies can give each other money, and the MPFever window ranks them.
 
 ### Everything is replicated
 
@@ -110,7 +112,7 @@ See [SERVER](docs/SERVER.txt).
 | **Content** (vehicles, buildings, streets, textures...), interface, game data | ✅ When every player has the same version. |
 | **Mods that name, colour or assign lines by themselves** (*Auto Line Namer*, *Auto Color Lines*, *Auto Assign Terminals*...) | ✅ Only the host's game makes the changes, shared with everybody. |
 | **Other mods with a script that changes the game by itself** | ⚠️ Shown as « untested script ». They may make the games drift apart. |
-| **TPF3-MP** | ❌ Incompatible: turn it off. |
+| **Other multiplayer mods** | ❌ Incompatible: turn them off. |
 
 The mods tested so far are listed in [MODS](docs/MODS.md).
 
@@ -119,9 +121,7 @@ The mods tested so far are listed in [MODS](docs/MODS.md).
 ## Known limitations
 
 - **A bus stop placed on a bridge** reshapes the ground a little on the other games. The towns drift apart, and MPFever reloads the world after a few checks.
-- **One company per player** is experimental:
-  - the Company window's actions only work for the host's company;
-  - there is no money transfer between companies.
+- **One company per player:** a company can't go bankrupt yet, and the fees of shared stations don't show in the finances.
 - **Steam and Windows only.**
 - **Small drifts of vehicles and passengers** can happen. They are repaired by a reload if they last.
 
@@ -202,8 +202,11 @@ python tools\mksigs.py check "<path>\TransportFever3.exe"
   - the translations into 13 languages;
   - the in-game window and the chat.
 - **[Steelworm](https://github.com/Steelworm)**: build timing fixes, the builder lead, in-depth issue analyses.
-- **[Juliansgith](https://github.com/Juliansgith)**: [Transport Fever 3 Multiplayer Mod](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod) (MIT), the source of several order fixes, the smooth pacing, the signatures and the company rules.
-- **Every tester who sent reports and savegames**: most fixes came from them. Thank you!
+- **[Juliansgith](https://github.com/Juliansgith)**: several order fixes, the smooth pacing, the signatures and the company rules (MIT).
+- **The testers** who sent reports, logs and savegames: most fixes came from them. Thank you to
+  kingplay98, theop, simon21-la, Vogel, Alex, CrossCroissant, AZalshehri7, ArtemQa8, KatzenSupport, GreGNee, terpo,
+  seksi1227-wq, Manocornuto, dev-andrei-v, Nassachi, Zippo1578, Shog-SC, thedevouttrout, AlexXY2, MorganJones13
+  and everyone who played and gave feedback on Nexus.
 
 MPFever is free and open source. If you enjoy it, you can support its development on [Ko-fi](https://ko-fi.com/knighthd) or leave a comment on [Nexus](https://www.nexusmods.com/transportfever3/mods/4?tab=posts).
 

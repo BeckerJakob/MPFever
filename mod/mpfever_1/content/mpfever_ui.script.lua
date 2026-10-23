@@ -499,6 +499,60 @@ local function ownerText(e)
 	return T("Propriétaire : ", "Owner: ") .. companyName(owner) .. (mine and T(" (vous)", " (you)") or ""), owner
 end
 
+-- The map's icons of what a company owns (stations, depots, buildings) get a small square of that company's colour beside them,
+-- when there is more than one company: the game's default icon (builtin.UseDefaultHudIcon, looked up at every render) is wrapped.
+-- The owner of an icon's entity is kept 3 seconds.
+local function installHudColors(builtin)
+	if U.hudColorsInstalled then return end
+	U.hudColorsInstalled = true
+	if os.getenv("MPFEVER_NOHUDCOLORS") == "1" or type(builtin.UseDefaultHudIcon) ~= "function" then return end
+	local okC, CO = pcall(ug_require, "mpfever_co.lua")
+	if not okC then okC, CO = pcall(ug_require, "mpfever_1::/mpfever_co.lua") end
+	if not (okC and type(CO) == "table" and CO.rgb) then log("companies: icon colours not shown (mpfever_co.lua)") return end
+	local orig = builtin.UseDefaultHudIcon
+	local cache, swatches = {}, {}
+	local function colorOf(e)
+		if type(e) ~= "number" or e < 0 or not U.coMap then return nil end
+		local n = 0
+		for _ in pairs(U.coMap) do n = n + 1 if n > 1 then break end end
+		if n < 2 then return nil end
+		local now = os.clock()
+		local c = cache[e]
+		if not c or now - c.at > 3 then
+			local owner = nil
+			pcall(function() owner = ownerOf(e) end)
+			local id = owner and U.coMap[owner] or nil
+			c = { at = now, ix = id and (U.coColors and U.coColors[id] or id) or false }
+			cache[e] = c
+		end
+		return c.ix or nil
+	end
+	builtin.UseDefaultHudIcon = function(params, ...)
+		local base = orig(params, ...)
+		local okI, ix = pcall(colorOf, params and params.entity)
+		if not (okI and ix) then return base end
+		local sw = swatches[ix]
+		if sw == nil then
+			sw = false
+			pcall(function()
+				local r, g, b = CO.rgb(ix)
+				local st = api.gui.StyleSheet.new()
+				st.size = api.type.Vec2f.new(10, 10)
+				st.backgroundColor1 = api.type.Vec4f.new(r, g, b, 1)
+				local n = api.gui.NinePatch.new()
+				n.fileName = "::/gui/line_vehicle_mgmt/icons/line_surface.tga"
+				st.backgroundImage1 = n
+				sw = st
+			end)
+			swatches[ix] = sw
+		end
+		if not sw then return base end
+		return builtin.BoxLayout { orientation = builtin.type.Orientation.Horizontal,
+			children = { builtin.Component { meta = { styleSheet = sw } }, base } }
+	end
+	log("companies: the map's icons show their company's colour")
+end
+
 local function installOwnerLine(react, builtin)
 	if U.ownerInstalled then return end
 	U.ownerInstalled = true
@@ -515,14 +569,14 @@ local function installOwnerLine(react, builtin)
 			local v = U.shareVersion or 0
 			if ver:old() ~= v then ver:set(v) end
 			local pd = pending:old()
-			if pd and ((U.shares and U.shares[p.shareKey] or 0) == pd.fee or os.clock() - pd.at > 10) then pending:set(nil) end
+			if pd and (C.shareFee(U.shares, p.shareKey) == pd.fee or os.clock() - pd.at > 10) then pending:set(nil) end
 		end, 0.5)
 		local inner = nil
 		if p.innerRecipe then inner = p.innerRecipe(p.innerParam)
 		elseif p.innerBuiltin then inner = p.innerBuiltin({ entity = p.innerParam and p.innerParam.keyEntity }) end
 		local children = { builtin.TextView { meta = { class = "font-scale-body" }, text = p.ownerText } }
 		if p.shareKey then
-			local fee = U.shares and U.shares[p.shareKey] or 0
+			local fee = C.shareFee(U.shares, p.shareKey)  -- (absent from the list: shared at the default fee)
 			if p.shareEdit then
 				-- the owner chooses the fee per stop of the other companies' vehicles (0: not shared)
 				local pd = pending:old()
@@ -878,12 +932,25 @@ end
 -- money to another company (event "give", applied by every game at the same step: see the bridge's handleEvent)
 U.companyRows = function(ui)
 	local list = {}
+	-- (a company's entity is read only once it has been known for a few seconds and still exists: the engine asserts, and the
+	-- game closes, when the interface reads the account of a player entity the simulation is still adding, or of one gone with
+	-- the previous game)
+	U.coSeenAt = U.coSeenAt or {}
+	local now = os.clock()
 	for ent, id in pairs(U.coMap) do
+		U.coSeenAt[ent] = U.coSeenAt[ent] or now
+		local settled = now - U.coSeenAt[ent] >= 5
+		if settled then
+			local okE, ex = pcall(api.engine.entityExists, ent)
+			settled = okE and ex == true
+		end
 		local bal = nil
-		pcall(function() bal = api.engine.util.finance.getPlayersBalance(ent) end)
 		local nLines, nVeh = 0, 0
-		pcall(function() nLines = #api.engine.system.lineSystem.getLinesForPlayer(ent) end)
-		pcall(function() nVeh = #api.engine.system.transportVehicleSystem.getVehiclesForPlayer(ent) end)
+		if settled then
+			pcall(function() bal = api.engine.util.finance.getPlayersBalance(ent) end)
+			pcall(function() nLines = #api.engine.system.lineSystem.getLinesForPlayer(ent) end)
+			pcall(function() nVeh = #api.engine.system.transportVehicleSystem.getVehiclesForPlayer(ent) end)
+		end
 		local rank = U.ranks and U.ranks[id] and U.ranks[id].level or nil
 		list[#list + 1] = { ent = ent, id = id, name = companyName(ent), bal = bal or 0, lines = nLines, veh = nVeh, rank = rank }
 	end
@@ -1888,6 +1955,10 @@ local function tick(pendingState)
 	if U.coMap and not U.stopFeesInstalled then
 		local okf, errf = pcall(installStopFees)
 		if not okf then U.stopFeesInstalled = true; log("companies: stop fees not shown: " .. tostring(errf)) end
+	end
+	if U.coMap and not U.hudColorsInstalled and U.builtin then
+		local okh, errh = pcall(installHudColors, U.builtin)
+		if not okh then log("companies: icon colours not installed: " .. tostring(errh)) end
 	end
 	if U.coMap and not U.ownerInstalled and U.react and U.builtin then
 		local oko, erro = pcall(installOwnerLine, U.react, U.builtin)

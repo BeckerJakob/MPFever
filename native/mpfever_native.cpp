@@ -1339,6 +1339,34 @@ static bool SplitWord()
     return g_split && g_canon && g_localPlayer && g_canon != g_localPlayer;
 }
 
+// The game states this machine's player was written into, with the control token of that value (see ApplyLocalPlayer)
+static void* g_doneSlot[16]; static long g_doneTok[16]; static int g_nDone = 0;
+static void NoteWritten(void* slot)
+{
+    int di = -1;
+    for (int i = 0; i < g_nDone; i++) if (g_doneSlot[i] == slot) di = i;
+    if (di < 0) { di = g_nDone < 16 ? g_nDone++ : 0; g_doneSlot[di] = slot; }
+    g_doneTok[di] = g_localTok;
+}
+// A game loaded in the same process can get its game state at the address of the previous one: no new state to notice. The word,
+// written once for the current token, then holds the savegame's player again (the engine copies it from one state to the other,
+// so it never changes by itself): this machine's player (and the other companies') belong to the previous game. Written there,
+// the interface read the account of a player entity that no longer exists, and the engine closed the game (a player who joined
+// again). Dropped until the mod says them again.
+static bool ReloadedAt(void* slot, u32 cur, u32 want)
+{
+    if (!slot || !g_localPlayer || cur == want) return false;
+    for (int i = 0; i < g_nDone; i++) {
+        if (g_doneSlot[i] != slot || g_doneTok[i] != g_localTok) continue;
+        Buf b; b.str("local player ").dec(g_localPlayer).str(" dropped: the game state ").hex((u64)slot).str(" holds ").dec(cur).str(" again (a game was loaded)"); LogLine(b);
+        g_localPlayer = 0;
+        g_nOthers = 0;
+        g_nDone = 0;
+        return true;
+    }
+    return false;
+}
+
 static void ApplyLocalPlayer(const char* why)
 {
     // The engine has more than one game-state object calling Apply (two were seen next to each other at the start of a game): the
@@ -1361,7 +1389,13 @@ static void ApplyLocalPlayer(const char* why)
     if (SplitWord()) want = g_canon;
     volatile u32* w = (volatile u32*)((u8*)g_slot + 0x20c);
     u32 cur = *w;
+    // A game loaded in the same process can get its game state at the address of the previous one: not a new state above. The
+    // word, written once for the current token, then holds the savegame's player again (the engine copies it from one state to
+    // the other, so it never changes by itself): the value belongs to the previous game. Writing it there made the interface read
+    // the account of a player entity that no longer exists, and the engine closed the game (a player who joined again).
+    if (ReloadedAt(g_slot, cur, (u32)want)) return;
     if (cur == (u32)want) return;
+    NoteWritten(g_slot);
     *w = (u32)want;
     static long shown = 0;
     if (shown++ >= 40) return;
@@ -1375,6 +1409,8 @@ extern "C" u64 ReplDetour(void* src, void* dst, u64 flag)
     // the interface, so that it never shows the money popups of the companies this machine does not play
     static long replClear = -1;
     if (replClear < 0) { char v[4]; replClear = GetEnvironmentVariableA("MPFEVER_NOREPLCLEAR", v, 3) > 0 ? 0 : 1; }
+    // (the end of an iteration of a game just loaded comes before any command it applies: the values of the previous game go first)
+    if (src && g_localPlayer && !SplitWord()) ReloadedAt(src, *(u32*)((u8*)src + 0x20c), (u32)g_localPlayer);
     if (replClear && (u32)((uptr)_ReturnAddress() - g_base) == RVA_REPL_LOOP) ClearOthersIn((u8*)src, false);
     WatchAdd((u8*)src); WatchAdd((u8*)dst);
     if (src && dst && (u32)((uptr)_ReturnAddress() - g_base) == RVA_REPL_LOOP) { g_gsWord[0] = (u64)src + 0x20c; g_gsWord[1] = (u64)dst + 0x20c; }

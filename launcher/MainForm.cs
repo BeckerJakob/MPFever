@@ -56,7 +56,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.4.3";
+        public const string Version = "0.4.4";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -76,6 +76,10 @@ namespace MPFever
         // everybody at once (each game loads the host's savegame at the same time); a player may still join a running game
         volatile bool lobbyOpen, lobbyStarting;
         string lobbySave = "", lobbyPlayers = "";
+        // one company per player: the colour each player of the lobby picked (palette index, by name without its number), kept by
+        // the host and sent with the lobby; a player who joins sees them as lobbyColors ("name:index,...") and the host's mode
+        readonly Dictionary<string, int> lobbyColorOf = new Dictionary<string, int>();
+        string lobbyColors = "", lobbyMode = "";
         // the mods of the lobby's savegame ("id|name|origin" entries separated by ";;", see mpfever_menu.lua): written by the
         // host's menu (host_mods.txt), sent to the players of the lobby, shown by their menu with those missing on their PC
         string lobbyMods = "";
@@ -1076,6 +1080,8 @@ namespace MPFever
                     ["port"] = lobbyOpen ? lobbyPort.ToString(CultureInfo.InvariantCulture) : "",
                     ["invite"] = steamConnect != null ? "1" : "",
                     ["lang"] = L.Code,
+                    ["colors"] = lobbyOpen ? LobbyColors() : lobbyColors,
+                    ["cmode"] = lobbyOpen ? companyMode : lobbyMode,
                 });
             }
             catch (Exception e) { Log.W("menu_state: " + e.Message); }
@@ -1141,9 +1147,6 @@ namespace MPFever
                 // the host's choice: everybody plays one company ("shared") or each player has its own ("separate")
                 if (Environment.GetEnvironmentVariable("MPFEVER_COMPANIES") == null) companyMode = option == "separate" ? "separate" : "shared";
                 Log.W(F("Mode des entreprises : {0}", "Company mode: {0}", companyMode));
-                if (companyMode == "separate")
-                    Log.Warn(T("« Une entreprise par joueur » est en cours de développement : il reste énormément de bugs. À utiliser surtout pour tester et aider au développement du mod.",
-                               "\"One company per player\" is still in development: many bugs remain. Use it mainly to test it and help the development of the mod."));
                 menuGame.SetIdentity(name, "host");
                 int port = (int)portBox.Value;
                 try { StartHost(name, false, menuGame); }
@@ -1210,6 +1213,14 @@ namespace MPFever
                 }
                 // (a host that refused this player already said why)
                 if (!clientCancelled) { menuPhase = "connected"; menuText = T("Connecté. L'hôte prépare sa partie...", "Connected. The host is preparing its game..."); MenuStatus(); }
+            }
+            else if (cmd == "color")
+            {
+                // the colour of the player's company, picked in the lobby: the host keeps it (when nobody else has it) and tells
+                // the lobby; a player who joins asks the host
+                if (!int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int ix) || ix < 1 || ix > 12) return;
+                if (lobbyOpen && hostName != null) { SetLobbyColor(BaseName(hostName), ix); }
+                else foreach (var cl in clients.ToList()) { try { cl.Send(Msg.Make("lobbycolor", name, "{[\"ix\"]=" + ix + "}")); } catch { } }
             }
             else if (cmd == "invite")
             {
@@ -1279,6 +1290,8 @@ namespace MPFever
             hashN = 0; syncText = "—"; actsRelayed = actRefused = actFails = desyncs = 0;
             resyncing = false; resyncDropping = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = ""; lock (partStreak) partStreak.Clear();
             joinPending = false;
+            lock (lobbyColorOf) lobbyColorOf.Clear();
+            lobbyColors = ""; lobbyMode = "";
             lobbyOpen = lobbyStarting = false; lobbySave = ""; lobbyPlayers = ""; lobbyPublic = ""; lobbyLocal = ""; lobbyMods = ""; modCheck = null;
             lock (modIssues) modIssues.Clear();
             joinedAddr = null;
@@ -1308,12 +1321,33 @@ namespace MPFever
             return string.Join(", ", names.Where(x => x != ""));
         }
 
+        /// <summary>A player of the lobby takes a colour for its company, unless another player has it.</summary>
+        void SetLobbyColor(string who, int ix)
+        {
+            lock (lobbyColorOf)
+            {
+                foreach (var kv in lobbyColorOf) if (kv.Value == ix && kv.Key != who) return;
+                lobbyColorOf[who] = ix;
+            }
+            BroadcastLobby();
+            MenuStatus();
+        }
+
+        /// <summary>The lobby's colours, "name:index,...", for the players still there.</summary>
+        string LobbyColors()
+        {
+            var here = new HashSet<string> { BaseName(hostName ?? "") };
+            foreach (var n in relay?.PeerNames() ?? new string[0]) here.Add(BaseName(n));
+            lock (lobbyColorOf) return string.Join(",", lobbyColorOf.Where(kv => here.Contains(kv.Key)).Select(kv => kv.Key + ":" + kv.Value));
+        }
+
         /// <summary>Tells the players in the lobby who is there (shown in their MPFever window).</summary>
         void BroadcastLobby()
         {
             if (!lobbyOpen || relay == null) return;
             relay.Broadcast(Msg.Make("lobby", hostName, "{[\"players\"]=" + LuaLit.Quote(LobbyList()) + ",[\"save\"]=" + LuaLit.Quote(lobbySave)
-                + ",[\"host\"]=" + LuaLit.Quote(BaseName(hostName ?? "")) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods) + "}"));
+                + ",[\"host\"]=" + LuaLit.Quote(BaseName(hostName ?? "")) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods)
+                + ",[\"colors\"]=" + LuaLit.Quote(LobbyColors()) + ",[\"cmode\"]=" + LuaLit.Quote(companyMode) + "}"));
         }
 
         /// <summary>The host starts the game from its lobby: every player in it receives the host's savegame and every game
@@ -1683,6 +1717,8 @@ namespace MPFever
                         if (menuMode && !game.InGame && menuPhase != "downloading" && menuPhase != "loading")
                         {
                             lobbyPlayers = S("players");
+                            lobbyColors = S("colors");
+                            lobbyMode = S("cmode");
                             SetHostMods(S("mods"), client, name);
                             menuPhase = "lobby";
                             menuText = F("Dans le salon de {0} (« {1} ») : l'hôte lance la partie quand tout le monde est là.", "In {0}'s lobby (« {1} »): the host starts the game when everybody is here.", S("host"), S("save"));
@@ -1953,6 +1989,36 @@ namespace MPFever
             catch { }
         }
 
+        /// <summary>A player whose game is another build than the host's (issue #78: one PC updated by Steam, the other not): the
+        /// two builds do not simulate the world alike, so the games drift apart by themselves. Said in the chat and the log.</summary>
+        readonly Dictionary<string, string> buildOf = new Dictionary<string, string>();
+        void WarnOtherBuild(string who, string payload)
+        {
+            try
+            {
+                var h = LuaLit.Parse(payload) as Dictionary<object, object>;
+                var build = h != null && h.TryGetValue("build", out var b) ? Convert.ToString(b, CultureInfo.InvariantCulture) : null;
+                if (string.IsNullOrEmpty(build)) return;
+                string hostBuild;
+                lock (buildOf)
+                {
+                    buildOf[BaseName(who)] = build;
+                    if (!buildOf.TryGetValue(BaseName(hostName ?? ""), out hostBuild)) return;
+                }
+                lock (buildOf)
+                    foreach (var kv in buildOf.ToList())
+                    {
+                        if (kv.Value == hostBuild) continue;
+                        lock (buildsWarned) if (!buildsWarned.Add("other:" + kv.Key + ":" + kv.Value)) continue;
+                        var text = F("{0} a la version {1} de Transport Fever 3, l'hôte la version {2} : deux versions différentes ne simulent pas la partie de la même façon et vont se désynchroniser. Mettez le jeu à jour dans Steam (Propriétés > Fichiers installés > Vérifier l'intégrité) pour avoir la même version.",
+                            "{0} has build {1} of Transport Fever 3, the host build {2}: two different builds do not simulate the game alike and will desync. Update the game in Steam (Properties > Installed Files > Verify integrity) to have the same build.", kv.Key, kv.Value, hostBuild);
+                        Log.Err(text);
+                        HostChat("msg", "MPFever", text);
+                    }
+            }
+            catch { }
+        }
+
         void HostChat(string kind, string name, string text)
         {
             text = ChatClean(text);
@@ -2149,6 +2215,7 @@ namespace MPFever
                     lock (players) players.Add(m.From);
                     Log.W(F("{0} : jeu prêt {1}", "{0}: game ready {1}", m.From, m.Payload));
                     WarnUnknownBuild(m.Payload);
+                    WarnOtherBuild(m.From, m.Payload);
                     // a game started again (resynchronisation): it needs its identity again
                     if (from != null) relay.Send(from, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(from.Name) + ",[\"role\"]=\"client\",[\"v\"]=" + LuaLit.Quote(Version) + ",[\"run\"]=" + LuaLit.Quote(myRun) + ",[\"opts\"]=" + LuaLit.Quote(Options.SessionPayload()) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods) + "}"));
                     // (a player who reconnected during the resynchronisation answers under its new name: Philippe#2 for Philippe#1)
@@ -2166,6 +2233,15 @@ namespace MPFever
                         if (differs != "") Log.Warn(F("{0} n'a pas la même version que vous de ces mods : {1}. Il ne pourra pas charger la partie tant qu'il ne les a pas mis à jour.", "{0} does not have your version of these mods: {1}. They cannot load the game until they update them.", BaseName(from.Name), differs));
                         BroadcastLobby();
                         MenuStatus();
+                    }
+                    break;
+
+                case "lobbycolor":
+                    {
+                        if (from == null || !lobbyOpen) break;
+                        var lc = LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>();
+                        int ix = lc.TryGetValue("ix", out var iv) && iv is double id ? (int)id : 0;
+                        if (ix >= 1 && ix <= 12) SetLobbyColor(BaseName(from.Name), ix);
                     }
                     break;
 
@@ -2252,7 +2328,10 @@ namespace MPFever
                     {
                         // a build made between the host's save and the end of the loads: every game drops it (its sender's own
                         // load undoes it; relayed, the others kept it and the games differed, issue #17)
-                        if (resyncDropping)
+                        // (except a player announcing its company, one company per player: its own game takes it in at once, so
+                        // dropped it left that company on that game only and the checks differed until the next resynchronisation)
+                        bool coJoin = m.Payload != null && m.Payload.Contains("\"mpfCoJoin\"");
+                        if (resyncDropping && !coJoin)
                         {
                             Log.Warn(F("{0} : action pendant la resynchronisation, non conservée", "{0}: action during the resynchronisation, not kept", m.From));
                             HostChat("msg", "MPFever", F("Construction de {0} pendant la resynchronisation : non conservée, refaites-la.", "{0}'s build during the resynchronisation: not kept, please build it again.", BaseName(m.From)));

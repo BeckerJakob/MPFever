@@ -36,8 +36,10 @@ it is stable enough.
       is found again after a reconnection (0.3.0)
   [x] Loans for every company (0.3.2)
   [x] Contracts for every company, owner shown in the windows, company tied to the Steam account (0.3.3)
-  [ ] Company-window actions for every company, money transfers, shared level per company
-  [ ] Competition on cargo and passengers, company rankings
+  [x] Company-window actions for every company, money transfers, colour picked in the lobby,
+      a table of the companies (0.4.4)
+  [ ] Bankruptcy: the company's empire auctioned to the other companies, the player starts again
+  [ ] Shared stations' fees in the finances, competition on cargo and passengers
 
 0.5 - Mixed modes
   [ ] Shared companies and separate companies in the same game

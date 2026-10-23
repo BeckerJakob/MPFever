@@ -1,6 +1,32 @@
 MPFever - Changelog
 ===================
 
+0.4.4 - « one company per player » is no longer experimental
+  - NEW: the Company window's actions (prospection, marketing campaign, greening an industry) work for every company,
+    each for its own; the pending prospections of every company run (only the savegame company's did).
+    MPFEVER_NOCOACTIONS=1: as before.
+  - NEW: money gifts between companies, from the MPFever window (amount, then « Give » on a company's row): booked on
+    both accounts at the same step on every game, refused when the giver does not have the money, told in the chat.
+  - NEW: a table of the companies in the MPFever window, best first: money, rank, lines and vehicles.
+  - NEW: each company's colour is picked in the lobby, before the game starts: a palette, the colours of the other
+    players greyed out, a square of each player's colour next to its name; the last colour is asked again in the next
+    lobby. It can be changed in game in the MPFever window. Lines keep the colour their player gives them.
+  - NEW: the map's icons of what a company owns (stations, depots, buildings, vehicles) show a square of its colour.
+  - FIX: the stations other companies share had no icon in the line tool (they could be picked all the same): the map's
+    icon manager leaves out what belongs to another company; the native module now lets the shared stations through.
+    MPFEVER_NOHUDSHARE=1: as before.
+  - FIX: a new station was shown « not shared » in its window, while it is shared at the default fee until its owner
+    changes it.
+  - FIX: a player who joined again crashed (Account of a player entity that no longer exists): the new game state took
+    the old one's address in memory, so the native module kept the player's company of the previous game. It now sees
+    the load and waits for the mod to say the company again.
+  - FIX: a player announcing its company during a resynchronisation was dropped by the host (its own game kept it):
+    the companies, money and loans differed until the next resynchronisation.
+  - FIX (issue #78): a player whose game is another build than the host's is told in the chat and the log (the two
+    builds drift apart by themselves); the problem report names build 40423.
+  - TESTS: two games on one PC, one company per player: gifts, colours and a company-window action by each company, a
+    resynchronisation, then the same again, then lines: in sync.
+
 0.4.3 - roads that replace segments replayed exactly
   - FIX: a road of the street tool replacing existing segments (replayed as the tool's own proposal) was cleaned up once
     more on the other games: the engine merged one more node of the new road there, one segment fewer, then a resync

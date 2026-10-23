@@ -130,7 +130,7 @@ namespace MPFever
                     f.Read(b, 0, b.Length);
                     int pe = BitConverter.ToInt32(b, 0x3c);
                     uint stamp = BitConverter.ToUInt32(b, pe + 8);
-                    string known = stamp == 0x6ac50427 ? "40420" : stamp == 0x6ab69fe5 ? "40408" : "unknown build";
+                    string known = stamp == 0x6ad0e4e5 ? "40423" : stamp == 0x6ac50427 ? "40420" : stamp == 0x6ab69fe5 ? "40408" : "unknown build";
                     return known + " (" + stamp.ToString("x8") + ")";
                 }
             }

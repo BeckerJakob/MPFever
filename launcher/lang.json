@@ -2120,19 +2120,6 @@
       "zh-CN": " （你）",
       "zh-TW": " （你）"
     },
-    "\"One company per player\" is still in development: many bugs remain. Use it mainly to test it and help the development of the mod.": {
-      "de": "„Eine Firma pro Spieler“ ist noch in Entwicklung: Es gibt noch viele Fehler. Nutze den Modus vor allem zum Testen und um die Entwicklung der Mod zu unterstützen.",
-      "es": "«Una empresa por jugador» aún está en desarrollo: quedan muchos errores. Úsalo sobre todo para probarlo y ayudar al desarrollo del mod.",
-      "it": "«Un'azienda per giocatore» è ancora in sviluppo: restano molti bug. Usala soprattutto per provarla e aiutare lo sviluppo della mod.",
-      "nl": "'Eén bedrijf per speler' is nog in ontwikkeling: er zitten nog veel bugs in. Gebruik het vooral om te testen en om de ontwikkeling van de mod te helpen.",
-      "pl": "„Jedna firma na gracza” jest wciąż w fazie rozwoju: zostało jeszcze wiele błędów. Używaj tego trybu głównie do testów i aby pomóc w rozwoju moda.",
-      "pt-BR": "\"Uma empresa por jogador\" ainda está em desenvolvimento: restam muitos bugs. Use principalmente para testar e ajudar no desenvolvimento do mod.",
-      "ru": "«По компании на игрока» ещё в разработке: ошибок пока много. Используйте этот режим в основном для тестирования и помощи в разработке мода.",
-      "ja": "「プレイヤーごとに 1 つの会社」はまだ開発中です。多くのバグが残っています。主にテストと Mod 開発への協力のためにお使いください。",
-      "ko": "'플레이어마다 하나의 회사'는 아직 개발 중입니다. 버그가 많이 남아 있습니다. 주로 테스트와 모드 개발을 돕는 용도로 사용하세요.",
-      "zh-CN": "“每位玩家一家公司”仍在开发中：还有很多错误。请主要用于测试并帮助模组的开发。",
-      "zh-TW": "「每位玩家一家公司」仍在開發中：還有許多錯誤。請主要用於測試並協助模組的開發。"
-    },
     "Back to the menu during a resynchronisation: session kept.": {
       "de": "Zurück im Menü während einer Resynchronisation: Sitzung bleibt bestehen.",
       "es": "Vuelta al menú durante una resincronización: se mantiene la sesión.",
@@ -5136,32 +5123,6 @@
       "zh-CN": "所有人用同一笔资金建设和经营同一家公司。",
       "zh-TW": "所有人用同一筆資金建設和經營同一家公司。"
     },
-    "One company per player (experimental)": {
-      "de": "Eine Firma pro Spieler (experimentell)",
-      "es": "Una empresa por jugador (experimental)",
-      "it": "Un'azienda per giocatore (sperimentale)",
-      "nl": "Eén bedrijf per speler (experimenteel)",
-      "pl": "Jedna firma na gracza (eksperymentalne)",
-      "pt-BR": "Uma empresa por jogador (experimental)",
-      "ru": "Своя компания у каждого игрока (экспериментально)",
-      "ja": "プレイヤーごとに1社（実験的）",
-      "ko": "플레이어마다 회사 하나 (실험적)",
-      "zh-CN": "每位玩家一家公司（实验性）",
-      "zh-TW": "每位玩家一家公司（實驗性）"
-    },
-    "Still in development: many bugs remain. Mainly to test it and help the development of the mod.": {
-      "de": "Noch in Entwicklung: viele Fehler sind noch vorhanden. Vor allem zum Testen und um die Entwicklung der Mod zu unterstützen.",
-      "es": "Todavía en desarrollo: quedan muchos errores. Sobre todo para probarlo y ayudar al desarrollo del mod.",
-      "it": "Ancora in sviluppo: restano molti bug. Soprattutto per provarla e aiutare lo sviluppo della mod.",
-      "nl": "Nog in ontwikkeling: er zijn nog veel bugs. Vooral om te testen en de ontwikkeling van de mod te helpen.",
-      "pl": "Wciąż w rozwoju: zostało wiele błędów. Głównie do testowania i pomocy w rozwoju moda.",
-      "pt-BR": "Ainda em desenvolvimento: restam muitos bugs. Principalmente para testar e ajudar no desenvolvimento do mod.",
-      "ru": "Ещё в разработке: осталось много ошибок. В основном для тестирования и помощи в разработке мода.",
-      "ja": "開発中です：多くのバグが残っています。主にテストとMOD開発への協力のためのモードです。",
-      "ko": "아직 개발 중입니다: 버그가 많이 남아 있습니다. 주로 테스트와 모드 개발을 돕기 위한 모드입니다.",
-      "zh-CN": "仍在开发中：还有很多错误。主要用于测试并帮助模组开发。",
-      "zh-TW": "仍在開發中：還有許多錯誤。主要用於測試並協助模組開發。"
-    },
     "Choose the savegame to share": {
       "de": "Wähle den Spielstand zum Teilen",
       "es": "Elige la partida guardada que compartir",
@@ -6709,32 +6670,6 @@
       "zh-CN": "你的公司颜色",
       "zh-TW": "你的公司顏色"
     },
-    "If another player already has it, you get the first free one.": {
-      "de": "Hat ein anderer Spieler sie schon, erhalten Sie die erste freie.",
-      "es": "Si otro jugador ya lo tiene, recibes el primero libre.",
-      "it": "Se un altro giocatore lo ha già, ricevi il primo libero.",
-      "nl": "Heeft een andere speler hem al, dan krijg je de eerste vrije.",
-      "pl": "Jeśli inny gracz już go ma, dostaniesz pierwszy wolny.",
-      "pt-BR": "Se outro jogador já a tiver, você recebe a primeira livre.",
-      "ru": "Если он уже занят другим игроком, вы получите первый свободный.",
-      "ja": "他のプレイヤーが使用中の場合は、最初の空いている色になります。",
-      "ko": "다른 플레이어가 이미 사용 중이면 첫 번째 빈 색상을 받습니다.",
-      "zh-CN": "如果其他玩家已使用，你将获得第一个空闲的颜色。",
-      "zh-TW": "如果其他玩家已使用，你將獲得第一個空閒的顏色。"
-    },
-    "(one company per player)": {
-      "de": "(ein Unternehmen pro Spieler)",
-      "es": "(una empresa por jugador)",
-      "it": "(un'azienda per giocatore)",
-      "nl": "(één bedrijf per speler)",
-      "pl": "(jedna firma na gracza)",
-      "pt-BR": "(uma empresa por jogador)",
-      "ru": "(своя компания у каждого игрока)",
-      "ja": "（プレイヤーごとに1社）",
-      "ko": "(플레이어마다 회사 하나)",
-      "zh-CN": "（每位玩家一家公司）",
-      "zh-TW": "（每位玩家一家公司）"
-    },
     "Companies": {
       "de": "Unternehmen",
       "es": "Empresas",
@@ -6890,6 +6825,45 @@
       "ko": "다른 회사가 이미 사용 중",
       "zh-CN": "已被其他公司使用",
       "zh-TW": "已被其他公司使用"
+    },
+    "Already taken by another player": {
+      "de": "Bereits von einem anderen Spieler belegt",
+      "es": "Ya la tiene otro jugador",
+      "it": "Già scelto da un altro giocatore",
+      "nl": "Al gekozen door een andere speler",
+      "pl": "Już zajęty przez innego gracza",
+      "pt-BR": "Já escolhida por outro jogador",
+      "ru": "Уже занят другим игроком",
+      "ja": "他のプレイヤーが使用中",
+      "ko": "다른 플레이어가 이미 사용 중",
+      "zh-CN": "已被其他玩家使用",
+      "zh-TW": "已被其他玩家使用"
+    },
+    "Everyone has their own money, network, vehicles and colour, on the same map. Stations can be shared.": {
+      "de": "Jeder hat sein eigenes Geld, Netz, Fahrzeuge und seine Farbe, auf derselben Karte. Bahnhöfe können geteilt werden.",
+      "es": "Cada uno tiene su propio dinero, red, vehículos y color, en el mismo mapa. Las estaciones se pueden compartir.",
+      "it": "Ognuno ha il proprio denaro, la propria rete, i propri veicoli e il proprio colore, sulla stessa mappa. Le stazioni possono essere condivise.",
+      "nl": "Iedereen heeft eigen geld, een eigen netwerk, eigen voertuigen en een eigen kleur, op dezelfde kaart. Stations kunnen gedeeld worden.",
+      "pl": "Każdy ma własne pieniądze, sieć, pojazdy i kolor, na tej samej mapie. Stacje można udostępniać.",
+      "pt-BR": "Cada um tem seu próprio dinheiro, rede, veículos e cor, no mesmo mapa. As estações podem ser compartilhadas.",
+      "ru": "У каждого свои деньги, сеть, транспорт и цвет на одной карте. Станциями можно делиться.",
+      "ja": "同じマップで、それぞれが自分のお金、路線網、車両、色を持ちます。駅は共有できます。",
+      "ko": "같은 지도에서 각자 자신의 돈, 노선망, 차량, 색상을 가집니다. 역은 공유할 수 있습니다.",
+      "zh-CN": "在同一张地图上，每人拥有自己的资金、线网、车辆和颜色。车站可以共享。",
+      "zh-TW": "在同一張地圖上，每人擁有自己的資金、線網、車輛和顏色。車站可以共享。"
+    },
+    "{0} has build {1} of Transport Fever 3, the host build {2}: two different builds do not simulate the game alike and will desync. Update the game in Steam (Properties > Installed Files > Verify integrity) to have the same build.": {
+      "de": "{0} hat Version {1} von Transport Fever 3, der Host Version {2}: Zwei verschiedene Versionen simulieren das Spiel nicht gleich und werden desynchronisieren. Aktualisieren Sie das Spiel in Steam (Eigenschaften > Installierte Dateien > Integrität überprüfen), um dieselbe Version zu haben.",
+      "es": "{0} tiene la versión {1} de Transport Fever 3 y el anfitrión la {2}: dos versiones distintas no simulan la partida igual y se desincronizarán. Actualiza el juego en Steam (Propiedades > Archivos instalados > Verificar integridad) para tener la misma versión.",
+      "it": "{0} ha la versione {1} di Transport Fever 3, l'host la {2}: due versioni diverse non simulano la partita allo stesso modo e si desincronizzeranno. Aggiorna il gioco su Steam (Proprietà > File installati > Verifica integrità) per avere la stessa versione.",
+      "nl": "{0} heeft versie {1} van Transport Fever 3, de host versie {2}: twee verschillende versies simuleren het spel niet gelijk en raken uit sync. Werk het spel bij in Steam (Eigenschappen > Geïnstalleerde bestanden > Integriteit controleren) om dezelfde versie te hebben.",
+      "pl": "{0} ma wersję {1} Transport Fever 3, a host wersję {2}: dwie różne wersje nie symulują gry tak samo i rozsynchronizują się. Zaktualizuj grę w Steam (Właściwości > Zainstalowane pliki > Sprawdź spójność), aby mieć tę samą wersję.",
+      "pt-BR": "{0} tem a versão {1} de Transport Fever 3 e o anfitrião a {2}: duas versões diferentes não simulam o jogo da mesma forma e vão dessincronizar. Atualize o jogo na Steam (Propriedades > Arquivos instalados > Verificar integridade) para ter a mesma versão.",
+      "ru": "У {0} версия {1} Transport Fever 3, у хоста — {2}: разные версии симулируют игру по-разному и рассинхронизируются. Обновите игру в Steam (Свойства > Установленные файлы > Проверить целостность), чтобы версии совпадали.",
+      "ja": "{0} の Transport Fever 3 はバージョン {1}、ホストは {2} です。異なるバージョンはゲームを同じようにシミュレートできず、同期がずれます。Steam でゲームを更新してください（プロパティ > インストール済みファイル > 整合性を確認）。",
+      "ko": "{0}의 Transport Fever 3 버전은 {1}, 호스트는 {2}입니다. 서로 다른 버전은 게임을 같게 시뮬레이션하지 않아 동기화가 어긋납니다. Steam에서 게임을 업데이트하세요(속성 > 설치된 파일 > 무결성 확인).",
+      "zh-CN": "{0} 的 Transport Fever 3 版本为 {1}，主机为 {2}：不同版本对游戏的模拟不一致，会出现不同步。请在 Steam 中更新游戏（属性 > 已安装文件 > 验证完整性），使版本一致。",
+      "zh-TW": "{0} 的 Transport Fever 3 版本為 {1}，主機為 {2}：不同版本對遊戲的模擬不一致，會出現不同步。請在 Steam 中更新遊戲（內容 > 已安裝的檔案 > 驗證完整性），使版本一致。"
     }
   }
 }
