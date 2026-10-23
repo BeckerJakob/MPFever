@@ -591,11 +591,13 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 	-- contracts: the company accepting or declining an offer travels with the event (see CO.installContracts); the same for the
 	-- MPFever events of the interface (sharing a station)
 	if a.fn == "makeScriptingSendEventCmd" and a.co and R.CO and R.CO.mode == "separate" and type(a.args) == "table"
-		and (a.args[2] == "Subvention" or a.args[2] == "mpfever") and type(a.args[4]) == "table" then
+		and (a.args[2] == "Subvention" or a.args[2] == "mpfever" or (a.args[2] == "Companies" and os.getenv("MPFEVER_NOCOACTIONS") ~= "1"))
+		and type(a.args[4]) == "table" then
 		a.args[4].mpfCo = a.co
 	end
 	if a.fn == "makeScriptingSendEventCmd" and a.co and R.CO and R.CO.canon and a.co ~= CO.idOfEntity(R.CO, R.CO.canon)
-		and type(a.args) == "table" and (a.args[2] == "Loan" or a.args[2] == "Company" or a.args[2] == "Companies") then
+		and type(a.args) == "table" and (a.args[2] == "Loan" or a.args[2] == "Company"
+			or (a.args[2] == "Companies" and os.getenv("MPFEVER_NOCOACTIONS") == "1")) then
 		result.err = "not available to this company yet (" .. tostring(a.args[2]) .. "." .. tostring(a.args[3]) .. ")"
 		log("action " .. tostring(a.uid) .. " " .. result.err .. ": ignored on every game")
 		return result
@@ -944,6 +946,23 @@ local function coLoanUpdate(st, dt)
 	return changed
 end
 
+-- a company takes another colour: its player entity and, when asked from the MPFever window, its lines (a little darker for
+-- each line, as a new line), on every game. The colour picked in the menu leaves the savegame's lines as their owner made them.
+-- (in a field of SIM: the main chunk is at Lua's limit of 200 locals)
+SIM.coRecolor = function(st, c, withLines)
+	if not (c and c.ent) then return end
+	local r, g, b = CO.rgb(c.color)
+	api.cmd.sendCommand(api.cmd.makeEntitySetColorCmd(c.ent, api.type.Vec3f.new(r, g, b)))
+	local lines = {}
+	if withLines ~= false then pcall(function() for _, l in ipairs(api.engine.system.lineSystem.getLinesForPlayer(c.ent)) do lines[#lines + 1] = l end end) end
+	table.sort(lines)
+	for k, l in ipairs(lines) do
+		local f = 1 - 0.12 * ((k - 1) % 4)
+		pcall(function() api.cmd.sendCommand(api.cmd.makeEntitySetColorCmd(l, api.type.Vec3f.new(r * f, g * f, b * f))) end)
+	end
+	log("companies: company " .. c.id .. " takes colour " .. tostring(c.color) .. " (" .. #lines .. " line(s) recoloured)")
+end
+
 -- an event of the loan window sent by a company other than the savegame's
 local function coIsLoanEvent(st, a)
 	return a.fn == "makeScriptingSendEventCmd" and a.co and st.co and st.co.canon and a.co ~= CO.idOfEntity(st.co, st.co.canon)
@@ -966,8 +985,9 @@ local function coApply(st, a)
 	end
 	-- (a dedicated server names the player who gets the savegame's company)
 	if type(p.owner) == "string" then st.co.owner = p.owner end
-	local c, isNew = CO.join(st.co, tostring(p.key), tostring(p.name), p.host == true, p.cname, p.sid)
-	log("companies: player '" .. tostring(p.key) .. "' plays company " .. c.id .. (isNew and " (new)" or " (known)"))
+	local c, isNew, recolor = CO.join(st.co, tostring(p.key), tostring(p.name), p.host == true, p.cname, p.sid, tonumber(p.color))
+	log("companies: player '" .. tostring(p.key) .. "' plays company " .. c.id .. (isNew and " (new)" or " (known)") .. " colour " .. tostring(c.color))
+	if recolor then pcall(SIM.coRecolor, st, c, false) end
 	installSimPlayer(st)
 end
 
@@ -1486,6 +1506,12 @@ local function update(userParams, state, dt)
 		SIM.ctTick = (SIM.ctTick or 0) + 1
 		if SIM.coRegistry and SIM.coRegistry.mode == "separate" and SIM.ctTick % 50 == 1 then
 			CO.installContracts({ log = log, registry = function() return SIM.coRegistry end, localCo = simLocalCo })
+		end
+		-- (at every step, so that every game wraps the companies script at the same step: its prospections run per company from
+		-- then on, and a game wrapping it later kept a different state for a while, "script:company" in the checks)
+		if SIM.coRegistry and SIM.coRegistry.mode == "separate" and os.getenv("MPFEVER_NOCOACTIONS") ~= "1" then
+			SIM.coActEnv = SIM.coActEnv or { log = log, registry = function() return SIM.coRegistry end }
+			CO.installCompanyActions(SIM.coActEnv)
 		end
 	end)
 	if os.getenv("MPFEVER_CPROBE") then local okp, errp = pcall(contractProbe) if not okp then log("PROBE failed: " .. tostring(errp)) end end
@@ -2124,6 +2150,50 @@ local function handleEvent(userParams, state, src, id, name, param)
 					end
 				end)
 				if not okS then log("companies: share failed: " .. tostring(errS)) end
+			end
+		elseif name == "recolor" then
+			-- a company picks another colour in the MPFever window (one no other company has)
+			local reg = st.co
+			local c = reg and reg.mode == "separate" and CO.find(reg, tonumber(param.mpfCo)) or nil
+			if c and CO.colorFree(reg, param.color, c.id) then
+				c.color = tonumber(param.color)
+				c.colorPicked = true
+				pcall(SIM.coRecolor, st, c)
+			else
+				log("companies: colour " .. tostring(param.color) .. " refused to company " .. tostring(param.mpfCo))
+			end
+		elseif name == "give" then
+			-- a company gives money to another one (MPFever window): booked on both accounts at the same step on every game
+			local reg = st.co
+			local from = reg and tonumber(param.mpfCo)
+			local to = reg and tonumber(param.to)
+			local amount = math.floor(tonumber(param.amount) or 0)
+			local cf, ct = from and CO.find(reg, from), to and CO.find(reg, to)
+			local why = nil
+			if not (reg and reg.mode == "separate") then why = "not in the companies mode"
+			elseif not (cf and cf.ent and ct and ct.ent) then why = "unknown company"
+			elseif from == to then why = "same company"
+			elseif amount <= 0 then why = "amount " .. tostring(param.amount)
+			else
+				local okb, bal = pcall(api.engine.util.finance.getPlayersBalance, cf.ent)
+				if not (okb and type(bal) == "number" and bal >= amount) then why = "balance " .. tostring(bal) .. " below " .. amount end
+			end
+			if why then
+				log("companies: gift of " .. tostring(param.amount) .. " from company " .. tostring(from) .. " to " .. tostring(to) .. " refused: " .. why)
+			else
+				local function entry(n)
+					local e = api.type.JournalEntry.new()
+					e.amount = n
+					e.time = -1
+					e.category.type = api.type.JournalEntry.Type.OTHER
+					return e
+				end
+				coBook(cf.ent, entry(-amount))
+				coBook(ct.ent, entry(amount))
+				reg.gifts = reg.gifts or {}
+				reg.gifts[#reg.gifts + 1] = { at = gameTime(), from = from, to = to, amount = amount }
+				while #reg.gifts > 20 do table.remove(reg.gifts, 1) end
+				log("companies: company " .. from .. " gave " .. amount .. " to company " .. to)
 			end
 		elseif name == "co_set" then
 			local c = st.co and CO.find(st.co, param.id)
@@ -8325,6 +8395,46 @@ local function runLine(p)
 	end }
 end
 
+-- Companies scenario (companies mode): this company gives 12345 to another company, takes another free colour, and greens an
+-- industry from the company window (a "Companies" event, refused for the other companies before 0.4.4)
+H.cofeat = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local reg = G.co
+	if not (reg and G.myCo) then AUTO.results = { "cofeat: not in the companies mode" }; return autoFinish() end
+	local other = nil
+	for _, c in ipairs(reg.list) do if c.id ~= G.myCo and c.ent and not other then other = c end end
+	local mine = CO.find(reg, G.myCo)
+	if not (other and mine and mine.ent) then AUTO.results = { "cofeat: no other company" }; return autoFinish() end
+	local function bal(e) local ok, b = pcall(api.engine.util.finance.getPlayersBalance, e) return ok and b or nil end
+	local b0, o0 = bal(mine.ent), bal(other.ent)
+	uiRequest("makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "give", [4] = { to = other.id, amount = 12345 } })
+	local free = nil
+	for ix = #CO.PALETTE, 1, -1 do if not free and CO.colorFree(reg, ix, mine.id) and ix ~= mine.color then free = ix end end
+	if free then uiRequest("makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "recolor", [4] = { color = free } }) end
+	local ind = R.entitiesWith("INDUSTRY")[1 + (C.ROLE == "host" and 0 or 1)]
+	if ind then
+		uiRequest("makeScriptingSendEventCmd", { n = 4, [1] = "", [2] = "Companies", [3] = "MakeGreen", [4] = { companyEntity = mine.ent, constructionEntity = ind } })
+	end
+	G.waits[#G.waits + 1] = { at = G.frames + 400, fn = function()
+		local b1, o1 = bal(mine.ent), bal(other.ent)
+		AUTO.results[#AUTO.results + 1] = "gift: company " .. mine.id .. " " .. tostring(b0) .. " -> " .. tostring(b1) .. ", company " .. other.id .. " " .. tostring(o0) .. " -> " .. tostring(o1)
+		local m2 = G.co and CO.find(G.co, G.myCo)
+		AUTO.results[#AUTO.results + 1] = "colour: asked " .. tostring(free) .. ", now " .. tostring(m2 and m2.color)
+		local eco = nil
+		pcall(function()
+			local e = api.engine.system.gameScriptSystem.getEntityForGameScript("::/game_mechanics/emission/emissions.gs")
+			local stt = api.engine.getComponent(e, api.type.ComponentType.GAME_SCRIPT).state
+			eco = stt and stt.ecoLevels and stt.ecoLevels[ind] ~= nil
+		end)
+		AUTO.results[#AUTO.results + 1] = "green industry " .. tostring(ind) .. ": " .. tostring(eco)
+		for _, r in ipairs(AUTO.results) do log("AUTOTEST " .. r) end
+		autoFinish()
+	end }
+end
+
 -- Broke scenario (companies mode): the host's company is left 100000 in debt; the other scenarios then show whether another
 -- company can still build with its own money
 H.broke = function(from, p)
@@ -10076,6 +10186,15 @@ G.coMyName = function()
 	return n
 end
 
+-- the colour this player picked in the menu (company_color.txt, a palette index), nil when none
+G.coMyColor = function()
+	local f = C.IO.open(C.DIR .. BS .. "company_color.txt", "rb")
+	if not f then return nil end
+	local n = tonumber((f:read("*a") or ""):match("%d+"))
+	f:close()
+	return n
+end
+
 -- (G.coMyName/coMyKey/coMySid are fields of G: the main chunk is at Lua's limit of 200 locals)
 -- this player's key in the registry: its name in lower case; empty for a dedicated server, which plays no company of its own
 G.coMyKey = function()
@@ -10140,6 +10259,8 @@ local function coGui(st)
 	if st.co then
 		local lines = { "me	" .. tostring(G.myCo or 0) }
 		for _, c in ipairs(st.co.list) do if c.ent then lines[#lines + 1] = c.id .. "	" .. c.ent .. "	" .. tostring(c.name or ""):gsub("[%c]", " ") end end
+		-- (each company's colour, a palette index: see CO.PALETTE)
+		for _, c in ipairs(st.co.list) do lines[#lines + 1] = "color	" .. c.id .. "	" .. tostring(c.color or 1) end
 		-- (each company's rank, when there is more than one company: see mpfever_progression.lua)
 		for _, r in ipairs((st.prog and st.prog.records) or {}) do
 			lines[#lines + 1] = "rank	" .. tostring(r.company) .. "	" .. tostring(r.experience) .. "	" .. tostring(r.level) .. "	" .. tostring(r.potential)
@@ -10185,6 +10306,7 @@ local function coGui(st)
 		local a = { fn = "mpfCoJoin", origin = G.me, oseq = G.oseq, uid = G.me .. ":" .. G.oseq,
 			at = paused and pausedStamp(now) or stampFor(now), paused = paused or nil,
 			args = { key = G.coMyKey(), name = name, host = (C.ROLE == "host"), mode = "separate", start = G.coStart, sid = sid,
+				color = G.coMyColor(),
 				owner = C.SERVER and (G.coOwner or "") or nil,
 				cname = C.Tf("Entreprise %s", "%s Company", name) } }
 		a.native = true
@@ -10237,7 +10359,48 @@ local function coGui(st)
 			if osig ~= "" and not os.getenv("MPFEVER_NOCLEAR") then nativeCtl("setothers " .. tok .. " " .. osig) end
 			if reg.canon then nativeCtl("setcanon " .. tok .. " " .. reg.canon) end
 		end
+		-- the stations the other companies share: the native module lets their icons through the map's owner filter (the line
+		-- tool shows them, as this company's own), see HudShareSplice. Every 300 frames, written only when the list changes
+		if c and c.ent and os.getenv("MPFEVER_NOHUDSHARE") ~= "1" and G.frames - (G.hudShareAt or -1000) >= 300 then
+			G.hudShareAt = G.frames
+			pcall(G.hudShare, reg, c)
+		end
 	end
+end
+
+-- (a field of G: the main chunk is at Lua's limit of 200 locals)
+G.hudShare = function(reg, me)
+	local ids, seen = {}, {}
+	local function add(e) if type(e) == "number" and e >= 0 and not seen[e] then seen[e] = true; ids[#ids + 1] = e end end
+	for _, sg in ipairs(R.entitiesWith("STATION_GROUP")) do
+		local owner = R.ownerOf(sg)
+		local oc = owner and CO.idOfEntity(reg, owner)
+		if oc and oc ~= me.id then
+			local okk, key = pcall(R.sgKey, sg)
+			if okk and key and (C.shareFee(reg.shares, key) or 0) > 0 then
+				add(sg)
+				pcall(function()
+					for _, stn in ipairs(api.engine.getComponent(sg, api.type.ComponentType.STATION_GROUP).stations) do
+						add(stn)
+						local okc, con = pcall(api.engine.system.streetConnectorSystem.getConstructionEntityForStation, stn)
+						if okc then add(con) end
+					end
+				end)
+			end
+		end
+	end
+	table.sort(ids)
+	local txt = table.concat(ids, " ")
+	if txt == G.hudShareTxt then return end
+	G.hudShareTxt = txt
+	local f = C.IO.open(C.DIR .. BS .. "hud_share.txt", "wb")
+	if not f then return end
+	f:write(txt .. NL)
+	f:close()
+	K.coCtlSeq = K.coCtlSeq + 1
+	local okT, tm = pcall(os.time)
+	nativeCtl("hudshare " .. (((okT and tm or 0) % 1000000) * 100 + K.coCtlSeq % 100))
+	log("companies: " .. #ids .. " entities of the stations the other companies share shown on the map")
 end
 
 local function guiUpdate(userParams, state, guiState)

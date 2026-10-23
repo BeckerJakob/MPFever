@@ -448,6 +448,46 @@ local function setup()
 		}
 	end
 
+	-- the colour of the player's company (one company per player): a palette index, kept between sessions in the folder of every
+	-- session (company_color.txt there) and given to this session (company_color.txt in the session folder, read by the
+	-- bridge when the player announces itself; a colour another company already has gives the first free one)
+	local PALETTE = nil
+	pcall(function()
+		local CO = require("mpfever_1::/mpfever_co.lua")
+		if type(CO) == "table" and type(CO.PALETTE) == "table" then PALETTE = CO.PALETTE end
+	end)
+	PALETTE = PALETTE or {
+		{ 0.86, 0.20, 0.20 }, { 0.20, 0.45, 0.90 }, { 0.20, 0.72, 0.30 }, { 0.98, 0.62, 0.10 },
+		{ 0.62, 0.30, 0.82 }, { 0.10, 0.75, 0.80 }, { 0.95, 0.88, 0.15 }, { 0.95, 0.45, 0.70 },
+		{ 0.55, 0.35, 0.18 }, { 0.55, 0.85, 0.15 }, { 0.15, 0.30, 0.55 }, { 0.62, 0.62, 0.62 },
+	}
+	local COLOR_KEPT = ".." .. BS .. "company_color.txt"
+	local function readColor()
+		local n = tonumber((readFile(COLOR_KEPT) or ""):match("%d+"))
+		return (n and n >= 1 and n <= #PALETTE) and n or nil
+	end
+	local function writeColor(n)
+		writeFile(COLOR_KEPT, tostring(n) .. NL)
+		writeFile("company_color.txt", tostring(n) .. NL)
+	end
+	local function colorRow(current, onPick, note, compact)
+		local label = text(T("Couleur de votre entreprise", "Your company's colour") .. (compact and note and ("  " .. note) or ""), "font-scale-title-4")
+		local items = compact and {} or { label, gap(12, 1) }
+		local bw, bh = compact and 32 or 38, compact and 28 or 34
+		for i, c in ipairs(PALETTE) do
+			local sel = current == i
+			items[#items + 1] = builtin.Button{
+				meta = { class = sel and "primary" or "secondary", styleSheet = style{ size = { bw, bh }, padding = { 4, 4, 4, 4 } } },
+				content = builtin.Component{ meta = { styleSheet = style{ size = { bw - (sel and 10 or 16), bh - (sel and 10 or 16) }, background = { c[1], c[2], c[3], 1 } } } },
+				onClick = function() onPick(i) end,
+			}
+			items[#items + 1] = gap(4, 1)
+		end
+		if compact then return box(V, { label, gap(1, 4), box(H, items) }) end
+		if note then items[#items + 1] = gap(12, 1); items[#items + 1] = text(note, "font-scale-body") end
+		return box(H, items)
+	end
+
 	local busyPhase = function(phase) return phase ~= nil and phase ~= "" and phase ~= "idle" and phase ~= "error" end
 
 	local MPFeverPage = react.RegisterRecipe("MPFeverPage", function(pp)
@@ -476,6 +516,16 @@ local function setup()
 		end
 		local name = react.useState(defaultName)
 		local companies = react.useState("shared")     -- hosting: everybody plays one company, or each player has its own
+		local coColor = react.useStateLazy(function()
+			local n = readColor()
+			if n then writeFile("company_color.txt", tostring(n) .. NL) end
+			return n
+		end)
+		local function pickColor(i)
+			coColor:set(i)
+			writeColor(i)
+			log("company colour " .. i)
+		end
 		local addr = react.useState(st0.addr or "")
 		local password = react.useState("")            -- joining: the password of a dedicated server (none: empty)
 		local state = react.useState(st0)
@@ -741,6 +791,11 @@ local function setup()
 					T("En cours de développement : il reste énormément de bugs. Surtout pour tester et aider au développement du mod.", "Still in development: many bugs remain. Mainly to test it and help the development of the mod."),
 					function() companies:set("separate") end, true, true),
 			})
+			if companies:old() == "separate" then
+				body[#body + 1] = gap(1, 8)
+				body[#body + 1] = colorRow(coColor:old(), pickColor,
+					T("Si un autre joueur l'a déjà, vous recevez la première libre.", "If another player already has it, you get the first free one."))
+			end
 			body[#body + 1] = gap(1, 12)
 			local list = {}
 			local f = (filter:old() or ""):lower()
@@ -815,6 +870,8 @@ local function setup()
 					text(T("Mot de passe", "Password"), "font-scale-title-4"),
 					gap(1, 4),
 					input(password:old(), T("seulement si le serveur en a un", "only if the server has one"), function(v) password:set(v) end, formW - 20),
+					gap(1, 14),
+					colorRow(coColor:old(), pickColor, T("(une entreprise par joueur)", "(one company per player)"), true),
 					gap(1, 20),
 					button(T("Rejoindre", "Join"), join, { primary = true, enabled = canJoin, icon = "::/gui/menu/icons/menu_play.tga", font = "font-scale-title-3" }),
 					vfill(),

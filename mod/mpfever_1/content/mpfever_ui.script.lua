@@ -191,7 +191,7 @@ local function pollCompanies()
 	f:close()
 	if txt == U.coTxt then return end
 	U.coTxt = txt
-	local map, names, ranks, nRanks = {}, {}, {}, 0
+	local map, names, ranks, nRanks, colors = {}, {}, {}, 0, {}
 	for line in txt:gmatch("[^" .. C.NL .. "]+") do
 		local rid, rx, rl, rp = line:match("^rank" .. C.TAB .. "(%d+)" .. C.TAB .. "([%d%.%-]+)" .. C.TAB .. "(%d+)" .. C.TAB .. "(%d+)")
 		if rid then ranks[tonumber(rid)] = { experience = tonumber(rx), level = tonumber(rl), potentialLevel = tonumber(rp) }; nRanks = nRanks + 1 end
@@ -199,7 +199,10 @@ local function pollCompanies()
 		if a then map[tonumber(b)] = tonumber(a); names[tonumber(b)] = n end
 		local me = line:match("^me" .. C.TAB .. "(%d+)")
 		if me then U.myCo = tonumber(me) end
+		local cid, cix = line:match("^color" .. C.TAB .. "(%d+)" .. C.TAB .. "(%d+)")
+		if cid then colors[tonumber(cid)] = tonumber(cix) end
 	end
+	U.coColors = colors
 	U.coMap = map
 	U.coNames = names
 	U.ranks = nRanks > 1 and ranks or nil
@@ -871,6 +874,108 @@ local function defaultWindowApi()
 	return nil
 end
 
+-- companies mode: the companies of the session in the MPFever window, best first (money, rank, lines, vehicles), with a gift of
+-- money to another company (event "give", applied by every game at the same step: see the bridge's handleEvent)
+U.companyRows = function(ui)
+	local list = {}
+	for ent, id in pairs(U.coMap) do
+		local bal = nil
+		pcall(function() bal = api.engine.util.finance.getPlayersBalance(ent) end)
+		local nLines, nVeh = 0, 0
+		pcall(function() nLines = #api.engine.system.lineSystem.getLinesForPlayer(ent) end)
+		pcall(function() nVeh = #api.engine.system.transportVehicleSystem.getVehiclesForPlayer(ent) end)
+		local rank = U.ranks and U.ranks[id] and U.ranks[id].level or nil
+		list[#list + 1] = { ent = ent, id = id, name = companyName(ent), bal = bal or 0, lines = nLines, veh = nVeh, rank = rank }
+	end
+	if #list < 2 then return nil end
+	table.sort(list, function(a, b) if a.bal ~= b.bal then return a.bal > b.bal end return a.id < b.id end)
+	local CO = U.coModule
+	if CO == nil then
+		local ok, m = pcall(ug_require, "mpfever_co.lua")
+		if not ok then ok, m = pcall(ug_require, "mpfever_1::/mpfever_co.lua") end
+		CO = (ok and type(m) == "table") and m or false
+		U.coModule = CO
+	end
+	local row, text, muted, builtin = ui.row, ui.text, ui.muted, ui.builtin
+	local out = { text(" "), ui.section(ui.ICON_PLAYERS, T("Entreprises", "Companies") .. "  (" .. #list .. ")") }
+	local myBal = nil
+	for _, c in ipairs(list) do if c.id == U.myCo then myBal = c.bal end end
+	local function swatch(id)
+		local ix = U.coColors and U.coColors[id] or id
+		local c = nil
+		if CO then pcall(function() local r, g, b = CO.rgb(ix); c = api.type.Vec4f.new(r, g, b, 1) end) end
+		return builtin.Component { meta = { styleSheet = ui.style { size = { 14, 14 }, image = "::/gui/line_vehicle_mgmt/icons/line_surface.tga", bg = c } } }
+	end
+	local function give(c)
+		local n = tonumber((tostring(ui.amount:old() or ""):gsub("[%s%.,']", "")))
+		if not n or n <= 0 then U.giveMsg = T("Entrez un montant.", "Enter an amount.") return end
+		n = math.floor(n)
+		if myBal and n > myBal then U.giveMsg = T("Pas assez d'argent.", "Not enough money.") return end
+		local ok, err = pcall(function()
+			api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd("mpfever", "mpfever", "give", { to = c.id, amount = n }))
+		end)
+		if not ok then log("companies: gift request failed: " .. tostring(err)) U.giveMsg = T("Envoi impossible.", "Could not send.") return end
+		U.giveMsg = C.Tf("%s envoyés à %s.", "%s sent to %s.", money(n), c.name)
+		log("companies: gift of " .. n .. " to company " .. c.id .. " requested")
+		pcall(sendChat, "→ " .. c.name .. " : " .. money(n))
+		ui.amount:set("")
+		ui.gen:set(ui.gen:old() + 1)
+	end
+	for i, c in ipairs(list) do
+		local mine = c.id == U.myCo
+		local info = tostring(i) .. ".  " .. c.name .. (mine and T(" (vous)", " (you)") or "") .. "  ·  " .. money(c.bal)
+			.. (c.rank and ("  ·  " .. C.Tf("rang %s", "rank %s", c.rank)) or "")
+			.. "  ·  " .. C.Tf("%s lignes, %s véhicules", "%s lines, %s vehicles", c.lines, c.veh)
+		local children = { swatch(c.id), text("  " .. info, nil, mine and "success" or nil) }
+		if not mine and U.myCo then
+			children[#children + 1] = text("  ")
+			children[#children + 1] = builtin.Button { meta = { class = "secondary", tooltip = T("Donner le montant ci-dessous à cette entreprise", "Give the amount below to this company") },
+				content = text(T("Donner", "Give")), onClick = function() give(c) end }
+		end
+		out[#out + 1] = row(children)
+	end
+	if U.myCo then
+		out[#out + 1] = row {
+			muted(T("Montant à donner : ", "Amount to give: ")),
+			builtin.TextInputField {
+				meta = { class = "font-scale-body", localKey = "mpfever-give-" .. tostring(ui.gen:old()), styleSheet = ui.style { size = { 160, -1 } } },
+				value = "",
+				placeholderText = "100000",
+				maxLength = 15,
+				acceptOnFocusLoss = true,
+				onTyping = function(v) ui.amount:set(v or "") end,
+				onValueChange = function(v) ui.amount:set(v or "") end,
+			},
+		}
+		if U.giveMsg then out[#out + 1] = muted(U.giveMsg) end
+		-- this company's colour: the palette, without the colours of the other companies
+		if CO and CO.PALETTE then
+			local taken = {}
+			for id, ix in pairs(U.coColors or {}) do if id ~= U.myCo then taken[ix] = true end end
+			local mineIx = U.coColors and U.coColors[U.myCo] or nil
+			local sw = { muted(T("Votre couleur : ", "Your colour: ")) }
+			for ix = 1, #CO.PALETTE do
+				local p = CO.PALETTE[ix]
+				local c = nil
+				pcall(function() c = api.type.Vec4f.new(p[1], p[2], p[3], taken[ix] and 0.25 or 1) end)
+				sw[#sw + 1] = builtin.Button {
+					meta = { class = ix == mineIx and "primary" or "secondary", enabled = not taken[ix] and ix ~= mineIx,
+						tooltip = taken[ix] and T("Déjà prise par une autre entreprise", "Already taken by another company") or nil },
+					content = builtin.Component { meta = { styleSheet = ui.style { size = { 16, 16 }, image = "::/gui/line_vehicle_mgmt/icons/line_surface.tga", bg = c } } },
+					onClick = function()
+						local ok, err = pcall(function()
+							api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd("mpfever", "mpfever", "recolor", { color = ix }))
+						end)
+						log("companies: colour " .. ix .. " requested" .. (ok and "" or (": " .. tostring(err))))
+					end,
+				}
+			end
+			out[#out + 1] = row(sw)
+		end
+	end
+	return out
+end
+
 local function installSession(react, builtin)
 	if U.sessionInstalled then return end
 	U.sessionInstalled = true
@@ -946,6 +1051,9 @@ local function installSession(react, builtin)
 		-- its width, adjustable by steps (the game's windows cannot be resized with the mouse), kept for the session
 		-- (every state before the reduced card's early return: the same hooks on every render)
 		local width = react.useState(U.sessionWidth or 540)
+		-- the amount typed for a gift to another company (companies mode)
+		local giveAmount = react.useState("")
+		local giveGen = react.useState(0)
 		local function toggle()
 			U.sessionSmall = not small:old()
 			small:set(U.sessionSmall)
@@ -1008,6 +1116,12 @@ local function installSession(react, builtin)
 				local line, cls = playerLine(pl, st.me)
 				rows[#rows + 1] = row { icon(ICON_PERSON, 22), text("  " .. line, nil, cls) }
 			end
+		end
+		if st and st.mode == "separate" and U.coMap then
+			local okC, cr = pcall(U.companyRows, { row = row, text = text, muted = muted, section = section, icon = icon, style = style,
+				color = color, builtin = builtin, amount = giveAmount, gen = giveGen, ICON_PLAYERS = ICON_PLAYERS })
+			if okC and cr then for _, r in ipairs(cr) do rows[#rows + 1] = r end
+			elseif not okC then log("companies: the companies' table failed: " .. tostring(cr)) end
 		end
 		if st and st.invite == "1" and st.me and st.players then
 			local host = false

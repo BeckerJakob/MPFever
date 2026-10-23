@@ -441,6 +441,42 @@ static u32* g_hits[600];
 static int g_nhits = 0;
 static volatile long g_probeIdx = 0, g_probeApplied = 0;
 static u32 g_probeSaved = 0;
+// The stations the other companies share (one company per player): the map's icon manager leaves out every entity that belongs to
+// another company (HudIconManager's octree traversal compares its PlayerOwned with the local player), so the line tool showed
+// the shared stations nowhere although they can be picked. Their entities (station groups, stations, constructions) are listed by
+// the mod in hud_share.txt ("hudshare <token>" in the control file: read again for a new token); HudShareSplice lets them through.
+static i32 g_hudShare[2][4096];
+static volatile long g_hudShareN[2] = { 0, 0 };
+static volatile long g_hudShareCur = 0;
+static long g_hudShareTok = 0;
+static volatile long g_hudShareLet = 0;
+static void LoadHudShare()
+{
+    char path[400];
+    PathOf(path, "hud_share.txt");
+    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    if (f == INVALID_HANDLE_VALUE) return;
+    static char buf[65536];
+    DWORD got = 0;
+    ReadFile(f, buf, sizeof(buf) - 1, &got, 0);
+    CloseHandle(f);
+    long next = 1 - g_hudShareCur;
+    long n = 0;
+    for (DWORD k = 0; k < got && n < 4096; ) {
+        while (k < got && (buf[k] < '0' || buf[k] > '9')) k++;
+        if (k >= got) break;
+        long v = 0;
+        while (k < got && buf[k] >= '0' && buf[k] <= '9') v = v * 10 + (buf[k++] - '0');
+        g_hudShare[next][n++] = (i32)v;
+    }
+    // (sorted by the mod; kept sorted here for the binary search all the same)
+    for (long i = 1; i < n; i++) { i32 x = g_hudShare[next][i]; long j = i - 1; while (j >= 0 && g_hudShare[next][j] > x) { g_hudShare[next][j + 1] = g_hudShare[next][j]; j--; } g_hudShare[next][j + 1] = x; }
+    g_hudShareN[next] = n;
+    _InterlockedExchange(&g_hudShareCur, next);
+    static long shown = 0;
+    if (shown++ < 20) { Buf b; b.str("shared stations shown on the map: ").dec(n).str(" entities"); LogLine(b); }
+}
+
 static void ReadControl()
 {
     char path[400];
@@ -456,6 +492,7 @@ static void ReadControl()
     long wantLocal = 0, wantTok = 0; bool haveLocal = false;
     long wantOthers[8]; int nWantOthers = 0; long othersTok = 0; bool haveOthers = false;
     long wantCanon = 0, canonTok = 0; bool haveCanon = false;
+    long hudTok = 0;
     for (DWORD i = 0; i < got; ) {
         DWORD j = i;
         while (j < got && buf[j] != '\n') j++;
@@ -496,6 +533,11 @@ static void ReadControl()
             for (k++; k < len && l[k] >= '0' && l[k] <= '9'; k++) e = e * 10 + (l[k] - '0');
             wantCanon = e; canonTok = tok; haveCanon = true;
         }
+        else if (len >= 10 && memcmp(l, "hudshare ", 9) == 0) {
+            long tok = 0;
+            for (int k = 9; k < len && l[k] >= '0' && l[k] <= '9'; k++) tok = tok * 10 + (l[k] - '0');
+            hudTok = tok;
+        }
         else if (len >= 11 && memcmp(l, "setplayer ", 10) == 0) {
             for (int k = 10; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
             g_setPlayer = v;
@@ -526,6 +568,7 @@ static void ReadControl()
     // (written into the game state by the simulation thread only, at its next iteration: from here, the state known last may be the
     // one of a game just unloaded, freed memory - writing there corrupted the heap and crashed the game after a resynchronisation)
     if (haveLocal && wantTok != g_localTok) { g_localTok = wantTok; g_localPlayer = wantLocal; }
+    if (hudTok && hudTok != g_hudShareTok) { g_hudShareTok = hudTok; LoadHudShare(); }
     if (haveCanon && canonTok != g_canonTok) {
         g_canonTok = canonTok; g_canon = wantCanon;
         static long shownC = 0;
@@ -2710,6 +2753,39 @@ static void ToolBulldozer(SavedRegs* r)
     if (g_bullVtable && f && Readable((void*)f, 0x28) && *(u64*)f == g_base + g_bullVtable) ToolList(f + 0x10);
 }
 
+// HudIconManager's owner filter (see g_hudShare): `lea rdx,[rax+rcx*4]; test rdx,rdx; je keep; cmp [rdx],r12d; jne skip` with the
+// entity in ebx and the local player in r12d. For an entity of a shared station, r12 takes the entity's owner, so the comparison
+// keeps it (r12 is read again before its next use).
+static void HudShareSplice(SavedRegs* r)
+{
+    long cur = g_hudShareCur;
+    long n = g_hudShareN[cur];
+    if (n <= 0) return;
+    i32* owner = (i32*)(r->rax + r->rcx * 4);
+    if (!owner || !r->rax) return;
+    i32 o = *owner;
+    if (o == (i32)r->r12 || o < 0) return;
+    i32 e = (i32)r->rbx;
+    const i32* a = g_hudShare[cur];
+    long lo = 0, hi = n - 1;
+    while (lo <= hi) {
+        long mid = (lo + hi) >> 1;
+        if (a[mid] == e) { r->r12 = (r->r12 & 0xFFFFFFFF00000000ull) | (u32)o; _InterlockedIncrement(&g_hudShareLet); return; }
+        if (a[mid] < e) lo = mid + 1; else hi = mid - 1;
+    }
+}
+
+static void InstallHudShare()
+{
+    if (GetEnvironmentVariableA("MPFEVER_NOHUDSHARE", 0, 0) > 0) { Buf b; b.str("shared stations on the map: off (MPFEVER_NOHUDSHARE)"); LogLine(b); return; }
+    u32 at = FindSigRva("48 8D 14 88 48 85 D2 74 05 44 39 22 75 2D 4C 8B B4 24 B8 00 00 00");
+    u8* mem = at ? AllocNear(0x400) : 0;
+    bool ok = mem && Splice(mem, at, 7, HudShareSplice);
+    Buf b; b.str("shared stations on the map: ").str(ok ? "icon filter hooked at " : "OFF (the icon filter was not found)");
+    if (ok) b.hex(at);
+    LogLine(b);
+}
+
 static void InstallToolCompany()
 {
     if (GetEnvironmentVariableA("MPFEVER_NOTOOLCO", 0, 0) > 0) { Buf b; b.str("tools' company: off (MPFEVER_NOTOOLCO)"); LogLine(b); return; }
@@ -2749,7 +2825,7 @@ static void LogOrderCounts()
 {
     Buf b; b.str("order fixes:");
     for (int i = 0; i < ORDER_N; i++) b.str(" ").str(ORDER_FIXES[i].name).str(" ").dec(g_orderSorts[i]).str("/").dec(g_orderReorders[i]).str("/").dec(g_orderRefused[i]);
-    b.str("; tools' company written ").dec(g_toolWrites).str(" time(s)");
+    b.str("; tools' company written ").dec(g_toolWrites).str(" time(s); shared station icons let through ").dec(g_hudShareLet);
     LogLine(b);
 }
 
@@ -3000,6 +3076,7 @@ static DWORD WINAPI Init(void*)
     // (found by their own signatures, on any build where those match exactly once)
     InstallOrderFixes();
     if (g_layout) InstallToolCompany();
+    if (g_layout) InstallHudShare();
     { Buf b; b.str(g_luaSeedFixed ? "Lua string hash seed: fixed (same table order on every game)" : "Lua string hash seed: NOT fixed"); LogLine(b); }
     if (g_layout && RVA_MONEYCHECK) InstallDetour(RVA_MONEYCHECK, P_MONEYCHECK, sizeof(P_MONEYCHECK), (void*)&MoneyCheckDetour, (void**)&g_moneyOrig);
     if (g_layout && RVA_LINES) InstallDetour(RVA_LINES, P_LINES, sizeof(P_LINES), (void*)&LinesDetour, (void**)&g_linesOrig);

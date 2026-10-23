@@ -51,6 +51,14 @@ function CO.idOfEntity(reg, e)
 	return nil
 end
 
+-- whether a palette index is free (no company but `except` has it)
+function CO.colorFree(reg, ix, except)
+	ix = tonumber(ix)
+	if not ix or ix < 1 or ix > #CO.PALETTE or ix ~= math.floor(ix) then return false end
+	for _, c in ipairs(reg.list) do if c.color == ix and c.id ~= except then return false end end
+	return true
+end
+
 local function freeColor(reg)
 	for i = 1, #CO.PALETTE do
 		local used = false
@@ -89,7 +97,7 @@ end
 
 -- A player is placed: its company (kept from an earlier visit, see CO.match), the savegame's company when it is the host, or a new
 -- one. Returns the company and whether it is new (its player entity must be created).
-function CO.join(reg, key, name, isHost, newName, sid)
+function CO.join(reg, key, name, isHost, newName, sid, color)
 	local mine = CO.match(reg, key, sid, isHost)
 	-- (a dedicated server: nothing to claim)
 	if mine and key == "" then return mine, false end
@@ -97,19 +105,24 @@ function CO.join(reg, key, name, isHost, newName, sid)
 		-- (a new name for a known account: the company follows it)
 		if mine.key ~= key then mine.key = key end
 		if sid and not mine.sid then mine.sid = sid end
-		return mine, false
+		return mine, false, nil
 	end
 	local first = reg.list[1]
 	if isHost then
 		-- the savegame's own company belongs to whoever hosts it
 		first.key = key
 		first.sid = sid
-		return first, false
+		-- (the colour the host picked in the menu, the first time it claims the savegame's company)
+		local recolor = nil
+		if color and color ~= first.color and not first.colorPicked and CO.colorFree(reg, color, first.id) then
+			first.color = tonumber(color); first.colorPicked = true; recolor = first.color
+		end
+		return first, false, recolor
 	end
 	-- (a name another account already has: the new company's key carries the account, so that both are told apart)
 	local k = key
 	if CO.byKey(reg, k) then k = key .. "@" .. tostring(sid or #reg.list + 1) end
-	local c = { id = #reg.list + 1, key = k, name = newName or name, color = freeColor(reg), sid = sid }
+	local c = { id = #reg.list + 1, key = k, name = newName or name, color = CO.colorFree(reg, color) and tonumber(color) or freeColor(reg), sid = sid }
 	reg.list[#reg.list + 1] = c
 	return c, true
 end
@@ -381,6 +394,67 @@ function CO.installContracts(env)
 			return oh(u, state, src, id, name, param, ...)
 		end
 	end
+	return true
+end
+
+-- ------------------------------------------------------------------------------------------------ company window per company
+-- The company window's actions (prospection, marketing campaign, greening an industry) send a "Companies" event naming the
+-- company by its player entity in the sender's game; MPFever adds the company number (mpfOwner) and each game puts its own entity
+-- of that company back. The companies script also runs the pending prospections of getPlayer() only (the savegame's company in the
+-- simulation): it now runs them for every company, one call per company, the results merged for its postUpdate.
+local COMPANIES = "::/game_mechanics/company/company.script"
+
+function CO.installCompanyActions(env)
+	if type(game) ~= "table" then return false end
+	local cs = game[COMPANIES]
+	if type(cs) ~= "table" or cs.__mpfCo then return cs ~= nil end
+	cs.__mpfCo = true
+	local oh = cs.handleEvent
+	if type(oh) == "function" then
+		cs.handleEvent = function(u, state, src, id, name, param, ...)
+			if id == "Companies" and type(param) == "table" and param.mpfCo and activeReg(env) then
+				local ent = ownerEntity(env, param.mpfCo)
+				if not ent then return nil end
+				param.companyEntity = ent
+			end
+			return oh(u, state, src, id, name, param, ...)
+		end
+	end
+	local ou = cs.update
+	if type(ou) == "function" then
+		cs.update = function(u, state, dt, ...)
+			local reg = activeReg(env)
+			if not reg then return ou(u, state, dt, ...) end
+			local util = api.engine.util
+			local prev = util.getPlayer
+			local merged
+			-- (the engine's players, not the registry's entities: each game learns a new company's entity at its own moment,
+			-- the players exist from the same step on every game)
+			local players = {}
+			pcall(function()
+				api.engine.forEachEntityWithComponent(function(e) players[#players + 1] = e end, api.type.ComponentType.PLAYER)
+			end)
+			table.sort(players)
+			if #players == 0 then return ou(u, state, dt, ...) end
+			for _, pe in ipairs(players) do
+				do
+					local ent = pe
+					util.getPlayer = function() return ent end
+					local ok, r = pcall(ou, u, state, dt, ...)
+					util.getPlayer = prev
+					if not ok then error(r, 0) end
+					if type(r) == "table" and type(r.companyProspectionsToExecute) == "table" then
+						merged = merged or { companyProspectionsToExecute = {} }
+						for _, x in ipairs(r.companyProspectionsToExecute) do
+							merged.companyProspectionsToExecute[#merged.companyProspectionsToExecute + 1] = x
+						end
+					end
+				end
+			end
+			return merged
+		end
+	end
+	if env.log then env.log("companies: the company window's actions follow their company") end
 	return true
 end
 
