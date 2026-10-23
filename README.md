@@ -36,7 +36,6 @@ Each player plays in their own copy of the game. MPFever replays every player's 
 | **The same game version on every PC** | Two different game builds don't simulate the world the same way. Supported: **40423** (current) and **40420**. Make sure Steam has updated the game on every PC. |
 | **The same MPFever version on every PC** | MPFever updates itself; every player just needs a recent version (0.3.15 or later). |
 | **The same mods, in the same version** | MPFever checks it in the lobby and tells you what to fix. |
-| **TPF3-MP turned off** | ⚠️ TPF3-MP is another multiplayer mod. It changes the same parts of the game: a savegame where it is active keeps desynchronising. |
 
 ## Install and play
 
