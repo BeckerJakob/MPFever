@@ -6,7 +6,7 @@
 [![Nexus Mods](https://img.shields.io/badge/Nexus-MPFever-orange)](https://www.nexusmods.com/transportfever3/mods/4)
 [![Ko-fi](https://img.shields.io/badge/support-Ko--fi-ff5e5b)](https://ko-fi.com/knighthd)
 
-![MPFever in game](docs/Ingame.jpg)
+![The multiplayer page: host one of your savegames](docs/images/host-page.webp)
 
 Each player plays in their own copy of the game. MPFever replays every player's actions in every game at the same moment, checks that the games stay identical, and repairs them by itself when they don't.
 
@@ -48,6 +48,8 @@ Each player plays in their own copy of the game. MPFever replays every player's 
    - **The others** join the host's address, or accept the host's Steam invitation.
 5. When everybody is in the lobby, the host clicks **Start the game**. Every game loads the host's world at the same time.
 
+![Joining a game](docs/images/join-page.webp)
+
 Players can also join a game already running, and a lost connection reconnects by itself.
 
 **Ports:** most of the time there is nothing to do. MPFever opens the host's port (28090, TCP) on the router by itself. If it can't (some providers share one address between customers), the launcher's log says so: forward the port by hand, use IPv6, or use a dedicated server. Details: [INSTALL](docs/INSTALL.txt).
@@ -75,7 +77,7 @@ The MPFever card in the pause menu opens:
 - **the MPFever window:** the players, their connection, the sync state, Steam invites, and the **Report a problem** button;
 - **the chat:** new messages show for a few seconds on the left of the screen.
 
-![Pause menu](docs/ESC-Menu.jpg)
+![The MPFever window and the chat in game](docs/images/ingame-window-chat.png)
 
 ### Repairs itself
 
