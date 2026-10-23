@@ -108,9 +108,15 @@ local function loadPending()
 	local details = api.type.SaveGameDetails.new(info)
 	local has = false
 	local mods = {}
+	-- (tests: MPFEVER_DROPMODS=id1,id2 leaves mods of the savegame out, as the load screen does: a DLC this PC does not have)
+	local drop, dropped = {}, {}
+	for id in tostring(os.getenv("MPFEVER_DROPMODS") or ""):gmatch("[^,%s]+") do drop[id] = true end
 	for _, m in ipairs(info.mods or {}) do
-		mods[#mods + 1] = m
-		if m.name == MOD_ID then has = true end
+		if drop[m.name] then dropped[#dropped + 1] = m.name
+		else
+			mods[#mods + 1] = m
+			if m.name == MOD_ID then has = true end
+		end
 	end
 	-- (tests: MPFEVER_ADDMODS=id1,id2 adds installed mods to the savegame, as the load screen does)
 	local added = {}
@@ -132,7 +138,8 @@ local function loadPending()
 	else
 		log("loading savegame '" .. p.name .. "'")
 	end
-	if not has or #added > 0 then details.mods = mods end
+	if not has or #added > 0 or #dropped > 0 then details.mods = mods end
+	if #dropped > 0 then log("test mods left out: " .. table.concat(dropped, ", ")) end
 	if #added > 0 then log("test mods added: " .. table.concat(added, ", ")) end
 	app.loadGame(p.id, false, details)
 end

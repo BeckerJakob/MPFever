@@ -154,6 +154,25 @@ local function install()
 		end
 	end)
 	if not okSp then log("speed buttons: not redirected: " .. tostring(errSp)) end
+	-- the speed buttons also clamp the speed to what this PC is estimated to keep up with (getEstimatedMaximumGameSpeed) and
+	-- ask for the clamped speed again every frame while it is lower: in a session the lockstep's waits bring that estimate
+	-- down to 1, so every x2 or x3 a player asked was turned back into x1 by the host's game (a test: 190 requests for x1).
+	-- The lockstep paces the games itself: no clamp during a session. MPFEVER_SPEEDCLAMP=1: as before
+	local okMx, errMx = pcall(function()
+		local g = api.gui.game
+		local origMax = g.getEstimatedMaximumGameSpeed
+		g.getEstimatedMaximumGameSpeed = function(...)
+			-- (MPFEVER_FAKEMAXSPEED=n, tests: the estimate of a PC that keeps up with x n only)
+			local m = tonumber(os.getenv("MPFEVER_FAKEMAXSPEED") or "") or origMax(...)
+			if U.shownSpeed() == nil or os.getenv("MPFEVER_SPEEDCLAMP") == "1" then return m end
+			if type(m) == "number" and m > 0 and m < 4 and U.clampLogged ~= m then
+				U.clampLogged = m
+				log("speed buttons: this game's estimated maximum speed " .. tostring(m) .. " not applied in a session")
+			end
+			return 4
+		end
+	end)
+	if not okMx then log("speed buttons: maximum speed not redirected: " .. tostring(errMx)) end
 	local k = {}
 	for t, _ in pairs(kinds) do k[#k + 1] = t end
 	log("UI interception installed on " .. wrapped .. " factories (types: " .. table.concat(k, ",") .. ")" .. (#missing > 0 and (", missing: " .. table.concat(missing, ",")) or ""))

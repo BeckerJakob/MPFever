@@ -43,7 +43,7 @@ Your solo games are not affected: MPFever only acts when the game is started thr
 
 [size=4][b]Good to know[/b][/size]
 [list]
-[*]MPFever is in active development (version 0.4.4), with new versions released often. Backing up your savegames is always a good idea.
+[*]MPFever is in active development (version 0.4.5), with new versions released often. Backing up your savegames is always a good idea.
 [*]Every player needs the same MPFever version (automatic), the same mods and [b]the same game version[/b]: make sure Steam has updated Transport Fever 3 on every PC.
 [*]Made for the current Steam version of the game, on Windows.
 [*]The tutorial is made for solo play.

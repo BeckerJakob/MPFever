@@ -2934,7 +2934,48 @@ local function upgradePlan(margs, townAuto)
 		if type(match) ~= "number" or match < 0 then return no("no old segment between the same nodes") end
 		plan[#plan + 1] = { edge = match, template = c.roadTemplate, decorations = decorations, lanes = customLanes, n0 = c.node0 }
 	end
+	-- the junctions at both ends as the tool set them (lane connections, crosswalks, traffic lights): replaceSegment lets the
+	-- engine work them out again, which almost always gives the same, but not always (a manual test: nodeConfigs differed from
+	-- one upgrade on, the same number of junctions). Put on the upgrade's proposal (one segment). MPFEVER_UPGNC=0: as before
+	if #plan == 1 and os.getenv("MPFEVER_UPGNC") ~= "0" and #(st.nodeConfigsToAdd or {}) > 0 then
+		plan[1].nc = st.nodeConfigsToAdd
+		local ncr = {}
+		for _, n in ipairs(st.nodeConfigsToRemove or {}) do if type(n) == "number" and n >= 0 then ncr[#ncr + 1] = n end end
+		plan[1].ncr = ncr
+	end
 	return plan
+end
+
+-- The engine's upgrade segment with what the template does not give: the originator's decorations (noise barrier, the trees
+-- of a street with trees: the engine's upgrade to it has none) and lanes (tram tracks on a road), only where they differ
+-- from the engine's segment
+G.stepExtras = function(a, step, seg)
+	local cmp = seg.comp
+	if step.decorations then
+		-- a decoration has a side (left of the segment's direction): when this game's segment runs the other way round than
+		-- the originator's, the side is the opposite one
+		local deco = C.plain(step.decorations)
+		local be = api.engine.getComponent(step.edge, api.type.ComponentType.BASE_EDGE)
+		if be and type(step.n0) == "number" and be.node0 ~= step.n0 then
+			for _, d in ipairs(deco) do if type(d) == "table" then d[2] = not d[2] end end
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " segment " .. step.edge .. " runs the other way round: decoration sides swapped")
+		end
+		local have, want = nil, C.ser(deco)
+		pcall(function()
+			local t = {}
+			for k = 1, #cmp.edgeDecorations do local d = cmp.edgeDecorations[k]; t[k] = { d[1], d[2] } end
+			have = C.ser(t)
+		end)
+		if have == want then
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " segment " .. step.edge .. ": decorations already as the tool's")
+		else
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " segment " .. step.edge .. ": decorations " .. tostring(have) .. " -> " .. want)
+			cmp.edgeDecorations = deco
+		end
+	end
+	if step.lanes and C.laneSignature(cmp.laneConfigs) ~= C.laneSignature(step.lanes) then cmp.laneConfigs = C.rebuildLanes(step.lanes) end
+	seg.comp = cmp
+	return seg
 end
 
 local function replayUpgrade(a, plan, i)
@@ -2945,28 +2986,20 @@ local function replayUpgrade(a, plan, i)
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " upgrade of " .. tostring(step.edge) .. ": no proposal " .. tostring(P))
 		return replayUpgrade(a, plan, i + 1)
 	end
+	if step.nc then
+		local okn, errn = pcall(function()
+			local sp = P.proposal
+			sp.nodeConfigsToAdd = C.nodeConfigs(step.nc)
+			if #step.ncr > 0 then sp.nodeConfigsToRemove = step.ncr end
+			P.proposal = sp
+		end)
+		if not okn then log("NATIVE REPLAY " .. tostring(a.uid) .. " upgrade of " .. tostring(step.edge) .. ": the tool's junctions not applied (" .. shortErr(errn) .. ")") end
+	end
 	if step.decorations or step.lanes then
-		-- the engine's upgrade proposal with what the template does not give: the originator's decorations (noise
-		-- barrier...) and lanes (tram tracks on a road) on the new segment
 		local okd, errd = pcall(function()
 			local sp = P.proposal
 			local list = sp.addedSegments
-			local seg = list[1]
-			local cmp = seg.comp
-			if step.decorations then
-				-- a decoration has a side (left of the segment's direction): when this game's segment runs the other way
-				-- round than the originator's, the side is the opposite one
-				local deco = C.plain(step.decorations)
-				local be = api.engine.getComponent(step.edge, api.type.ComponentType.BASE_EDGE)
-				if be and type(step.n0) == "number" and be.node0 ~= step.n0 then
-					for _, d in ipairs(deco) do if type(d) == "table" then d[2] = not d[2] end end
-					log("NATIVE REPLAY " .. tostring(a.uid) .. " segment " .. step.edge .. " runs the other way round: decoration sides swapped")
-				end
-				cmp.edgeDecorations = deco
-			end
-			if step.lanes then cmp.laneConfigs = C.rebuildLanes(step.lanes) end
-			seg.comp = cmp
-			list[1] = seg
+			list[1] = G.stepExtras(a, step, list[1])
 			sp.addedSegments = list
 			P.proposal = sp
 		end)
@@ -2995,6 +3028,68 @@ local function replayUpgrade(a, plan, i)
 		end)
 		G.waits[#G.waits + 1] = { at = G.frames + 1, fn = function() replayUpgrade(a, plan, i + 1) end }
 	end)
+end
+
+-- An upgrade of several segments at once, as the tool makes it: the engine's upgrade proposal of every segment (replaceSegment,
+-- which gives the builder's result exactly for one segment) put together into one new proposal, with the tool's junctions,
+-- built at once (the town buildings around are taken away and put back once for the whole street, as by the tool). Returns
+-- whether the command was made (else the caller replays it another way).
+G.replayMergedUpgrade = function(a, plan, probe)
+	local added, removed = {}, {}
+	for _, step in ipairs(plan) do
+		local okp, Pk = pcall(function() return api.engine.util.proposal.replaceSegment(step.edge, step.template) end)
+		if not okp or not Pk then log("NATIVE REPLAY " .. tostring(a.uid) .. " merged upgrade: no proposal for " .. tostring(step.edge)) return false end
+		if os.getenv("MPFEVER_MERGEDUMP") == "1" then pcall(function() C.appendFile(C.DIR .. BS .. "merge_dump.txt", "==== replaceSegment(" .. step.edge .. ")" .. NL .. C.dump(Pk):sub(1, 60000) .. NL) end) end
+		local okc, errc = pcall(function()
+			local spk = Pk.proposal
+			-- (a new street type with trees: its decorations, as on the upgrade of one segment)
+			if (step.decorations or step.lanes) and #spk.addedSegments ~= 1 then error(#spk.addedSegments .. " new segments for decorations/lanes") end
+			for j = 1, #spk.addedSegments do
+				local seg = spk.addedSegments[j]
+				if (step.decorations or step.lanes) and os.getenv("MPFEVER_MERGEDECO") ~= "0" then seg = G.stepExtras(a, step, seg) end
+				seg.entity = -(#added + 1)
+				added[#added + 1] = seg
+			end
+			for j = 1, #spk.removedSegments do removed[#removed + 1] = spk.removedSegments[j] end
+		end)
+		if not okc then log("NATIVE REPLAY " .. tostring(a.uid) .. " merged upgrade: segment " .. tostring(step.edge) .. " (" .. shortErr(errc) .. ")") return false end
+	end
+	local P = api.type.Proposal.new()
+	local okm, errm = pcall(function()
+		local sp = P.proposal
+		sp.addedSegments = added
+		sp.removedSegments = removed
+		-- (the tool's junctions: their lane connections name the new segments -1, -2... in the tool's order, the same as here
+		-- when the tool lists its new segments in the order of its removed ones; MPFEVER_MERGENC=0: the engine's own)
+		local st = probe[1] and probe[1].proposal
+		if st and os.getenv("MPFEVER_MERGENC") ~= "0" and #(st.nodeConfigsToAdd or {}) > 0 then
+			sp.nodeConfigsToAdd = C.nodeConfigs(st.nodeConfigsToAdd)
+			local ncr = {}
+			for _, n in ipairs(st.nodeConfigsToRemove or {}) do if type(n) == "number" and n >= 0 then ncr[#ncr + 1] = n end end
+			if #ncr > 0 then sp.nodeConfigsToRemove = ncr end
+		end
+		P.proposal = sp
+	end)
+	if not okm then log("NATIVE REPLAY " .. tostring(a.uid) .. " merged upgrade not made (" .. shortErr(errm) .. ")") return false end
+	if os.getenv("MPFEVER_MERGEDUMP") == "1" then pcall(function() C.appendFile(C.DIR .. BS .. "merge_dump.txt", "==== merged" .. NL .. C.dump(P):sub(1, 60000) .. NL) end) end
+	local ctx = api.type.Context.new()
+	ctx.checkTerrainAlignment = true
+	ctx.cleanupStreetGraph = true
+	ctx.gatherBuildings = true
+	ctx.gatherFields = true
+	ctx.player = api.engine.util.getPlayer()
+	G.refundInto(ctx)
+	local okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true) end)
+	if not okk or not cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " merged upgrade: command " .. shortErr(cmd)) return false end
+	log("NATIVE REPLAY " .. tostring(a.uid) .. ": an upgrade of " .. #plan .. " segments at once, merged")
+	toSim("replaying", {})
+	replaySend(cmd, function(res, success)
+		local why = ""
+		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " merged upgrade: " .. (success and "BUILT" or ("refused " .. why .. " (desync)")))
+		if not success and G.replayFailedFn then G.replayFailedFn(a, "merged upgrade refused") end
+	end)
+	return true
 end
 
 -- A pure removal (bulldozer): the engine's own removal proposal
@@ -3144,16 +3239,39 @@ local function replayStop(a, plan, variant)
 	e.type = (type(plan.segType) == "number") and plan.segType or 0   -- 1: a track (a signal)
 	local cc = e.comp
 	local sc = plan.seg.comp or {}
-	cc.node0 = c.node0; cc.node1 = c.node1
-	cc.tangent0 = sVec(c.tangent0); cc.tangent1 = sVec(c.tangent1)
-	cc.position0 = sVec(sNodePos(c.node0)); cc.position1 = sVec(sNodePos(c.node1))
+	-- this game's segment runs the other way round than the builder's (an earlier replay rebuilt it so): the tool's place
+	-- along the segment, side, lanes and junction lanes all count from the builder's first node, so the new segment is
+	-- made the builder's way round. Kept as it was, the stop went to the mirror place on the other pavement (a manual
+	-- test: 2 town buildings taken away here, none on the builder's game). Not with stops already on the segment, whose
+	-- places count from this game's first node. MPFEVER_STOPREVERSE=0: as before
+	local rev = not plan.after and #c.objects == 0 and os.getenv("MPFEVER_STOPREVERSE") ~= "0" and type(sc.node0) == "number"
+		and sc.node0 == c.node1 and sc.node1 == c.node0 and c.node0 ~= c.node1
+	if rev then
+		if not plan.revLogged then log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: segment " .. plan.E .. " runs the other way round here: rebuilt the builder's way round") end
+		plan.revLogged = true
+		cc.node0 = c.node1; cc.node1 = c.node0
+		cc.tangent0 = api.type.Vec3f.new(-c.tangent1.x, -c.tangent1.y, -c.tangent1.z)
+		cc.tangent1 = api.type.Vec3f.new(-c.tangent0.x, -c.tangent0.y, -c.tangent0.z)
+		cc.position0 = sVec(sNodePos(c.node1)); cc.position1 = sVec(sNodePos(c.node0))
+	else
+		cc.node0 = c.node0; cc.node1 = c.node1
+		cc.tangent0 = sVec(c.tangent0); cc.tangent1 = sVec(c.tangent1)
+		cc.position0 = sVec(sNodePos(c.node0)); cc.position1 = sVec(sNodePos(c.node1))
+	end
 	-- the segment as it is (a stop or a signal changes none of these): a tunnel or a bridge stays one (type 2 / 1 and its
 	-- index; written 0 / -1, a signal turned the tunnel into track dug in the ground), and a track keeps its distance
 	-- (5: with 0 the games differed) and decorations (issue #16)
 	cc.type = (type(c.type) == "number") and c.type or 0
 	cc.typeIndex = (type(c.typeIndex) == "number") and c.typeIndex or -1
 	pcall(function() if type(c.distance) == "number" and c.distance ~= 0 then cc.distance = c.distance end end)
-	pcall(function() if #c.edgeDecorations > 0 then cc.edgeDecorations = c.edgeDecorations end end)
+	pcall(function()
+		if #c.edgeDecorations == 0 then return end
+		if not rev then cc.edgeDecorations = c.edgeDecorations; return end
+		-- (a decoration's side counts from the first node too)
+		local deco = {}
+		for k = 1, #c.edgeDecorations do local d = c.edgeDecorations[k]; deco[k] = { d[1], not d[2] } end
+		cc.edgeDecorations = deco
+	end)
 	cc.roadTemplate = sc.roadTemplate or c.roadTemplate
 	cc.roadStyle = sc.roadStyle or c.roadStyle
 	cc.roadType = c.roadType
@@ -3162,6 +3280,16 @@ local function replayStop(a, plan, variant)
 	local capLanes = sc.laneConfigs
 	if type(capLanes) == "table" and #capLanes > 0 then
 		cc.laneConfigs = C.rebuildLanes(capLanes)
+	elseif rev then
+		-- (this game's lanes the other way round: from the other side, each in the other direction)
+		local rl = {}
+		for k = #c.laneConfigs, 1, -1 do
+			local l = C.marshal(c.laneConfigs[k])
+			l.forward = not l.forward
+			if type(l.offset) == "number" then l.offset = -l.offset end
+			rl[#rl + 1] = l
+		end
+		cc.laneConfigs = C.rebuildLanes(rl)
 	else
 		cc.laneConfigs = c.laneConfigs
 	end
@@ -3336,6 +3464,7 @@ end
 local function replayFailed(a, why)
 	pcall(send, "replay_failed", { uid = tostring(a.uid), why = tostring(why):sub(1, 120) })
 end
+G.replayFailedFn = replayFailed
 
 -- the verdict of a replayed action for the host: a refusal is counted; an action skipped because something it refers to
 -- is missing here means the games already differ, so the host's game is reloaded at once (issue #12: the next action
@@ -3777,6 +3906,7 @@ local function replayNativeStreet(a)
 	for _, variant in ipairs({ {}, { noConfigs = true }, { noConfigs = true, noMaps = true } }) do
 		C.errors = {}
 		variant.toolNodes = toolNodes
+		variant.townAuto = a.townAuto
 		local okp, P = pcall(C.rebuildNativeWithConstruction, m, nil, rm, variant)
 		label = (variant.noMaps and "without node configurations and id maps") or (variant.noConfigs and "without node configurations") or "complete"
 		if okp and P then
@@ -3975,6 +4105,18 @@ local function replayNative(a, formIndex)
 		end
 		G.upgradeWhy = nil
 		local plan = (#missing == 0) and upgradePlan(probe, a.townAuto) or nil
+		-- an upgrade of several segments of a town street is ONE build of the tool: replayed one segment after the other, the
+		-- terrain was aligned and the town buildings taken away segment by segment, other ones than the builder's (a manual
+		-- test: 926311 for the builder, 489787 + 441524 here; 17 buildings taken away there, 10 + 7 here). The tool's own
+		-- proposal is replayed instead, every segment at once (17 buildings, 929986: closer, not yet exact, the town buildings
+		-- the tool put back are placed by this game's engine). MPFEVER_UPGRADEMERGE=0: as before
+		if plan and (#plan > 1 or os.getenv("MPFEVER_MERGEONE") == "1") and os.getenv("MPFEVER_UPGRADEMERGE") ~= "0" and os.getenv("MPFEVER_UPGRADEMERGE") ~= "native" then
+			if G.replayMergedUpgrade(a, plan, probe) then return end
+		end
+		if plan and #plan > 1 and a.townAuto and os.getenv("MPFEVER_UPGRADEMERGE") ~= "0" and os.getenv("MPFEVER_TOWNNATIVE") ~= "0" then
+			log("NATIVE REPLAY " .. tostring(a.uid) .. ": an upgrade of " .. #plan .. " town street segments at once: native street proposal")
+			return replayNativeStreet(a)
+		end
 		if plan then return replayUpgrade(a, plan, 1) end
 		if a.townAuto then log("NATIVE REPLAY " .. tostring(a.uid) .. ": no street upgrade (" .. tostring(G.upgradeWhy or (#missing > 0 and "unresolved" or "?")) .. ")") end
 		-- a street through a town that moves town buildings: never by the script forms, whose lanes the engine asserted on while
@@ -9632,12 +9774,33 @@ H.dstop = function(from, p)
 			e.entity = -1
 			e.type = 0
 			local cc = e.comp
-			cc.node0 = c.node0; cc.node1 = c.node1
-			cc.tangent0 = vec(c.tangent0); cc.tangent1 = vec(c.tangent1)
-			cc.position0 = vec(nodePosition(c.node0)); cc.position1 = vec(nodePosition(c.node1))
+			-- (MPFEVER_DSTOPREVERSE=1: the segment rebuilt the other way round, as it may run on another game after a replay:
+			-- the other games' segment then runs the other way round than this one)
+			local rev = os.getenv("MPFEVER_DSTOPREVERSE") == "1"
+			if rev then
+				cc.node0 = c.node1; cc.node1 = c.node0
+				cc.tangent0 = api.type.Vec3f.new(-c.tangent1.x, -c.tangent1.y, -c.tangent1.z)
+				cc.tangent1 = api.type.Vec3f.new(-c.tangent0.x, -c.tangent0.y, -c.tangent0.z)
+				cc.position0 = vec(nodePosition(c.node1)); cc.position1 = vec(nodePosition(c.node0))
+			else
+				cc.node0 = c.node0; cc.node1 = c.node1
+				cc.tangent0 = vec(c.tangent0); cc.tangent1 = vec(c.tangent1)
+				cc.position0 = vec(nodePosition(c.node0)); cc.position1 = vec(nodePosition(c.node1))
+			end
 			cc.type = c.type; cc.typeIndex = c.typeIndex
 			cc.roadTemplate = c.roadTemplate; cc.roadStyle = c.roadStyle; cc.roadType = c.roadType
-			cc.laneConfigs = c.laneConfigs
+			if rev then
+				local rl = {}
+				for k = #c.laneConfigs, 1, -1 do
+					local l = C.marshal(c.laneConfigs[k])
+					l.forward = not l.forward
+					if type(l.offset) == "number" then l.offset = -l.offset end
+					rl[#rl + 1] = l
+				end
+				cc.laneConfigs = C.rebuildLanes(rl)
+			else
+				cc.laneConfigs = c.laneConfigs
+			end
 			local left = n % 2 == 0
 			cc.objects = { { -400000000, left and 0 or 1 } }
 			e.comp = cc

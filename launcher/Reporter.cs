@@ -37,12 +37,20 @@ namespace MPFever
             {
                 var steam = GameInstall.SteamPath();
                 var userdata = steam == null ? null : Path.Combine(steam, "userdata");
-                if (userdata == null || !Directory.Exists(userdata)) return list;
-                foreach (var u in Directory.GetDirectories(userdata))
-                {
-                    var d = Path.Combine(u, GameInstall.AppId, "local", "crash_dump");
-                    if (Directory.Exists(d)) list.Add(d);
-                }
+                if (userdata != null && Directory.Exists(userdata))
+                    foreach (var u in Directory.GetDirectories(userdata))
+                    {
+                        var d = Path.Combine(u, GameInstall.AppId, "local", "crash_dump");
+                        if (Directory.Exists(d)) list.Add(d);
+                    }
+                // (next to the savegame folders the game gave, wherever it keeps its data: issue #80's report had no game log)
+                lock (GameInstall.GameSaveDirs)
+                    foreach (var s in GameInstall.GameSaveDirs)
+                    {
+                        var parent = Path.GetDirectoryName(s.TrimEnd('\\', '/'));
+                        var d = parent == null ? null : Path.Combine(parent, "crash_dump");
+                        if (d != null && Directory.Exists(d) && !list.Any(x => string.Equals(Path.GetFullPath(x), Path.GetFullPath(d), StringComparison.OrdinalIgnoreCase))) list.Add(d);
+                    }
             }
             catch { }
             return list.OrderByDescending(d => LastWrite(Path.Combine(d, "stdout.txt"))).ToList();

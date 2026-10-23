@@ -56,7 +56,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.4.4";
+        public const string Version = "0.4.5";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -167,6 +167,7 @@ namespace MPFever
         const string ResyncSaveName = "MPFever resync";
         const int ResyncChunk = 256 * 1024;
         volatile bool resyncing;
+        volatile bool resyncSending;   // from the list of the games that reload the host's game to the end of a resynchronisation
         double lastResync = -1e9;
         int resyncId;
         readonly HashSet<string> resyncWaiting = new HashSet<string>();
@@ -1288,7 +1289,7 @@ namespace MPFever
             lock (chatLog) { chatLog.Clear(); chatId = 0; }
             lock (resyncParts) resyncParts.Clear();   // a host game half received in the session that ends
             hashN = 0; syncText = "—"; actsRelayed = actRefused = actFails = desyncs = 0;
-            resyncing = false; resyncDropping = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = ""; lock (partStreak) partStreak.Clear();
+            resyncing = false; resyncDropping = false; resyncSending = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = ""; lock (partStreak) partStreak.Clear();
             joinPending = false;
             lock (lobbyColorOf) lobbyColorOf.Clear();
             lobbyColors = ""; lobbyMode = "";
@@ -2254,6 +2255,10 @@ namespace MPFever
                         int hid = h.TryGetValue("id", out var hiv) && hiv is double hd ? (int)hd : 0;
                         var bytes = resyncBytes;
                         if (!resyncing) break;
+                        // (nothing to resume while the resynchronisation has not listed its games yet, often the one this
+                        // player's arrival started: it is listed with them and receives the host's game then. Counted as
+                        // another new player, it got a second whole resynchronisation right after: a test, 185 s then 161 s)
+                        if (hid == 0 && !resyncSending) break;
                         if (bytes == null || hid != resyncBytesId || hid == 0 || !(h.TryGetValue("missing", out var mv) && mv is string ms))
                         {
                             joinPending = true;
@@ -2609,6 +2614,7 @@ namespace MPFever
                 Log.W(F("Sauvegarde de l'hôte : {0:0.0} Mo, envoi aux autres joueurs...", "Host savegame: {0:0.0} MB, sending it to the other players...", bytes.Length / 1048576.0));
                 // 3. every game (the host's too) reloads it; the others receive the file first
                 lock (resyncWaiting) { resyncWaiting.Clear(); lock (players) foreach (var p in players) resyncWaiting.Add(p); }
+                resyncSending = true;
                 resyncBytes = bytes; resyncBytesId = id; resyncSentUpTo = 0;
                 int parts = (bytes.Length + ResyncChunk - 1) / ResyncChunk;
                 for (int i = 0; i < parts; i++)
@@ -2638,6 +2644,7 @@ namespace MPFever
                 diffStreak = 0;
                 lock (partStreak) partStreak.Clear();
                 resyncDropping = false;
+                resyncSending = false;
                 resyncing = false;
                 SetSpeed(prevSpeed, T("fin de resynchronisation", "end of resynchronisation"));
             }

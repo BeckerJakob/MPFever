@@ -1,6 +1,31 @@
 MPFever - Changelog
 ===================
 
+0.4.5 - town street upgrades replayed exactly, stops, speed x2 and x3
+  - FIX: an upgrade of several street segments at once (one build of the tool) was replayed segment by segment on the
+    other games: the ground was aligned and the town buildings taken away segment by segment, other ones than the builder's,
+    and the towns drifted apart (issue #79, a test: 926311 for the builder, 489787 + 441524 on the other game). The engine's
+    upgrade of each segment is now put together into one build with the tool's junctions: exactly the builder's (cost,
+    ground, the same 17 buildings). An upgrade to a street with trees carries the tool's trees on each segment.
+    MPFEVER_UPGRADEMERGE=0: as before.
+  - FIX: a town street replayed as the tool's own proposal named the town buildings to take away: the engine then put
+    the other ones back elsewhere. The engine now takes away and puts back the same buildings as on the builder's game.
+    MPFEVER_TOWNREMOVE=1: as before.
+  - FIX: an upgrade of one segment lets the engine work its junctions out again, which almost always gives the same:
+    not always (lane connections differed from one upgrade on). The tool's junctions are put on it. MPFEVER_UPGNC=0: as
+    before.
+  - FIX: a stop placed on a street that runs the other way round on another game (an earlier replay rebuilt it so) went to
+    the mirror place there, on the other pavement, where it took town buildings away (issues #79 and #81). The street is
+    now rebuilt the builder's way round (a test: out of sync before, in sync now). MPFEVER_STOPREVERSE=0: as before.
+  - FIX: speed x2 and x3 went back to x1 at once. The game's speed buttons hold the speed to what the PC is estimated
+    to keep up with and ask for it again every frame; in a session the lockstep's waits bring that estimate down to 1, so
+    the host's game asked for x1 again and again. The estimate is not applied during a session: the lockstep paces the
+    games itself. MPFEVER_SPEEDCLAMP=1: as before.
+  - FIX: a player who joined a running game got two whole resynchronisations in a row (a test: 185 s, then 161 s): its
+    « nothing received yet », sent as it connected, was taken for one more new player.
+  - FIX: the host's savegame was not found on a game that keeps its data elsewhere than Steam's folder (issue #80): the
+    MPFever page now asks the game for its data folder. The problem report also takes the game's log from there.
+
 0.4.4 - « one company per player » is no longer experimental
   - NEW: the Company window's actions (prospection, marketing campaign, greening an industry) work for every company,
     each for its own; the pending prospections of every company run (only the savegame company's did).

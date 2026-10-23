@@ -1535,6 +1535,21 @@ extern "C" void* AddDetour(void* list, void* out, void* cmd, void* done, void* p
     if (!g_inRelease) ReadControl();
     if (g_tin.ready) TerrainInject(cmd);
     else if (g_tPattern > 0) TerrainPattern(cmd);
+    {   // (diagnostic, MPFEVER_PAYDUMP: the vectors of a build command, offset and size, to find where the constructions are)
+        static long pd = -1;
+        if (pd < 0) pd = GetEnvironmentVariableA("MPFEVER_PAYDUMP", 0, 0) > 0 ? 1 : 0;
+        u8* pay = cmd ? *(u8**)cmd : 0;
+        if (pd && pay && Readable(pay, 0x9c0) && *(u8*)(pay + 0x9b8) == 52) {
+            Buf b; b.str("payload of a build from ").hex(caller).str(":");
+            for (int o = 0; o + 24 <= 0x9c0; o += 8) {
+                u64 vb = *(u64*)(pay + o), ve = *(u64*)(pay + o + 8), vc = *(u64*)(pay + o + 16);
+                if (vb < 0x10000 || vb > 0x00007fffffffffffull || ve <= vb || vc < ve || (ve - vb) > (32u << 20)) continue;
+                b.str(" +").hex(o).str("=").dec((long)(ve - vb));
+                if (b.n > 900) break;
+            }
+            LogLine(b);
+        }
+    }
     {   // which Context flags the tools build with (found by comparing commands that differ by one flag): logged once per caller and set of flags
         u8* pay = cmd ? *(u8**)cmd : 0;
         if (pay && Readable(pay, 0x9c0) && *(u8*)(pay + 0x9b8) == 52) {

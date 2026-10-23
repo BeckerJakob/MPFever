@@ -1297,6 +1297,11 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 	-- stations (the lines stopping there keep their stops). Without them the new one collided with the old (issue #14).
 	-- (without a construction: the town buildings the street build takes away)
 	local removeList = entityList(m.toRemove or m.constructionsToRemove)
+	-- (opts.townAuto: a street through a town whose engine takes the town buildings away and puts them back itself. Named here,
+	-- the engine took the same ones away but put them back elsewhere than the builder's tool: other ground, another cost, the
+	-- towns drifted apart - a 2-segment upgrade: 929986 instead of the builder's 926311; without the list, 926311 and the same
+	-- ground, issue #79. MPFEVER_TOWNREMOVE=1: named as before)
+	if opts.townAuto and os.getenv("MPFEVER_TOWNREMOVE") ~= "1" then removeList = {} end
 	if #removeList > 0 and os.getenv("MPFEVER_CONREMOVE") ~= "0" then
 		local okr, er = pcall(function() P.toRemove = removeList end)
 		if not okr then C.errors[#C.errors + 1] = "toRemove: " .. tostring(er):sub(1, 100) end

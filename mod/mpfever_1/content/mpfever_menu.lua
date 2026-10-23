@@ -90,6 +90,17 @@ local function noteSaveDirs(list)
 		local d = type(s.path) == "string" and s.path:gsub(BS, "/"):match("^(.+)/[^/]*%.sav$") or nil
 		if d and d ~= "" and not seen[d] then seen[d] = true dirs[#dirs + 1] = d end
 	end
+	-- (the engine leaves SaveGameInfo.path empty: issue #80, and #76 again. The game's own folder of the player's data, its
+	-- "save" folder inside, is where it writes them, wherever the game is installed)
+	pcall(function()
+		local u = app.getUserDataFolder()
+		if type(u) == "string" and u ~= "" then
+			u = u:gsub(BS, "/"):gsub("/+$", "")
+			for _, d in ipairs({ u .. "/save" }) do
+				if not seen[d] then seen[d] = true dirs[#dirs + 1] = d end
+			end
+		end
+	end)
 	table.sort(dirs)
 	local text = table.concat(dirs, NL)
 	if text ~= savedDirs then
@@ -250,6 +261,8 @@ end
 -- tile's button opens the lobby), or join a host by its address. While something runs (lobby, connection, download,
 -- loading) the page shows the session instead: the savegame's picture, what happens, the players, and its buttons.
 local function setup()
+	-- (the savegame folders, at once: MPFever.exe needs them to find the savegame the player hosts)
+	pcall(noteSaveDirs, {})
 	local react = ug_require("::/gui/main/react.lua")
 	local builtin = ug_require("::/gui/main/builtin.lua")
 	local menuUi = ug_require("::/gui/menu/menu_icon_react_util.tl")
