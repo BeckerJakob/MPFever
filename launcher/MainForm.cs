@@ -3109,6 +3109,9 @@ namespace MPFever
             if (names.Count == 0) return;
             string mode = Environment.GetEnvironmentVariable("MPFEVER_DELTA") ?? "";
             var want = names.Select(n => relay?.Find(n)).Where(p => p != null).ToList();
+            // (the base these differences are from, taken now: the game sent now becomes the next base at once, see KeepDeltaBase,
+            // and a sender reading it later named the new one: the player refused the differences and got the whole game)
+            string baseSha = deltaBaseSha ?? "";
             byte[] delta = null;
             try
             {
@@ -3137,7 +3140,7 @@ namespace MPFever
                         if (saveCancel >= id || resyncBytesId != id) return;
                         int len = Math.Min(ResyncChunk, delta.Length - i * ResyncChunk);
                         if (relay == null || !relay.TrySend(p, Msg.MakeBinary("delta_bin", hostName,
-                            "[\"id\"]=" + id + ",[\"i\"]=" + i + ",[\"n\"]=" + parts + ",[\"sha\"]=" + LuaLit.Quote(sha) + ",[\"base\"]=" + LuaLit.Quote(deltaBaseSha ?? ""), delta, i * ResyncChunk, len))) return;
+                            "[\"id\"]=" + id + ",[\"i\"]=" + i + ",[\"n\"]=" + parts + ",[\"sha\"]=" + LuaLit.Quote(sha) + ",[\"base\"]=" + LuaLit.Quote(baseSha), delta, i * ResyncChunk, len))) return;
                     }
                     Log.W(F("{0} : différences envoyées ({1:0.0} Mo en {2:0} s)", "{0}: differences sent ({1:0.0} MB in {2:0} s)", p.Name, delta.Length / 1048576.0, (DateTime.UtcNow - t0).TotalSeconds));
                 }) { IsBackground = true, Name = "Delta to " + p.Name }.Start();
