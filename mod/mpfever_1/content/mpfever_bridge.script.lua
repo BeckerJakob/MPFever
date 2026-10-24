@@ -1149,6 +1149,11 @@ local function simApplyDue(state)
 					SIM.actor = nil
 					if not okx then error(r) end
 					st = state:get() or st
+					-- (not replayable here: no build of it comes, the count above is taken back. Else the player's own next
+					-- build in this step was taken as this replay and never shipped)
+					if C.makesProposal(a.fn) and not r.success and st.replay and st.replay.at == now and st.replay.n > 0 then
+						st.replay.n = st.replay.n - 1
+					end
 					r.at = now
 					if r.created then st.bind = st.bind or {}; st.bind[r.created.key] = r.created.e end
 					if r.watch then
@@ -2910,9 +2915,26 @@ local function logMargin(kind, at, origin, lead)
 	end
 end
 
+-- The edit of an existing construction sent by a window of the interface (not by a tool, whose builds the native module holds):
+-- the Drive-in Warehouses mod's goods for a warehouse. Its proposal (the engine's replacement of the construction) could not be
+-- rebuilt from its pieces on any game ("Unknown exception": refused everywhere, a session of the friends). Such an edit is
+-- replayed like another player's build on every game, the originator's too, by the engine's own replacement with the new
+-- settings (see replayNative). MPFEVER_UIEDIT=0: as before.
+G.uiEdit = function(p)
+	if p.native or p.fn ~= "makeWorldBuildProposalCmd" or os.getenv("MPFEVER_UIEDIT") == "0" then return false end
+	local m = type(p.args) == "table" and p.args[1]
+	if type(m) ~= "table" or type(m.toAdd) ~= "table" or type(m.toRemove) ~= "table" or #m.toAdd ~= 1 or #m.toRemove ~= 1 then return false end
+	local ce = m.toAdd[1]
+	return type(ce) == "table" and type(ce.params) == "table" and ce.params.upgrade == true
+end
+
 H.act = function(from, p)
 	logMargin(p.native and "act(native)" or "act", p.at, p.origin, p.lead)
 	p.recvFrame = G.frames
+	if G.uiEdit(p) then
+		p.native, p.uiEdit = true, true
+		log("action " .. tostring(p.uid) .. ": the edit of a construction from a window, replayed by the engine's replacement on every game")
+	end
 	if p.native then
 		G.nativeQueue[#G.nativeQueue + 1] = p
 		if nativeReceived then pcall(nativeReceived, p) end
@@ -3928,13 +3950,29 @@ G.placeStopsAfter = function(a)
 	if not (a.stopsAfter and #a.stopsAfter > 0) then return end
 	local groups = a.stopsAfter
 	a.stopsAfter = nil
+	-- The builder's game has all of them at once, in the build's step. Placed one every 30 frames while the game ran, they came
+	-- over a dozen steps here: a track build with 14 signals placed again was checked half done, twice, and the games reloaded
+	-- (the trains also met the signals at other times). The game is now held at the build's time until the last one is applied
+	-- (G.stopsAfterBusy: nativeHoldAt, runNativeReplays), and each one goes as soon as the one before it is answered (at most
+	-- 10 s each). MPFEVER_STOPSAFTEROLD=1: as before.
+	local old = os.getenv("MPFEVER_STOPSAFTEROLD") == "1"
+	local place, nextPlace
 	local function near(p, q)
 		return type(p) == "table" and type(q) == "table" and type(q.x) == "number"
 			and math.abs(p.x - q.x) < 0.5 and math.abs(p.y - q.y) < 0.5 and math.abs(p.z - q.z) < 0.5
 	end
-	local function place(k)
+	local function quiet() return (G.replayOut or 0) == 0 and G.frames >= (G.replayQuiet or 0) end
+	nextPlace = function(k, since)
+		if not groups[k] then
+			if quiet() or G.frames - since > 600 then G.stopsAfterBusy = nil; return end
+		elseif quiet() or G.frames - since > 600 then
+			return place(k)
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 1, fn = function() nextPlace(k, since) end }
+	end
+	place = function(k)
 		local g = groups[k]
-		if not g then return end
+		if not g then G.stopsAfterBusy = nil; return end
 		local c = g.seg.comp or {}
 		local found, reversed = nil, false
 		for _, e in ipairs(R.allEdges()) do
@@ -3946,6 +3984,7 @@ G.placeStopsAfter = function(a)
 			end
 		end
 		if not found then
+			G.stopsAfterBusy = nil
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: their new segment is not here")
 			replayFailed(a, "stops' segment not found")
 			return
@@ -3953,6 +3992,7 @@ G.placeStopsAfter = function(a)
 		-- (a construction's own segment is never rebuilt: the construction would keep the removed one, issue #49)
 		local okC, con = pcall(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForEdge(found) end)
 		if okC and type(con) == "number" and con >= 0 then
+			G.stopsAfterBusy = nil
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: segment " .. found .. " belongs to construction " .. con .. ": not rebuilt, resynchronisation")
 			replayFailed(a, "stops on a construction's segment")
 			return
@@ -3966,8 +4006,15 @@ G.placeStopsAfter = function(a)
 		end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: " .. #objs .. " placed again on segment " .. found .. (reversed and " (reversed)" or ""))
 		replayStop(a, { E = found, seg = g.seg, objs = objs, removeIdx = {}, nodeConfigs = G.keptNodeConfigs(a, found, g.seg), segType = g.seg.type or 0, after = true })
-		G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function() place(k + 1) end }
+		if old then
+			G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function() place(k + 1) end }
+		else
+			-- (replayStop sends its command at once: from the next frame on it is out, see replaySend)
+			local since = G.frames
+			G.waits[#G.waits + 1] = { at = G.frames + 2, fn = function() nextPlace(k + 1, since) end }
+		end
 	end
+	if not old then G.stopsAfterBusy = G.frames end
 	G.waits[#G.waits + 1] = { at = G.frames + 3, fn = function() place(1) end }
 end
 
@@ -4246,6 +4293,18 @@ local function replayNative(a, formIndex)
 		end)
 		local probe = C.deser(C.ser(a.args))
 		local missing = R.translateIn(probe, G.bind)
+		-- the edit of a construction sent by a window (a warehouse's goods with the Drive-in Warehouses mod, see G.uiEdit): the
+		-- engine's own replacement with the new settings, made the same way on every game
+		local e1 = probe[1]
+		if a.uiEdit and #missing == 0 and e1 and type((e1.toRemove or {})[1]) == "number" and type(((e1.toAdd or {})[1] or {}).params) == "table" then
+			local ctxArg = probe[2]
+			if type(ctxArg) == "table" then
+				a.ctx = 32 + (ctxArg.gatherBuildings and 1 or 0) + (ctxArg.checkTerrainAlignment and 2 or 0) + (ctxArg.cleanupStreetGraph and 4 or 0)
+			end
+			return engineReplay(a, "edit of the construction " .. e1.toRemove[1] .. " (" .. tostring(e1.toAdd[1].fileName):match("[^/]*$") .. ")", function()
+				return api.engine.util.proposal.createProposalReplaceConstruction(e1.toRemove[1], C.plain(e1.toAdd[1].params))
+			end)
+		end
 		-- town buildings the build moved (a street upgrade in a town: nobody's constructions added, town buildings removed). Rebuilt
 		-- as plain constructions they were no town buildings any more (two fewer in the town, which then drifted): the street is
 		-- sent without them, and this game's engine takes the same buildings away and puts the same ones back, as the
@@ -4256,6 +4315,15 @@ local function replayNative(a, formIndex)
 			for _, e in ipairs(probe[1].toRemove or {}) do
 				local okc, c = pcall(function() return api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) end)
 				if not (okc and c and #c.townBuildings > 0) then town = false end
+			end
+			-- (only with a street: town buildings bulldozed by a player are no street build, the engine takes nothing away by
+			-- itself then; taken for one, the replay sent an empty build and the houses stayed on the other games, a session of
+			-- the friends. MPFEVER_HOUSEBULLDOZE=0: as before)
+			local pst = probe[1].proposal or {}
+			local street = #(pst.addedSegments or {}) + #(pst.removedSegments or {}) + #(pst.addedNodes or {}) + #(pst.removedNodes or {}) > 0
+			if not street and os.getenv("MPFEVER_HOUSEBULLDOZE") ~= "0" then
+				town = false
+				log("NATIVE REPLAY " .. tostring(a.uid) .. ": " .. #(probe[1].toRemove or {}) .. " town building(s) bulldozed, no street")
 			end
 			if town and not hasConstructionSegments(a.args[1]) then
 				a.townAuto = true
@@ -4703,7 +4771,9 @@ local function nativeHoldAt()
 		log("replay without engine answer for 600 frames: hold released")
 		G.replayOut = 0
 	end
-	if (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0) or G.terrainBusy or G.coBusy then return now end
+	-- (stops and signals placed again after a build: all in its step, see G.placeStopsAfter; not more than a minute)
+	if G.stopsAfterBusy and G.frames - G.stopsAfterBusy > 3600 then log("stops placed again: still busy after a minute, hold released"); G.stopsAfterBusy = nil end
+	if (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0) or G.terrainBusy or G.coBusy or G.stopsAfterBusy then return now end
 	-- (a player joining waits until the others announced at the same time have arrived too, see runNativeReplays)
 	for _, a in ipairs(G.nativeQueue or {}) do
 		if a.fn == "mpfCoJoin" and a.at <= now and G.frames - (a.recvFrame or 0) < K.JOIN_GATHER then return now end
@@ -4714,8 +4784,55 @@ local function nativeHoldAt()
 	return m
 end
 
+-- Builds made while the session is paused all have the same time: each game applied its own at once and the others' when they
+-- came, so two players building within the network's delay built in a different order on each game (a session of the friends:
+-- a station and a bulldozing, one segment more on one game, a resync). Each paused build now takes a turn from the host
+-- (announced with "nat_ticket" to every game, in the order the host gave them) and every game applies them in that order: its
+-- own builds wait for the turns before them to be applied here. A turn that never comes is skipped after 30 s (desync risk).
+-- MPFEVER_PAUSEDORDER=0: as before.
+G.pt = { next = 1, done = 0, of = {}, skip = {}, seen = false }
+G.ptOn = os.getenv("MPFEVER_PAUSEDORDER") ~= "0"
+G.ptKey = function(origin, id) return tostring(origin) .. ":" .. tostring(id) end
+G.ptTicket = function(origin, id, seq)
+	-- (the first turn this game hears of: the ones before it were made before this game was loaded)
+	if not G.pt.seen then G.pt.seen = true; if G.pt.done < seq - 1 then G.pt.done = seq - 1 end end
+	G.pt.of[G.ptKey(origin, id)] = seq
+	if seq >= G.pt.next then G.pt.next = seq + 1 end
+end
+G.ptIssue = function(origin, id)
+	if C.ROLE ~= "host" or not G.ptOn then return end
+	local seq = G.pt.next
+	G.ptTicket(origin, id, seq)
+	send("nat_ticket", { origin = origin, id = id, seq = seq })
+	log("paused build " .. G.ptKey(origin, id) .. ": turn " .. seq)
+end
+G.ptAdvance = function()
+	while G.pt.skip[G.pt.done + 1] do G.pt.skip[G.pt.done + 1] = nil; G.pt.done = G.pt.done + 1 end
+end
+G.ptMayGo = function(seq)
+	if not seq then return true end
+	G.ptAdvance()
+	if G.pt.done >= seq - 1 then G.pt.waitSince = nil; return true end
+	G.pt.waitSince = G.pt.waitSince or G.frames
+	if G.frames - G.pt.waitSince > 1800 then
+		log("paused build turn " .. (G.pt.done + 1) .. " never applied here in 30 s: skipped (desync risk)")
+		G.pt.done = G.pt.done + 1
+		G.pt.waitSince = nil
+		return G.ptMayGo(seq)
+	end
+	return false
+end
+G.ptDone = function(seq)
+	if seq and seq > G.pt.done then G.pt.done = seq end
+	G.pt.waitSince = nil
+end
+H.nat_ticket = function(from, p)
+	if type(p.seq) == "number" then G.ptTicket(p.origin, p.id, p.seq) end
+end
+
 H.nat_pending = function(from, p)
 	if p.origin == G.me then return end
+	if p.paused then G.ptIssue(p.origin, p.id) end
 	logMargin("nat_pending", p.at, p.origin, p.lead)
 	G.natWait[#G.natWait + 1] = { origin = p.origin, id = p.id, at = p.at, since = G.frames, lead = p.lead }
 	if p.lead then
@@ -4827,8 +4944,11 @@ local function pollNativeEvents()
 			else
 				markPending(id)
 				local at = paused and pausedStamp(now) or (stampFor(now) + STEP)
-				G.natRelease[#G.natRelease + 1] = { id = id, at = at }
-				send("nat_pending", { origin = G.me, at = at, id = id })
+				-- (paused: released in its turn, see G.pt)
+				local pt = paused and G.ptOn or nil
+				G.natRelease[#G.natRelease + 1] = { id = id, at = at, paused = pt, frame0 = G.frames }
+				if pt then G.ptIssue(G.me, id) end
+				send("nat_pending", { origin = G.me, at = at, id = id, paused = pt })
 				log("native build " .. id .. " held by the DLL, released at t=" .. at .. " (now " .. now .. ") [frame " .. G.frames .. "]")
 				-- (with a tool in hand, the reason it is held the usual way: which test of G.buildLeadState failed)
 				if G.buildLead and why ~= "no tool in hand" then
@@ -4856,7 +4976,9 @@ local function deferredSend(cmd, cb)
 	-- BUILDLEAD: as a real tool's build when this game leads (see pollNativeEvents)
 	local lead, why = false, nil
 	if G.buildLead then G.leadRefusedCheck(true) end
-	if G.buildLead then lead, why = G.buildLeadState() end
+	-- (in a pause: as a tool's build, at the paused time, in its turn: see pollNativeEvents and G.pt)
+	local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt
+	if G.buildLead and not paused then lead, why = G.buildLeadState() end
 	if lead then
 		-- (a scripted build hears the engine's answer: a refused one is cancelled at once. MPFEVER_BUILDLEAD_NOANSWER=1, tests:
 		-- not used, as for a tool's build, whose answer only the tool hears: G.leadRefusedCheck must find it out)
@@ -4874,21 +4996,24 @@ local function deferredSend(cmd, cb)
 		log("BUILDLEAD autotest build " .. id .. " released at once at t=" .. now .. " [frame " .. G.frames .. "]")
 		return
 	end
-	local at = stampFor(now) + STEP
-	G.natRelease[#G.natRelease + 1] = { id = id, at = at, fn = function() O.sendCommand(cmd, cb) end }
+	local at = paused and pausedStamp(now) or (stampFor(now) + STEP)
+	local pt = paused and G.ptOn or nil
+	G.natRelease[#G.natRelease + 1] = { id = id, at = at, fn = function() O.sendCommand(cmd, cb) end, paused = pt, frame0 = G.frames }
+	if pt then G.ptIssue(G.me, id) end
 	markPending(id, { x = 0, y = 0 })
 	log("autotest build " .. id .. " held, released at t=" .. at .. " (now " .. now .. ") [frame " .. G.frames .. "]")
 	if G.buildLead then
 		G.leadStats.held = G.leadStats.held + 1
 		log("BUILDLEAD autotest build " .. id .. " held the usual way: " .. tostring(why))
 	end
-	send("nat_pending", { origin = G.me, at = at, id = id })
+	send("nat_pending", { origin = G.me, at = at, id = id, paused = pt })
 end
 
 -- A released build the engine refused is never shipped: the others, who hold for it, are told at once (they would
 -- wait half a minute), and its id must not be taken by the next build that is shipped.
 local function cancelNativeBuild(entry, why)
-	send("nat_cancel", { origin = G.me, id = entry.id })
+	-- (its turn, if it was made in a pause: the others skip it, see G.pt)
+	send("nat_cancel", { origin = G.me, id = entry.id, pseq = G.pt.of[G.ptKey(G.me, entry.id)] })
 	if entry.lead then toSim("lead_gone", {}) end   -- (BUILDLEAD: the simulation half no longer waits for its capture)
 	log("native build " .. tostring(entry.id) .. " produced nothing (" .. why .. "): the others stop holding for it")
 end
@@ -4966,6 +5091,7 @@ end
 
 H.nat_cancel = function(from, p)
 	if p.origin == G.me then return end
+	if type(p.pseq) == "number" and p.pseq > G.pt.done then G.pt.skip[p.pseq] = true end
 	local keep = {}
 	for _, w in ipairs(G.natWait) do
 		if w.origin == p.origin and w.id == p.id and not w.arrived then
@@ -5007,6 +5133,17 @@ local function runNativeRelease()
 		if r.lead then
 			-- (BUILDLEAD: at once, the game keeps running; r.at is the time it was announced for, the earliest it can land at)
 			releaseOne(r, now, " at once (BUILDLEAD)")
+		elseif now >= r.at and gameSpeed() == 0 and r.paused then
+			-- (paused: in its turn, after the builds before it are applied here; no turn from the host within 10 s: at once)
+			local seq = G.pt.of[G.ptKey(G.me, r.id)]
+			local busy = (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0)
+			if (seq and G.ptMayGo(seq) and not busy) or (not seq and G.frames - (r.frame0 or 0) > 600) then
+				log("native build " .. r.id .. (seq and (": turn " .. seq) or ": no turn from the host in 10 s, released now (desync risk)"))
+				releaseOne(r, now)
+				G.ptDone(seq)
+			else
+				keep[#keep + 1] = r
+			end
 		elseif now >= r.at and gameSpeed() == 0 then
 			releaseOne(r, now)
 		else
@@ -5251,12 +5388,17 @@ local function runNativeReplays()
 	-- a native replay still in the engine's hands (its commands answer in callbacks, a form or a step after the other): the
 	-- next build waits for it, as it may refer to what it makes (four quick edits of one station: the second was translated
 	-- before the first was built, issue #19). Not forever: an engine that never answers lets the queue go after 20 s.
-	local function replayBusy() return ((G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0)) and G.frames - (G.replaySince or 0) < 1200 end
+	local function replayBusy() return (((G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0)) and G.frames - (G.replaySince or 0) < 1200) or G.stopsAfterBusy ~= nil end
 	for _, a in ipairs(G.nativeQueue) do
+		-- (a paused build: in its turn, see G.pt)
+		local seq = a.paused and (a.pseq or (a.natId ~= nil and G.pt.of[G.ptKey(a.origin, a.natId)])) or nil
 		if a.at <= now and ((a.fn == "terrainEdit" and G.terrainBusy) or (a.fn == "mpfCoJoin" and (G.coBusy or G.frames - (a.recvFrame or 0) < K.JOIN_GATHER))
 			or (a.fn ~= "terrainEdit" and a.fn ~= "mpfCoJoin" and replayBusy())) then
 			keep[#keep + 1] = a      -- the previous one is still being handed to the engine
+		elseif a.at <= now and seq and not G.ptMayGo(seq) then
+			keep[#keep + 1] = a      -- a paused build whose turn has not come here yet
 		elseif a.at <= now then
+			if seq then G.ptDone(seq); log("NATIVE REPLAY " .. tostring(a.uid) .. ": paused build, turn " .. seq) end
 			if a.at < now then
 				log("LATE native build " .. tostring(a.uid) .. " for t=" .. a.at .. " applied at " .. now .. " (" .. ((now - a.at) / STEP) .. " step(s) late)")
 				G.aheadLocked = true
@@ -5322,15 +5464,31 @@ end
 
 H.resync_save = function(from, p)
 	if not claimResync("resync_save", p.id) then return end
-	log("resynchronisation: saving the game as '" .. tostring(p.name) .. "' at t=" .. tostring(gameTime()))
-	local ok, err = pcall(app.saveGame, p.name, function()
-		log("resynchronisation: game saved")
-		send("save_done", { id = p.id, name = p.name, ok = true, t = gameTime() })
-	end, false, true)
-	if not ok then
-		log("resynchronisation: save failed: " .. tostring(err))
-		send("save_done", { id = p.id, name = p.name, ok = false, err = tostring(err) })
+	-- Not while another player's build is being replayed here: a session of the friends saved in the very frame a replay was
+	-- applied, and both games stopped on an engine assertion 40 steps after loading that save. The save waits until the replays
+	-- due now are handed to the engine and answered (at most 10 s). MPFEVER_SAVEQUIET=0: at once, as before.
+	local start = G.frames
+	local function busy()
+		if os.getenv("MPFEVER_SAVEQUIET") == "0" then return false end
+		if (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0) or G.terrainBusy then return true end
+		local now = gameTime()
+		for _, a in ipairs(G.nativeQueue or {}) do if a.at <= now then return true end end
+		return false
 	end
+	local function save()
+		if busy() and G.frames - start < 600 then G.waits[#G.waits + 1] = { at = G.frames + 3, fn = save }; return end
+		if G.frames > start then log("resynchronisation: the save waited " .. (G.frames - start) .. " frames for the replays under way" .. (busy() and " (still busy: saved anyway)" or "")) end
+		log("resynchronisation: saving the game as '" .. tostring(p.name) .. "' at t=" .. tostring(gameTime()))
+		local ok, err = pcall(app.saveGame, p.name, function()
+			log("resynchronisation: game saved")
+			send("save_done", { id = p.id, name = p.name, ok = true, t = gameTime() })
+		end, false, true)
+		if not ok then
+			log("resynchronisation: save failed: " .. tostring(err))
+			send("save_done", { id = p.id, name = p.name, ok = false, err = tostring(err) })
+		end
+	end
+	save()
 end
 
 H.resync_load = function(from, p)
@@ -5558,9 +5716,20 @@ local function stampHeld()
 			local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt and gameSpeed() == 0
 			local a = { tok = p.tok, id = p.id, fn = p.fn, args = p.args, origin = G.me, oseq = G.oseq, co = G.myCo,
 				uid = G.me .. ":" .. G.oseq, at = paused and pausedStamp(now) or stampFor(now), paused = paused or nil }
+			-- (the edit of a construction from a window: replayed here too, as the others' builds are, see G.uiEdit)
+			local edit = G.uiEdit(a)
+			if edit then
+				a.native, a.uiEdit = true, true
+				log("action " .. a.uid .. ": the edit of a construction from a window, replayed by the engine's replacement on every game")
+			end
 			send("act", a)
-			queueLocal(a)
-			if G.buildLead then G.leadNoteDue(a) end
+			if edit then
+				a.recvFrame = G.frames
+				G.nativeQueue[#G.nativeQueue + 1] = a
+			else
+				queueLocal(a)
+				if G.buildLead then G.leadNoteDue(a) end
+			end
 		elseif p and (kind == "speed_req" or kind == "act_fail" or kind == "save_done") then
 			send(kind, p)
 		elseif p and kind == "terrain_tool" then
@@ -5731,6 +5900,7 @@ local function shipNativeBuilds(st)
 				end
 				for i = 1, k - 1 do cancelNativeBuild(G.natShipIds[i], "refused before a later build") end
 				a.natId = G.natShipIds[k].id
+				if a.paused then a.pseq = G.pt.of[G.ptKey(G.me, a.natId)] end
 				if ek.lead then
 					a.lead = true
 					G.leadStats.shipped = G.leadStats.shipped + 1
@@ -5798,6 +5968,14 @@ local function runPausedActions()
 				end
 				withActor(PL(a), executeAction, a, O.sendCommand, true, G.bind, function(r)
 					if G.pausedCreating and G.pausedCreating.uid == a.uid then G.pausedCreating = nil end
+					-- (the replay counted above went to the engine by itself, not through replaySend: its count is used here. A
+					-- refused or unreplayable one builds nothing, the simulation is told: else, in a pause (the same game time for
+					-- minutes), the counts added up and the player's own next build was taken as a replay and never shipped, a
+					-- station on one game only. MPFEVER_PAUSEDUNUSED=0: as before)
+					if C.makesProposal(a.fn) and os.getenv("MPFEVER_PAUSEDUNUSED") ~= "0" then
+						if (G.replayCounted or 0) > 0 then G.replayCounted = G.replayCounted - 1 end
+						if not r.success then pcall(toSim, "replay_unused", {}) end
+					end
 					r.at = now
 					r.answered, r.returned = nil, nil
 					log("paused action " .. tostring(r.uid) .. " " .. tostring(r.fn) .. " at t=" .. tostring(now) .. " -> " .. (r.success and "OK" or "REFUSED"))
@@ -8415,6 +8593,62 @@ local function uiRequest(fn, margs)
 	C.appendFile(C.DIR .. BS .. "ui.log", C.line("act_req", { tok = "auto-" .. C.ROLE, id = AUTO.reqId, fn = fn, args = margs }))
 end
 
+-- Builds from windows that no game can replay (MPFEVER_SCENARIO=badui, with MPFEVER_PAUSED=1 and a build after it, e.g.
+-- "badui,newroad"): in a pause they left their replay counted, and the player's next build at the same time was taken as a
+-- replay and never shipped (a station on one game only, a session of the friends)
+H.badui = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	for k = 1, 2 do uiRequest("makeWorldBuildProposalCmd", { n = 4, "not a proposal " .. k, false, false, true }) end
+	AUTO.results[1] = "2 builds no game can replay sent at t=" .. tostring(gameTime())
+	G.waits[#G.waits + 1] = { at = G.frames + 300, fn = autoFinish }
+end
+
+-- The edit of a construction sent by a window, as the Drive-in Warehouses mod sends a warehouse's goods (MPFEVER_SCENARIO=uiedit,
+-- host): the engine's replacement of a warehouse (else of a station or a depot of a player) with its settings, captured as the
+-- interface hook captures it. Every game must replay it (G.uiEdit) and stay in sync. MPFEVER_UIEDIT_FILE: part of the file name.
+H.uiedit = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("AUTOTEST uiedit " .. t); AUTO.results[#AUTO.results + 1] = t end
+	if C.ROLE ~= "host" then say("host only"); return autoFinish() end
+	local want = os.getenv("MPFEVER_UIEDIT_FILE")
+	local pick, pc, rank = nil, nil, 99
+	for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
+		local okc, c = pcall(function() return api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) end)
+		if okc and c then
+			local f = tostring(c.fileName)
+			local r = (want and f:find(want, 1, true)) and 0 or (f:find("warehouses/", 1, true) and 1) or ((f:find("station", 1, true) or f:find("depot", 1, true)) and R.ownerOf(e) and 2) or 99
+			if r < rank then pick, pc, rank = e, c, r end
+		end
+	end
+	if not pick then say("no construction to edit"); return autoFinish() end
+	local ok, err = pcall(function()
+		local params = C.plain(C.marshal(pc.params))
+		params.upgrade = true
+		local P = api.engine.util.proposal.createProposalReplaceConstruction(pick, params)
+		local ctx = api.type.Context.new()
+		ctx.checkTerrainAlignment = true
+		ctx.cleanupStreetGraph = true
+		ctx.gatherBuildings = true
+		ctx.gatherFields = true
+		ctx.player = api.engine.util.getPlayer()
+		local margs = { n = 4, C.marshal(P), C.marshal(ctx), false, true }
+		say("edit of " .. tostring(pc.fileName) .. " (construction " .. pick .. "): " .. #P.toAdd .. " added, " .. #P.toRemove .. " removed, sent as a window's command")
+		local cons0 = #R.entitiesWith("CONSTRUCTION")
+		uiRequest("makeWorldBuildProposalCmd", margs)
+		G.waits[#G.waits + 1] = { at = G.frames + 600, fn = function()
+			say("constructions " .. cons0 .. " -> " .. #R.entitiesWith("CONSTRUCTION"))
+			autoFinish()
+		end }
+	end)
+	if not ok then say("failed " .. shortErr(err)); autoFinish() end
+end
+
 -- Several purchases at once (issue #35): four copies of a vehicle requested in the same frame, so stamped at the same step;
 -- MPFEVER_BUYBUILD=1: with a held road build at the same time, so that the games stand still around the purchases' step.
 -- Every game must create them at the same steps (one per step) and with the same ids
@@ -10145,6 +10379,148 @@ H.streetcon = function(from, p)
 	nextOne()
 end
 
+-- Two-sided stop experiment (MPFEVER_SCENARIO=stopexp, host only, nothing shipped: the games differ afterwards): a pair of
+-- "small_mid_twosided" stops at one place, one on each side, as the stop tool places them (issue: the friends' replays of such
+-- pairs made one station less than the builder's tool). On a first town segment the pair is built by the replay's simple
+-- proposal: what it makes (stations, constructions, names, node configurations, town buildings, cost, the stops' parameters).
+-- On a second one, the engine's conversion of the same proposal (made to fail: the segment twice): its native edge objects.
+H.stopexp = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("STOPEXP " .. t); AUTO.results[#AUTO.results + 1] = t end
+	if C.ROLE ~= "host" then say("host only"); return autoFinish() end
+	local function count(kind)
+		local n = 0
+		pcall(function() n = #R.entitiesWith(kind) end)
+		return n
+	end
+	local function snapshot()
+		local s = { st = count("STATION"), sg = count("STATION_GROUP"), con = count("CONSTRUCTION"), tb = count("TOWN_BUILDING"), nm = count("NAME"), nc = count("BASE_NODE_CONFIG") }
+		s.eo = 0
+		pcall(function() for _ in pairs(api.engine.system.streetSystem.getEdgeObject2EdgeMap()) do s.eo = s.eo + 1 end end)
+		return s
+	end
+	local function diff(a, b)
+		local t = {}
+		for _, k in ipairs({ "st", "sg", "con", "tb", "nm", "nc", "eo" }) do t[#t + 1] = k .. " " .. (b[k] - a[k] >= 0 and "+" or "") .. (b[k] - a[k]) end
+		return table.concat(t, ", ")
+	end
+	local list = {}
+	for _, e in ipairs(R.allEdges()) do
+		local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+		local okC, con = pcall(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForEdge(e) end)
+		if c and c.type == 0 and #c.objects == 0 and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) and tostring(c.roadTemplate):find("/town/", 1, true)
+			and not (okC and type(con) == "number" and con >= 0) then
+			local a, b = nodePosition(c.node0), nodePosition(c.node1)
+			local len = a and b and math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) or 0
+			if len > 50 and len < 120 then list[#list + 1] = e end
+		end
+	end
+	if #list < 2 then say("not enough town segments"); return autoFinish() end
+	local model = os.getenv("MPFEVER_STOPEXP_MODEL") or "stations/street/small_stops/small_mid_twosided.con"
+	local function proposal(E, twice)
+		local c = api.engine.getComponent(E, api.type.ComponentType.BASE_EDGE)
+		local sp = api.type.SimpleProposal.new()
+		local ssp = sp.streetProposal
+		local edges, eos = {}, {}
+		for k = 1, (twice and 2 or 1) do
+			local e = api.type.SegmentAndEntity.new()
+			e.entity = -k
+			e.type = 0
+			local cc = e.comp
+			cc.node0 = c.node0; cc.node1 = c.node1
+			cc.tangent0 = vec(c.tangent0); cc.tangent1 = vec(c.tangent1)
+			cc.position0 = vec(nodePosition(c.node0)); cc.position1 = vec(nodePosition(c.node1))
+			cc.type = c.type; cc.typeIndex = c.typeIndex
+			cc.roadTemplate = c.roadTemplate; cc.roadStyle = c.roadStyle; cc.roadType = c.roadType
+			cc.laneConfigs = c.laneConfigs
+			cc.objects = { { -400000000 - 2 * (k - 1), 0 }, { -400000001 - 2 * (k - 1), 1 } }
+			e.comp = cc
+			local se = e.streetEdge; se.precedenceNode0 = 2; se.precedenceNode1 = 2; e.streetEdge = se
+			edges[k] = e
+			for side = 0, 1 do
+				local eo = api.type.SimpleStreetProposal.EdgeObject.new()
+				eo.edgeEntity = -k
+				eo.param = 0.5
+				eo.oneWay = false
+				eo.left = side == 0
+				eo.model = model
+				eo.playerEntity = api.engine.util.getPlayer()
+				eo.name = "MPF two-sided"
+				eos[#eos + 1] = eo
+			end
+		end
+		ssp.edgesToRemove = { E }
+		ssp.edgesToAdd = edges
+		ssp.edgeObjectsToAdd = eos
+		local ncr = {}
+		for _, nd in ipairs({ c.node0, c.node1 }) do
+			local okn, nc = pcall(function() return api.engine.getComponent(nd, api.type.ComponentType.BASE_NODE_CONFIG) end)
+			if okn and nc then ncr[#ncr + 1] = nd end
+		end
+		if #ncr > 0 then ssp.nodeConfigsToRemove = ncr end
+		sp.streetProposal = ssp
+		local ctx = api.type.Context.new()
+		ctx.checkTerrainAlignment = false
+		ctx.cleanupStreetGraph = false
+		ctx.gatherBuildings = false
+		ctx.gatherFields = true
+		ctx.player = api.engine.util.getPlayer()
+		return sp, ctx
+	end
+	local A, B = list[1], list[math.floor(#list / 2) + 1]
+	local s0 = snapshot()
+	local cons0 = {}
+	for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do cons0[e] = true end
+	local sp, ctx = proposal(A, false)
+	replaySend(api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), function(res, success)
+		local costs, why = "?", ""
+		pcall(function() costs = tostring(res.resultProposalData.costs) end)
+		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+		G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function()
+			say("simple proposal on segment " .. A .. ": " .. (success and "built" or ("refused " .. why)) .. ", costs " .. costs .. "; " .. diff(s0, snapshot()))
+			-- the new constructions, their stations and parameters
+			pcall(function()
+				for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
+					if not cons0[e] then
+						local cc = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+						local pr = "?"
+						pcall(function() pr = C.ser(C.marshal(cc.params)) end)
+						say("new construction " .. e .. " " .. tostring(cc.fileName) .. " stations " .. #cc.stations .. " params " .. pr:sub(1, 200))
+					end
+				end
+			end)
+			-- the conversion of the same proposal by the engine (the segment twice: refused, nothing built)
+			local sp2, ctx2 = proposal(B, true)
+			replaySend(api.cmd.makeWorldBuildProposalCmd(sp2, ctx2, false, true), function(r2, ok2)
+				local lines = { "conversion on segment " .. B .. ": " .. (ok2 and "BUILT (unexpected)" or "refused, as wanted") }
+				pcall(function()
+					local eo = r2.proposal.proposal.edgeObjectsToAdd
+					lines[#lines + 1] = #eo .. " native edge object(s)"
+					for i = 1, math.min(#eo, 4) do
+						local x = eo[i]
+						local f = {}
+						for _, k in ipairs({ "model", "param", "left", "category", "segmentEntity", "oneWay", "name" }) do
+							local okf, v = pcall(function() return x[k] end)
+							f[#f + 1] = k .. "=" .. tostring(okf and v or "?")
+						end
+						local okp, pv = pcall(function() return C.ser(C.marshal(x.params)) end)
+						f[#f + 1] = "params=" .. tostring(okp and pv or ("unreadable " .. tostring(pv)))
+						local okw, ew = pcall(function() x.params = { year = 1961, seed = 0 } end)
+						f[#f + 1] = "params writable=" .. tostring(okw) .. (okw and "" or (" (" .. tostring(ew):sub(1, 80) .. ")"))
+						lines[#lines + 1] = "#" .. i .. " " .. table.concat(f, " ")
+					end
+				end)
+				pcall(function() lines[#lines + 1] = "conversion costs " .. tostring(r2.resultProposalData.costs) end)
+				for _, l in ipairs(lines) do say(l) end
+				G.waits[#G.waits + 1] = { at = G.frames + 60, fn = autoFinish }
+			end)
+		end }
+	end)
+end
+
 -- Stops put on town streets the way the stop tool builds them (MPFEVER_SCENARIO=dstop): the street segment is replaced by a copy
 -- carrying the stop, with the tool's Context (nothing cleaned up) and the junctions' node configurations removed (the tool also puts
 -- them back; this does not), sent as a script's command marked like a replayed stop (doDust: the native module prices it like the
@@ -10322,6 +10698,52 @@ H.conbulldoze = function(from, p)
 		AUTO.results[#AUTO.results + 1] = "conbulldoze error " .. tostring(err)
 		autoFinish()
 	end
+end
+
+-- Town buildings bulldozed one after the other, as the bulldozer builds it (MPFEVER_SCENARIO=housebulldoze, both games: the
+-- friends' houses stayed on the other game). MPFEVER_HOUSE_COUNT (3) houses, each away from the streets' ends.
+H.housebulldoze = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("AUTOTEST housebulldoze " .. t); AUTO.results[#AUTO.results + 1] = t end
+	local want = tonumber(os.getenv("MPFEVER_HOUSE_COUNT") or "3") or 3
+	local houses = {}
+	for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
+		local okc, c = pcall(function() return api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) end)
+		if okc and c and #c.townBuildings > 0 then houses[#houses + 1] = e end
+	end
+	if #houses < want then say("only " .. #houses .. " town buildings"); return autoFinish() end
+	local step = (C.ROLE == "host") and 7 or 13
+	local n = 0
+	local nextOne
+	nextOne = function()
+		n = n + 1
+		if n > want then G.waits[#G.waits + 1] = { at = G.frames + 120, fn = autoFinish }; return end
+		local e = houses[(step * n * 37) % #houses + 1]
+		local tb0 = #R.entitiesWith("TOWN_BUILDING")
+		local sp = api.type.SimpleProposal.new()
+		sp.constructionsToRemove = { e }
+		local ctx = api.type.Context.new()
+		ctx.checkTerrainAlignment = true
+		ctx.cleanupStreetGraph = false
+		ctx.gatherBuildings = false
+		ctx.gatherFields = true
+		ctx.player = api.engine.util.getPlayer()
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), function(res, success)
+			local costs = "?"
+			pcall(function() costs = tostring(res.resultProposalData.costs) end)
+			G.waits[#G.waits + 1] = { at = G.frames + 20, fn = function()
+				say("house " .. n .. " (construction " .. e .. "): " .. (success and "bulldozed" or "refused") .. ", costs " .. costs .. ", town buildings " .. tb0 .. " -> " .. #R.entitiesWith("TOWN_BUILDING"))
+				G.waits[#G.waits + 1] = { at = G.frames + 60, fn = nextOne }
+			end }
+		end)
+		-- (the bulldozer's flags: terrain aligned, known)
+		G.natCtx = G.natCtx or {}
+		G.natCtx[100000 + G.autoBuildSeq] = 32 + 2
+	end
+	nextOne()
 end
 
 -- A road joined to the middle of a street that carries a stop, as the street tool builds it (the stops removed and placed

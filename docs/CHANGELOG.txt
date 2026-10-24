@@ -1,6 +1,34 @@
 MPFever - Changelog
 ===================
 
+0.5.1 - builds in a pause, houses, warehouses, signals; the same mathematics on every Windows
+  - NEW (desyncs): the same mathematics on every Windows. The game takes sin, exp, pow... from Windows, and those functions
+    give other last digits from one Windows build to the other (Windows 11 22621 and 26100: 392 pow results of 200,000
+    differ, and atan2, asin, acos, sinh, cosh, exp2...): two players on two Windows could compute their towns differently,
+    what no test on one PC could show. Every game now computes them with MPFever's own functions (the native module, the same
+    code on every PC; within one unit in the last digit of Windows' own, and exact wherever Windows' are). A 25 minute test
+    with one game on each Windows' functions stayed in sync on a world without mods: not the only cause of the friends'
+    drift. MPFEVER_MATH=0: Windows' as before.
+  - FIX: after window builds no game could replay (a warehouse's goods, below) during a pause, the player's next build was
+    taken for a replay of them and never sent: a station on one game only, then a resynchronisation. MPFEVER_PAUSEDUNUSED=0:
+    as before.
+  - FIX: two players building during a pause, within the network's delay, had their builds applied in a different order on
+    each game (a station and a bulldozing: one segment more on one game). Each build made in a pause now takes a turn from
+    the host and every game applies them in that order. MPFEVER_PAUSEDORDER=0: as before.
+  - FIX: town buildings bulldozed by a player stayed on the other games (taken for a street through the town, whose houses
+    the engine moves by itself, the replay sent an empty build). MPFEVER_HOUSEBULLDOZE=0: as before.
+  - FIX: the edit of a warehouse with the Drive-in Warehouses mod (its goods) was refused on every game: such an edit, sent
+    by a window, is now replayed on every game by the engine's own replacement of the construction. MPFEVER_UIEDIT=0: as before.
+  - FIX: the cost of a town's marketing campaign was booked on no game (its command could not be replayed).
+  - FIX: the signals (or stops) a track or street build places again on its new segments came one by one over a dozen steps
+    on the other games: the checks saw them half placed and reloaded everybody (and the trains met the signals at other
+    times). The game now waits at the build's step until the last one is placed. MPFEVER_STOPSAFTEROLD=1: as before.
+  - FIX: both games stopped on an engine assertion (« count <= cap ») some steps after loading the host's game of a
+    resynchronisation. The host had saved it in the very frame another player's build was being applied; the save now waits
+    until the builds under way are applied (10 s at most). MPFEVER_SAVEQUIET=0: as before.
+  - The problem report keeps the end of a large log (its last 60 MB) instead of leaving it out: the builds each game
+    received were missing from the friends' reports.
+
 0.5.0 - companies: mixed modes, bankruptcy, tolls; fewer desyncs, personal mods, missing mods installed, the others' builds shown
   - NEW (companies): several players in one company, in the « one company per player » mode. In the MPFever window a player
     asks to join another company (its chief accepts or refuses), leaves its company (it starts a company of its own, with

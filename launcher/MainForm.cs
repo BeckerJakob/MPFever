@@ -65,7 +65,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.5.0";
+        public const string Version = "0.5.1";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -1773,6 +1773,20 @@ namespace MPFever
                     {
                         // every game reloads the host's savegame (as when a player joins): the companies must come back as they were
                         if (role == "host") { resyncing = true; AutoLine("resynchronisation requested"); Resync("autotest"); Thread.Sleep(8000); }
+                        continue;
+                    }
+                    // MPFEVER_TOGETHER=1: both games run the scenario at the same time (builds made at once by two players)
+                    if (Environment.GetEnvironmentVariable("MPFEVER_TOGETHER") == "1")
+                    {
+                        if (role != "host") continue;
+                        lock (autoDone) { autoDone.Remove("host"); autoDone.Remove("client"); }
+                        AutoLine("scenario " + scenario + " by both games at once");
+                        foreach (var r in new[] { "host", "client" })
+                            HostSend(Msg.Make(scenario, hostName, "{[\"role\"]=\"" + r + "\",[\"offset\"]=" + (r == "host" ? 0 : 7) + "}"));
+                        WaitUntil(() => { lock (autoDone) return (autoDone.ContainsKey("host") && autoDone.ContainsKey("client")) || ClosedGames() != ""; }, 300);
+                        lock (autoDone) foreach (var r in new[] { "host", "client" }) AutoLine(r + " scenario: " + (autoDone.ContainsKey(r) ? autoDone[r] : "TIMEOUT"));
+                        if (ClosedGames() != "") break;
+                        Thread.Sleep(5000);
                         continue;
                     }
                     lock (autoDone) autoDone.Remove(role);

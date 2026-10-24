@@ -394,6 +394,8 @@ C.CTOR = {
 	Waypoint = { "api.type.Waypoint" },
 	EdgePos = { "api.type.EdgePos" },
 	EdgeId = { "api.type.EdgeId" },
+	-- (a booking: the cost of a town marketing campaign, the sandbox money field)
+	JournalEntry = { "api.type.JournalEntry" },
 }
 
 -- fields needing a specific type; false = derived by the engine, never copied; absent = copied generically
@@ -1546,6 +1548,7 @@ C.ARGS = {
 	makeLineCreateCmd = { false, "Vec3f", false, "Line" },
 	makeLineUpdateCmd = { false, "Line" },
 	makeEntitySetColorCmd = { false, "Vec3f" },
+	makeJournalBookAssetCmd = { false, "JournalEntry", "Vec3f" },
 }
 
 -- The interface's refundable entities (api.gui.construction.getRefundableEntities(): {{entity, n} = {revision, updateCount}}, what

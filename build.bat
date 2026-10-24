@@ -20,7 +20,7 @@ rem (the signatures next to the launcher of the build folder too: without them, 
 rem every hook stays off and the games drift apart)
 if exist native\mpfever_sigs.txt copy /y native\mpfever_sigs.txt launcher\bin\Release\ >nul
 echo === 3/3 package
-set "VERSION=0.5.0"
+set "VERSION=0.5.1"
 set "DIST=release\dist\MPFever"
 if exist release\dist rmdir /s /q release\dist
 mkdir "%DIST%" || exit /b 1

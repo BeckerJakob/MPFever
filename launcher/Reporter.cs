@@ -29,6 +29,9 @@ namespace MPFever
         const long AttachLimit = 25L * 1024 * 1024;
         /// <summary>Files larger than this are left out of the zip (savegames, census dumps): the text says so.</summary>
         const long FileLimit = 20L * 1024 * 1024;
+        /// <summary>Text logs larger than FileLimit: their last TextTailLimit bytes go in (up to TextReadLimit; larger ones are left out).</summary>
+        const long TextTailLimit = 60L * 1024 * 1024;
+        const long TextReadLimit = 2048L * 1024 * 1024;
 
         /// <summary>The game's crash_dump folders (one per Steam account that played it), the newest first.</summary>
         public static List<string> CrashDumpDirs()
@@ -210,13 +213,18 @@ namespace MPFever
                     if (!seen.Add(e.Name)) continue;
                     long size = 0;
                     try { size = new FileInfo(e.Path).Length; } catch { continue; }
-                    if (size > FileLimit) { left.Add(e.Name + " (" + (size >> 20) + " MB)"); continue; }
+                    // (a text log larger than that: its end, where the problem is; text packs about ten times smaller. The friends'
+                    // reports lost in.log, 27 MB, the builds each game received)
+                    bool tail = size > FileLimit && Redact.IsText(e.Name) && size <= TextReadLimit;
+                    if (size > FileLimit && !tail) { left.Add(e.Name + " (" + (size >> 20) + " MB)"); continue; }
+                    if (tail && size > TextTailLimit) left.Add(e.Name + " (" + (size >> 20) + " MB: only its last " + (TextTailLimit >> 20) + " MB)");
                     try
                     {
                         // (the game may still be writing its logs: read them shared)
                         using (var src = new FileStream(e.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                         using (var dst = z.CreateEntry(e.Name, CompressionLevel.Optimal).Open())
                         {
+                            if (tail && size > TextTailLimit) src.Seek(size - TextTailLimit, SeekOrigin.Begin);
                             // the text files without what tells who and where the player is (the issues are public)
                             if (Redact.IsText(e.Name)) Redact.Copy(src, dst);
                             else src.CopyTo(dst);

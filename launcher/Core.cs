@@ -727,6 +727,14 @@ namespace MPFever
             // application script: starts the host's savegame after a resynchronisation (and loads the autotest save)
             psi.Arguments = "--script mpfever_1::/mpfever_auto.lua";
             if (AutoSave != null) psi.EnvironmentVariables["MPFEVER_SAVE"] = AutoSave;
+            // tests: settings for one game only, MPFEVER_ENV_HOST / MPFEVER_ENV_CLIENT = "NAME=value;NAME=value"
+            var roleEnv = Environment.GetEnvironmentVariable("MPFEVER_ENV_" + (Role ?? "").ToUpperInvariant());
+            if (!string.IsNullOrEmpty(roleEnv))
+                foreach (var kv in roleEnv.Split(';'))
+                {
+                    int eq = kv.IndexOf('=');
+                    if (eq > 0) psi.EnvironmentVariables[kv.Substring(0, eq).Trim()] = kv.Substring(eq + 1);
+                }
             proc = Process.Start(psi);
             proc.EnableRaisingEvents = true;
             proc.Exited += (s, e) => Exited?.Invoke();

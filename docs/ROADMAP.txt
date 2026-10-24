@@ -20,6 +20,10 @@ it is stable enough.
   [x] Reconnect after a lost connection (0.2.1)
   [x] Main cause of desyncs found and fixed: the game's Lua walked its tables in a different
       order on every PC (0.3.4, see RESEARCH.md)
+  [x] Players on different Windows compute alike: Windows' mathematical
+      functions give other last digits from one Windows build to the other; every game now
+      computes them with MPFever's own (0.5.1)
+  [ ] The towns' drift between two PCs (a resynchronisation every 5 to 10 minutes): cause still searched
   [ ] Tests and fixes for 3 to 8 players
   [ ] Feedback from the first testers
 

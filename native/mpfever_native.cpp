@@ -1881,6 +1881,8 @@ static void SetupSerial()
 static bool g_scriptPoolPatched = false;
 static u32 g_simPoolA = 0, g_simPoolB = 0;
 static u32 g_threads = 0;
+static int g_mathPatched = 0;          // (see PatchMath)
+static bool g_mathOther = false;
 typedef void (WINAPI* GetSystemInfoF)(void*);
 static GetSystemInfoF g_realGetSystemInfo = 0;
 
@@ -3383,6 +3385,7 @@ static DWORD WINAPI Init(void*)
     LogLine(b);
     { Buf t; t.str(g_scriptPoolPatched ? "game scripts: own pool, one worker" : "game scripts: pool NOT patched"); LogLine(t); }
     if (g_simPoolA || g_simPoolB) { Buf t; t.str("pool sizes forced: ").hex(g_simPoolA).str(",").hex(g_simPoolB); LogLine(t); }
+    { Buf t; t.str(g_mathOther ? "mathematics: another C runtime's (MPFEVER_MATHDLL), functions " : (g_mathPatched ? "mathematics: MPFever's own, functions " : "mathematics: Windows' (not replaced), functions ")).hex(g_mathPatched); LogLine(t); }
     if (g_threads) { Buf t; t.str("engine told it has ").hex(g_threads).str(" processor(s)").str(g_realGetSystemInfo ? "" : " (GetSystemInfo not patched)"); LogLine(t); }
     bool known = SelectBuild(fh->TimeDateStamp);
     if (g_sigReportN) { g_sigReport[g_sigReportN] = 0; Buf w; w.str("game build ").hex(fh->TimeDateStamp).str(": ").str(g_sigReport); LogLine(w); }
@@ -3508,6 +3511,34 @@ static void LimitThreads()
     PatchImport(base, "msvcp140.dll", "_Thrd_hardware_concurrency", (void*)&HardwareConcurrency);
     void* real = PatchImport(base, "kernel32.dll", "GetSystemInfo", (void*)&GetSystemInfoHook);
     if (real) g_realGetSystemInfo = (GetSystemInfoF)real;
+}
+
+// ---------------------------------------------------------------- the same mathematics on every Windows
+// The game imports sin, exp, pow... from Windows' C runtime (api-ms-win-crt-math), whose results differ in their last digits
+// from one Windows to the other (builds 22621 and 26100: pow, atan2, asin, acos, sinh, cosh, exp2, log2f...): two players on
+// two Windows drifted apart in their towns whatever MPFever did. The imports are pointed at MPFever's own functions
+// (mpf_math.cpp), the same code on every PC. MPFEVER_MATH=0: Windows' as before. MPFEVER_MATHDLL=<file> (tests): the functions of
+// another copy of ucrtbase.dll instead (to play one game with another Windows' mathematics).
+struct MpfMathEntry { const char* name; void* fn; };
+extern "C" const MpfMathEntry g_mpfMath[];
+static void PatchMath(uptr base)
+{
+    char v[8];
+    if (GetEnvironmentVariableA("MPFEVER_MATH", v, 7) > 0 && v[0] == '0') return;
+    HMODULE other = 0;
+    char pa[300];
+    DWORD n = GetEnvironmentVariableA("MPFEVER_MATHDLL", pa, 299);
+    if (n > 0 && n < 299) {
+        wchar_t path[300];
+        for (DWORD i = 0; i <= n; i++) path[i] = (wchar_t)(unsigned char)pa[i];   // (a test path: ASCII)
+        other = LoadLibraryW(path);
+    }
+    for (int i = 0; g_mpfMath[i].name; i++) {
+        void* fn = g_mpfMath[i].fn;
+        if (other) { fn = (void*)GetProcAddress(other, g_mpfMath[i].name); if (!fn) continue; }
+        if (PatchImport(base, "api-ms-win-crt-math-l1-1-0.dll", g_mpfMath[i].name, fn)) g_mathPatched++;
+    }
+    g_mathOther = other != 0;
 }
 
 // ---------------------------------------------------------------- simulation pools size (MPFEVER_SIMPOOL=a,b)
@@ -3669,6 +3700,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE inst, DWORD reason, void*)
             auto fh = (IMAGE_FILE_HEADER_*)((u8*)(g_base + dos->e_lfanew) + 4);
             SelectBuild(fh->TimeDateStamp);
             LimitThreads(); SetupSimPools(); PatchScriptPool((uptr)GetModuleHandleW(0));
+            PatchMath(g_base);
             PatchLuaSeed(g_base);
             u8* ll = FindUnique(g_base, P_LUA_LOAD, (int)sizeof(P_LUA_LOAD), g_knownLua);
             if (ll) { RVA_LUA_LOAD = (u32)((uptr)ll - g_base); InstallDetour(RVA_LUA_LOAD, P_LUA_LOAD, sizeof(P_LUA_LOAD), (void*)&LuaLoadDetour, (void**)&g_luaLoadOrig); }
