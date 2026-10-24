@@ -217,7 +217,8 @@ local function pollCompanies()
 		local a, b, n = line:match("^(%d+)" .. C.TAB .. "(%d+)" .. C.TAB .. "?([^" .. C.TAB .. "]*)")
 		if a then map[tonumber(b)] = tonumber(a); names[tonumber(b)] = n end
 		local me = line:match("^me" .. C.TAB .. "(%d+)")
-		if me then U.myCo = tonumber(me) end
+		-- (0: between two companies)
+		if me then U.myCo = tonumber(me) ~= 0 and tonumber(me) or nil end
 		local cid, cix = line:match("^color" .. C.TAB .. "(%d+)" .. C.TAB .. "(%d+)")
 		if cid then colors[tonumber(cid)] = tonumber(cix) end
 	end
@@ -232,6 +233,46 @@ local function pollCompanies()
 		if not okp then log("companies: patching the game modules failed: " .. tostring(errp)) end
 	end
 	log("companies known to the interface: " .. txt:gsub(C.NL, " "))
+end
+
+-- Mixed modes, bankruptcy, auctions, rules (0.5.0): eco.txt, written by the bridge (see its G.coEco)
+U.pollEco = function()
+	local f = C.IO.open(C.DIR .. C.BS .. "eco.txt", "rb")
+	if not f then return end
+	local txt = f:read("*a") or ""
+	f:close()
+	if txt == U.ecoTxt then return end
+	U.ecoTxt = txt
+	local e = { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {} }
+	local TAB = C.TAB
+	for line in txt:gmatch("[^" .. C.NL .. "]+") do
+		local f1 = {}
+		for x in (line .. TAB):gmatch("([^" .. TAB .. "]*)" .. TAB) do f1[#f1 + 1] = x end
+		local k = f1[1]
+		if k == "mykey" then e.myKey = f1[2]
+		elseif k == "rules" then e.bankrupt = tonumber(f1[2])
+		elseif k == "member" then local id = tonumber(f1[2]); e.members[id] = e.members[id] or {}; table.insert(e.members[id], f1[3])
+		elseif k == "chief" then e.chief[tonumber(f1[2])] = f1[3]
+		elseif k == "gone" then e.gone[tonumber(f1[2])] = f1[3]
+		elseif k == "debt" then e.debt[tonumber(f1[2])] = tonumber(f1[3])
+		elseif k == "track" then e.track[tonumber(f1[2])] = { rule = f1[3], toll = tonumber(f1[4]) or 0 }
+		elseif k == "fees" then e.fees[tonumber(f1[2])] = { si = tonumber(f1[3]) or 0, se = tonumber(f1[4]) or 0, ti = tonumber(f1[5]) or 0, te = tonumber(f1[6]) or 0 }
+		elseif k == "req" then e.requests[#e.requests + 1] = { key = f1[2], name = f1[3], to = tonumber(f1[4]) }
+		elseif k == "merge" then e.merges[#e.merges + 1] = { from = tonumber(f1[2]), to = tonumber(f1[3]) }
+		elseif k == "auction" then
+			e.auction = { seq = tonumber(f1[2]), co = tonumber(f1[3]), idx = tonumber(f1[4]), n = tonumber(f1[5]), kind = f1[6], label = f1[7],
+				reserve = tonumber(f1[8]) or 0, best = tonumber(f1[9]) or 0, bidder = tonumber(f1[10]) or 0, left = tonumber(f1[11]) or 0, min = tonumber(f1[12]) or 0 }
+		elseif k == "depot" then e.depots[f1[2]] = { rule = f1[3], toll = tonumber(f1[4]) or 0, co = tonumber(f1[5]) }
+		end
+	end
+	U.eco = e
+end
+
+-- an MPFever event of the interface (applied by every game at the same step: see mpfever_eco.lua)
+U.coSend = function(name, param)
+	local ok, err = pcall(function() api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd("mpfever", "mpfever", name, param or {})) end)
+	log("companies: " .. name .. " requested" .. (ok and "" or (": " .. tostring(err))))
+	return ok
 end
 
 -- The loans of a company other than the savegame's: the game's loan window reads the loan script's state, which holds the
@@ -500,6 +541,24 @@ local function installShareSelect()
 	log("companies: the line tool can pick the stations shared by the other companies")
 end
 
+-- a depot's rule (0.5.0): its construction's key, as mpfever_eco.lua knows it ("D:<file>@x,y"), and whether this company owns it
+U.depotInfo = function(e, owner)
+	local con = e
+	pcall(function()
+		local c = api.engine.system.streetConnectorSystem.getConstructionEntityForDepot(e)
+		if type(c) == "number" and c >= 0 then con = c end
+	end)
+	local ok, key = pcall(function()
+		local c = api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
+		if not (c and c.depots and #c.depots > 0) then return nil end
+		local t = c.transf
+		return "D:" .. tostring(c.fileName) .. "@" .. string.format("%.0f,%.0f", t[13], t[14])
+	end)
+	if not (ok and key) then return nil end
+	local mine = U.myCo ~= nil and owner ~= nil and U.coMap and U.coMap[owner] == U.myCo
+	return { key = key, canEdit = mine }
+end
+
 local function sendShare(key, fee)
 	local ok, err = pcall(function()
 		api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd("mpfever", "mpfever", "share", { key = key, fee = fee }))
@@ -590,6 +649,15 @@ local function installOwnerLine(react, builtin)
 			local pd = pending:old()
 			if pd and (C.shareFee(U.shares, p.shareKey) == pd.fee or os.clock() - pd.at > 10) then pending:set(nil) end
 		end, 0.5)
+		-- a depot's rule: private, open, open for a toll per vehicle (mpfever_eco.lua)
+		local depotNow = react.useState(nil)
+		react.onStepTimer(function()
+			if not p.depotKey then return end
+			pcall(U.pollEco)
+			local d = U.eco and U.eco.depots and U.eco.depots[p.depotKey]
+			local v = d and (d.rule == "toll" and ("toll:" .. tostring(d.toll)) or d.rule) or "private"
+			if depotNow:old() ~= v then depotNow:set(v) end
+		end, 1)
 		local inner = nil
 		if p.innerRecipe then inner = p.innerRecipe(p.innerParam)
 		elseif p.innerBuiltin then inner = p.innerBuiltin({ entity = p.innerParam and p.innerParam.keyEntity }) end
@@ -631,6 +699,36 @@ local function installOwnerLine(react, builtin)
 				children[#children + 1] = builtin.TextView { meta = { class = "font-scale-body" }, text = shareText(false, fee) }
 			end
 		end
+		if p.depotKey then
+			local cur = depotNow:old() or "private"
+			local function label(v)
+				if v == "private" then return T("Privé : vos véhicules seulement", "Private: your vehicles only") end
+				if v == "open" then return T("Ouvert aux autres entreprises, gratuit", "Open to the other companies, free") end
+				local n = tonumber(v:match("^toll:(%d+)$"))
+				return C.Tf("Ouvert, péage de %s par véhicule acheté ou envoyé ici", "Open, a toll of %s per vehicle bought or sent here", money(n or 0))
+			end
+			if p.depotEdit then
+				local items = {}
+				for _, v in ipairs({ "private", "open", "toll:500", "toll:1000", "toll:2000", "toll:5000", "toll:10000" }) do
+					items[#items + 1] = builtin.ComboBoxItem { value = v, content = builtin.TextView { meta = { class = "font-scale-body" }, text = label(v) } }
+				end
+				local key = p.depotKey
+				children[#children + 1] = builtin.BoxLayout { orientation = builtin.type.Orientation.Horizontal, children = {
+					builtin.TextView { meta = { class = "font-scale-body" }, text = T("Autres entreprises :  ", "Other companies:  ") },
+					builtin.ComboBox {
+						value = cur,
+						items = items,
+						onValueChange = function(v)
+							if v == nil or v == cur then return end
+							local toll = tonumber(tostring(v):match("^toll:(%d+)$"))
+							U.coSend("co_depot_rule", { key = key, rule = toll and "toll" or v, toll = toll or 0 })
+						end,
+					},
+				} }
+			else
+				children[#children + 1] = builtin.TextView { meta = { class = "font-scale-body" }, text = label(cur) }
+			end
+		end
 		children[#children + 1] = inner
 		return builtin.BoxLayout { orientation = builtin.type.Orientation.Vertical, children = children }
 	end)
@@ -643,6 +741,8 @@ local function installOwnerLine(react, builtin)
 		if not (okt and txt) then return r end
 		local oks, share = pcall(shareInfo, target, owner)
 		if not oks then share = nil end
+		local okd, depot = pcall(U.depotInfo, target, owner)
+		if not okd then depot = nil end
 		local w = {}
 		for k, v in pairs(r) do w[k] = v end
 		w.recipe = Wrap
@@ -650,6 +750,7 @@ local function installOwnerLine(react, builtin)
 		w.param = { innerRecipe = r.recipe, innerBuiltin = r.builtin, innerParam = r.param, ownerText = txt,
 			shareText = share and share.text or nil, shareKey = share and share.key or nil, shareFee = share and share.fee or nil,
 			shareEdit = share and share.canEdit or nil,
+			depotKey = depot and depot.key or nil, depotEdit = depot and depot.canEdit or nil,
 			keyEntity = type(r.param) == "table" and r.param.keyEntity or nil, meta = type(r.param) == "table" and r.param.meta or nil }
 		return w
 	end
@@ -956,7 +1057,10 @@ U.companyRows = function(ui)
 	-- the previous game)
 	U.coSeenAt = U.coSeenAt or {}
 	local now = os.clock()
+	pcall(U.pollEco)
+	local eco = U.eco or { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {} }
 	for ent, id in pairs(U.coMap) do
+		if eco.gone[id] then goto continue end
 		U.coSeenAt[ent] = U.coSeenAt[ent] or now
 		local settled = now - U.coSeenAt[ent] >= 5
 		if settled then
@@ -972,8 +1076,9 @@ U.companyRows = function(ui)
 		end
 		local rank = U.ranks and U.ranks[id] and U.ranks[id].level or nil
 		list[#list + 1] = { ent = ent, id = id, name = companyName(ent), bal = bal or 0, lines = nLines, veh = nVeh, rank = rank }
+		::continue::
 	end
-	if #list < 2 then return nil end
+	if #list < 1 then return nil end
 	table.sort(list, function(a, b) if a.bal ~= b.bal then return a.bal > b.bal end return a.id < b.id end)
 	local CO = U.coModule
 	if CO == nil then
@@ -1007,6 +1112,16 @@ U.companyRows = function(ui)
 		ui.amount:set("")
 		ui.gen:set(ui.gen:old() + 1)
 	end
+	local myKey = eco.myKey
+	local amChief = U.myCo and eco.chief[U.myCo] ~= nil and eco.chief[U.myCo] == myKey
+	local myMembers = U.myCo and eco.members[U.myCo] or {}
+	local asked = nil
+	for _, r in ipairs(eco.requests) do if r.key == myKey then asked = r.to end end
+	local offered = nil
+	for _, o in ipairs(eco.merges) do if o.from == U.myCo then offered = o.to end end
+	local function btn(label, tip, fn, primary)
+		return builtin.Button { meta = { class = primary and "primary" or "secondary", tooltip = tip }, content = text(label), onClick = fn }
+	end
 	for i, c in ipairs(list) do
 		local mine = c.id == U.myCo
 		local info = tostring(i) .. ".  " .. c.name .. (mine and T(" (vous)", " (you)") or "") .. "  ·  " .. money(c.bal)
@@ -1017,8 +1132,132 @@ U.companyRows = function(ui)
 			children[#children + 1] = text("  ")
 			children[#children + 1] = builtin.Button { meta = { class = "secondary", tooltip = T("Donner le montant ci-dessous à cette entreprise", "Give the amount below to this company") },
 				content = text(T("Donner", "Give")), onClick = function() give(c) end }
+			-- mixed modes: join it (its chief accepts), or merge into it (the two chiefs)
+			children[#children + 1] = text(" ")
+			if asked == c.id then
+				children[#children + 1] = btn(T("Annuler la demande", "Cancel the request"), nil, function() U.coSend("co_cancel", { what = "join" }) end)
+			else
+				children[#children + 1] = btn(T("Rejoindre", "Join"), T("Demander au chef de cette entreprise de vous y accueillir (vous quittez la vôtre, qui continue sans vous)", "Ask this company's chief to take you in (you leave yours, which goes on without you)"),
+					function() U.coSend("co_join_ask", { to = c.id }) end)
+			end
+			if amChief then
+				children[#children + 1] = text(" ")
+				if offered == c.id then
+					children[#children + 1] = btn(T("Annuler la fusion", "Cancel the merger"), nil, function() U.coSend("co_cancel", { what = "merge" }) end)
+				else
+					children[#children + 1] = btn(T("Fusionner", "Merge"), T("Proposer à son chef que votre entreprise rejoigne la sienne : tous vos biens, votre argent et vos joueurs y passent", "Offer its chief that your company joins theirs: all your assets, your money and your players go to it"),
+						function() U.coSend("co_merge_ask", { to = c.id }) end)
+				end
+			end
 		end
 		out[#out + 1] = row(children)
+		-- its players (and its chief)
+		local mem = eco.members[c.id] or {}
+		if #mem > 0 then
+			local names = {}
+			for _, k in ipairs(mem) do names[#names + 1] = k .. (eco.chief[c.id] == k and T(" (chef)", " (chief)") or "") end
+			out[#out + 1] = muted("      " .. C.Tf("Joueurs : %s", "Players: %s", table.concat(names, ", ")))
+		else
+			out[#out + 1] = muted("      " .. T("Aucun joueur : elle continue seule", "No player: it goes on by itself"))
+		end
+		if eco.debt[c.id] then
+			local lim = eco.bankrupt or 12
+			out[#out + 1] = muted("      " .. (lim > 0 and C.Tf("Endettée depuis %s mois (faillite à %s mois)", "In debt for %s month(s) (bankruptcy at %s months)", eco.debt[c.id], lim)
+				or C.Tf("Endettée depuis %s mois", "In debt for %s month(s)", eco.debt[c.id])))
+		end
+	end
+	-- this company: leaving it, the requests and offers its chief answers
+	if U.myCo then
+		if #myMembers > 1 then
+			out[#out + 1] = row { btn(T("Quitter l'entreprise", "Leave the company"), T("Vous fondez votre propre entreprise (argent de départ) ; celle-ci continue avec ses autres joueurs", "You start your own company (start money); this one goes on with its other players"),
+				function() U.coSend("co_leave", {}) end) }
+		end
+		if amChief then
+			for _, r in ipairs(eco.requests) do
+				if r.to == U.myCo then
+					out[#out + 1] = row {
+						text(C.Tf("%s demande à rejoindre votre entreprise.  ", "%s asks to join your company.  ", r.name ~= "" and r.name or r.key), nil, "warning"),
+						btn(T("Accepter", "Accept"), nil, function() U.coSend("co_join_answer", { key = r.key, accept = true }) end, true),
+						text(" "),
+						btn(T("Refuser", "Refuse"), nil, function() U.coSend("co_join_answer", { key = r.key, accept = false }) end),
+					}
+				end
+			end
+			for _, o in ipairs(eco.merges) do
+				if o.to == U.myCo then
+					local from = "#" .. tostring(o.from)
+					for _, c in ipairs(list) do if c.id == o.from then from = c.name end end
+					out[#out + 1] = row {
+						text(C.Tf("%s propose de fusionner avec la vôtre (ses biens, son argent et ses joueurs vous rejoignent).  ", "%s offers to merge into yours (its assets, money and players join you).  ", from), nil, "warning"),
+						btn(T("Accepter", "Accept"), nil, function() U.coSend("co_merge_answer", { from = o.from, accept = true }) end, true),
+						text(" "),
+						btn(T("Refuser", "Refuse"), nil, function() U.coSend("co_merge_answer", { from = o.from, accept = false }) end),
+					}
+				end
+			end
+		end
+		-- the rule of its tracks, the fees and tolls it earned and paid
+		local tr = eco.track[U.myCo] or { rule = "private", toll = 0 }
+		local function ruleBtn(rule, label, tip)
+			return builtin.Button { meta = { class = tr.rule == rule and "primary" or "secondary", tooltip = tip }, content = text(label),
+				onClick = function() U.coSend("co_track_rule", { rule = rule, toll = tr.toll > 0 and tr.toll or 1000 }) end }
+		end
+		out[#out + 1] = row {
+			muted(T("Vos voies : ", "Your tracks: ")),
+			ruleBtn("private", T("Privées", "Private"), T("Les autres entreprises ne peuvent pas s'y raccorder", "The other companies cannot connect to them")),
+			text(" "),
+			ruleBtn("open", T("Ouvertes", "Open"), T("Les autres entreprises peuvent s'y raccorder et y faire rouler leurs trains, gratuitement", "The other companies may connect to them and run their trains on them, for free")),
+			text(" "),
+			ruleBtn("toll", T("Péage", "Toll"), T("Ouvertes, chaque train d'une autre entreprise paie le péage à chaque passage", "Open, every train of another company pays the toll each time it enters them")),
+		}
+		if tr.rule == "toll" then
+			local tolls = { row { muted(T("Péage par passage : ", "Toll per passage: ")) } }
+			local r = { muted(T("Péage par passage : ", "Toll per passage: ")) }
+			for _, v in ipairs({ 500, 1000, 2000, 5000, 10000 }) do
+				r[#r + 1] = builtin.Button { meta = { class = tr.toll == v and "primary" or "secondary" }, content = text(money(v)),
+					onClick = function() U.coSend("co_track_rule", { rule = "toll", toll = v }) end }
+				r[#r + 1] = text(" ")
+			end
+			out[#out + 1] = row(r)
+		end
+		local fe = eco.fees[U.myCo]
+		if fe and (fe.si + fe.se + fe.ti + fe.te) > 0 then
+			out[#out + 1] = muted(C.Tf("Gares partagées : reçu %s, payé %s  ·  Péages : reçu %s, payé %s", "Shared stations: earned %s, paid %s  ·  Tolls: earned %s, paid %s",
+				money(fe.si), money(fe.se), money(fe.ti), money(fe.te)))
+		end
+		local lim = eco.bankrupt or 12
+		out[#out + 1] = muted(lim > 0 and C.Tf("Règle de la partie : faillite après %s mois de dette.", "Game rule: bankruptcy after %s months in debt.", lim)
+			or T("Règle de la partie : pas de faillite.", "Game rule: no bankruptcy."))
+	end
+	-- the auction of a bankrupt company
+	local au = eco.auction
+	if au then
+		local seller = "#" .. tostring(au.co)
+		for ent, id in pairs(U.coMap) do if id == au.co then seller = companyName(ent) end end
+		local bidder = nil
+		for _, c in ipairs(list) do if c.id == au.bidder then bidder = c.name end end
+		local what = au.kind == "line" and C.Tf("ligne « %s »", "line « %s »", au.label) or au.kind == "station" and C.Tf("gare « %s »", "station « %s »", au.label) or C.Tf("dépôt « %s »", "depot « %s »", au.label)
+		out[#out + 1] = text(" ")
+		out[#out + 1] = ui.section(ui.ICON_PLAYERS, C.Tf("Enchères : biens de %s", "Auction: assets of %s", seller))
+		out[#out + 1] = text(C.Tf("Lot %s/%s : %s", "Lot %s/%s: %s", au.idx, au.n, what))
+		out[#out + 1] = muted(C.Tf("Mise à prix %s  ·  meilleure offre %s  ·  encore %s s", "Reserve %s  ·  best bid %s  ·  %s s left",
+			money(au.reserve), au.best > 0 and (money(au.best) .. " (" .. tostring(bidder or "?") .. ")") or T("aucune", "none"), au.left))
+		if U.myCo and au.bidder ~= U.myCo then
+			local r = { muted(T("Offrir : ", "Bid: ")) }
+			local seen = {}
+			for _, f in ipairs({ 1, 1.1, 1.25, 1.5 }) do
+				local v = math.ceil(au.min * f / 1000) * 1000
+				if not seen[v] then
+					seen[v] = true
+					r[#r + 1] = builtin.Button { meta = { class = f == 1 and "primary" or "secondary", enabled = myBal == nil or myBal >= v }, content = text(money(v)),
+						onClick = function() U.coSend("co_bid", { seq = au.seq, lot = au.idx, amount = v }) end }
+					r[#r + 1] = text(" ")
+				end
+			end
+			out[#out + 1] = row(r)
+		elseif au.bidder == U.myCo then
+			out[#out + 1] = muted(T("Vous avez la meilleure offre.", "You have the best bid."))
+		end
 	end
 	if U.myCo then
 		out[#out + 1] = row {
@@ -1971,6 +2210,15 @@ local function tick(pendingState)
 	end)
 	pcall(pollBindings)
 	pcall(pollCompanies)
+	-- (autotests, MPFEVER_SHOWWIN=1: MPFever's window opens by itself once the companies are known, for a screenshot)
+	if os.getenv("MPFEVER_SHOWWIN") == "1" and U.coMap and U.SessionWindow and not U.winShown then
+		U.winShown = true
+		pcall(function()
+			local wapi = defaultWindowApi()
+			if wapi then wapi.addSingletonWindow(U.SessionWindow, { onClose = function() pcall(function() wapi.removeAllWindows(U.SessionWindow) end) end }) end
+		end)
+		log("autotest: MPFever's window opened")
+	end
 	if not U.terrainWatch then
 		local okt, errt = pcall(installTerrainWatch)
 		if not okt then U.terrainWatch = true; log("terrain tools: not watched: " .. tostring(errt)) end

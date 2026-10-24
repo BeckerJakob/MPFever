@@ -420,7 +420,7 @@ static void ApplyLocalPlayer(const char* why);
 // The other companies' player entities. The engine empties the positions (the money shown above the buildings) of the LOCAL player's
 // account only, at the start of every simulation iteration (the pre-iteration function ends in the call below); those of the other
 // accounts would pile up for ever on this machine, so the same call is made for them ("setothers <token> <entity>..." in the control file).
-static volatile long g_others[8];
+static volatile long g_others[32];      // (32 companies at most; 8 before 0.5.0)
 static volatile long g_nOthers = 0;
 static long g_othersTok = 0;
 // The savegame's own company ("setcanon <token> <entity>"): the interface's tools build for it whatever company this machine plays
@@ -482,6 +482,55 @@ static void LoadHudShare()
     if (shown++ < 20) { Buf b; b.str("shared stations shown on the map: ").dec(n).str(" entities"); LogLine(b); }
 }
 
+// Open tracks (one company per player, 0.5.0): the tracks a company opened to the others (its rule "open" or "toll", or a gone
+// company's) are listed by the mod in open_net.txt, their segments and nodes as this game's entities ("opennet <token>" in the
+// control file); the builders' owner filter (IsOwnedByOtherPlayer, see IsOwnedDetour) lets the other companies connect to them.
+static i32 g_openNet[2][32768];
+static volatile long g_openNetN[2] = { 0, 0 };
+static volatile long g_openNetCur = 0;
+static long g_openNetTok = 0;
+static volatile long g_openLet = 0;
+static void LoadOpenNet()
+{
+    char path[400];
+    PathOf(path, "open_net.txt");
+    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    if (f == INVALID_HANDLE_VALUE) return;
+    static char buf[400000];
+    DWORD got = 0;
+    ReadFile(f, buf, sizeof(buf) - 1, &got, 0);
+    CloseHandle(f);
+    long next = 1 - g_openNetCur;
+    long n = 0;
+    for (DWORD k = 0; k < got && n < 32768; ) {
+        while (k < got && (buf[k] < '0' || buf[k] > '9')) k++;
+        if (k >= got) break;
+        long v = 0;
+        while (k < got && buf[k] >= '0' && buf[k] <= '9') v = v * 10 + (buf[k++] - '0');
+        g_openNet[next][n++] = (i32)v;
+    }
+    // (sorted by the mod; checked here, for the binary search)
+    bool sorted = true;
+    for (long i = 1; i < n; i++) if (g_openNet[next][i - 1] > g_openNet[next][i]) sorted = false;
+    if (!sorted) n = 0;
+    g_openNetN[next] = n;
+    _InterlockedExchange(&g_openNetCur, next);
+    static long shown = 0;
+    if (shown++ < 20) { Buf b; b.str("open tracks of the other companies: ").dec(n).str(" entities").str(sorted ? "" : " (NOT SORTED: ignored)"); LogLine(b); }
+}
+static bool InOpenNet(i32 e)
+{
+    long cur = g_openNetCur;
+    long lo = 0, hi = g_openNetN[cur] - 1;
+    const i32* a = g_openNet[cur];
+    while (lo <= hi) {
+        long mid = (lo + hi) >> 1;
+        if (a[mid] == e) return true;
+        if (a[mid] < e) lo = mid + 1; else hi = mid - 1;
+    }
+    return false;
+}
+
 static void ReadControl()
 {
     char path[400];
@@ -495,9 +544,9 @@ static void ReadControl()
     CloseHandle(f);
     buf[got] = 0;
     long wantLocal = 0, wantTok = 0; bool haveLocal = false;
-    long wantOthers[8]; int nWantOthers = 0; long othersTok = 0; bool haveOthers = false;
+    long wantOthers[32]; int nWantOthers = 0; long othersTok = 0; bool haveOthers = false;
     long wantCanon = 0, canonTok = 0; bool haveCanon = false;
-    long hudTok = 0;
+    long hudTok = 0, openTok = 0;
     for (DWORD i = 0; i < got; ) {
         DWORD j = i;
         while (j < got && buf[j] != '\n') j++;
@@ -523,7 +572,7 @@ static void ReadControl()
             long tok = 0;
             for (; k < len && l[k] >= '0' && l[k] <= '9'; k++) tok = tok * 10 + (l[k] - '0');
             nWantOthers = 0;
-            while (k < len && nWantOthers < 8) {
+            while (k < len && nWantOthers < 32) {
                 while (k < len && (l[k] < '0' || l[k] > '9')) k++;
                 long e = 0; bool any = false;
                 for (; k < len && l[k] >= '0' && l[k] <= '9'; k++) { e = e * 10 + (l[k] - '0'); any = true; }
@@ -542,6 +591,11 @@ static void ReadControl()
             long tok = 0;
             for (int k = 9; k < len && l[k] >= '0' && l[k] <= '9'; k++) tok = tok * 10 + (l[k] - '0');
             hudTok = tok;
+        }
+        else if (len >= 9 && memcmp(l, "opennet ", 8) == 0) {
+            long tok = 0;
+            for (int k = 8; k < len && l[k] >= '0' && l[k] <= '9'; k++) tok = tok * 10 + (l[k] - '0');
+            openTok = tok;
         }
         else if (len >= 11 && memcmp(l, "setplayer ", 10) == 0) {
             for (int k = 10; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
@@ -578,6 +632,7 @@ static void ReadControl()
     // one of a game just unloaded, freed memory - writing there corrupted the heap and crashed the game after a resynchronisation)
     if (haveLocal && wantTok != g_localTok) { g_localTok = wantTok; g_localPlayer = wantLocal; }
     if (hudTok && hudTok != g_hudShareTok) { g_hudShareTok = hudTok; LoadHudShare(); }
+    if (openTok && openTok != g_openNetTok) { g_openNetTok = openTok; LoadOpenNet(); }
     if (haveCanon && canonTok != g_canonTok) {
         g_canonTok = canonTok; g_canon = wantCanon;
         static long shownC = 0;
@@ -743,8 +798,8 @@ static void ClearOthersIn(u8* gs, bool learn)
     u32 word = *(u32*)(gs + 0x20c);
     u32 mine = g_localPlayer ? (u32)g_localPlayer : word;
     if (!world) return;
-    u32 list[10]; int k = 0;
-    for (long i = 0; i < n && i < 8; i++) if (g_others[i]) list[k++] = (u32)g_others[i];
+    u32 list[34]; int k = 0;
+    for (long i = 0; i < n && i < 32; i++) if (g_others[i]) list[k++] = (u32)g_others[i];
     list[k++] = mine;
     list[k++] = word;
     for (int i = 0; i < k; i++) {
@@ -1451,7 +1506,7 @@ extern "C" u64 ApplyDetour(void* a, void* b)
     if (kind == 52 && !noCtx && g_canon && (long)GetCurrentThreadId() == g_simTid) {
         long cp = *(long*)(pay + 0x36c);
         bool known = cp == g_canon || cp == g_localPlayer;
-        for (long i = 0; i < g_nOthers && i < 8; i++) if (cp == g_others[i]) known = true;
+        for (long i = 0; i < g_nOthers && i < 32; i++) if (cp == g_others[i]) known = true;
         if (known && cp != g_canon) ctxPlayer = cp;
         // a preview of this machine's tools (applied directly, never by the loop) still names the savegame's company: its money
         // check is for this machine's company
@@ -2901,7 +2956,9 @@ static void InstallOrderFixes()
         u32 at = FindSigRva(f.sig);
         bool layout = true;
         if (i == 1) layout = recordsOk;
-        if (i >= 6 && GetEnvironmentVariableA("MPFEVER_NOORDER2", 0, 0) > 0) layout = false;      // the 0.4.6 ones only (tests)
+        // (the four ported in 0.5.0, OFF unless MPFEVER_ORDER2=1: 40 minutes at x4 on a large map stayed in sync without them,
+        // as with them; nothing they would fix was ever seen in MPFever's sessions. Kept for a diagnosis)
+        if (i >= 6 && GetEnvironmentVariableA("MPFEVER_ORDER2", 0, 0) == 0) layout = false;
         if (i == 8) layout = layout && fieldAt && at + f.offset == fieldAt + 0xba && GetEnvironmentVariableA("MPFEVER_NOTOWNFIELD", 0, 0) == 0;
         if (i == 6 || i == 7) layout = layout && GetEnvironmentVariableA("MPFEVER_NOPLATFORMORDER", 0, 0) == 0;
         if (i == 9) {
@@ -3013,6 +3070,53 @@ static void InstallHudShare()
     LogLine(b);
 }
 
+// The stop tool on another company's road (one company per player): when it looks for the segment under the cursor, the engine
+// drops every segment whose PlayerOwned is not the tool's player (IsOwnedByOtherPlayer, 40420 0x6101d0 / 40423 0x6110b0, called
+// from MyFindSnapPointNew on the segment, its nodes and their neighbours), so a player could put no stop on the roads and bridges
+// another player built (the "Place Along Road" hint only). The snap search gets player -1 (no owner filter, as for the towns'
+// roads); ebx keeps the tool's player for the terminal proposal, its cost and the money check. The splice is just after
+// `mov ebx,[rbp+1BE0h]; mov [rsp+28h],ebx` (the 6th argument of the snap wrapper) and steals `mov [rsp+20h],r8; mov r9,[rax+78h]`.
+static volatile long g_stopSnapLet = 0;
+static void StopSnapAnyOwner(SavedRegs* r)
+{
+    if (g_nOthers <= 0 && !(g_canon && g_localPlayer && g_canon != g_localPlayer)) return;
+    i32* player = (i32*)(OrigRsp(r) + 0x28);
+    if (*player >= 0) { *player = -1; _InterlockedIncrement(&g_stopSnapLet); }
+}
+static void InstallStopSnap()
+{
+    if (GetEnvironmentVariableA("MPFEVER_NOSTOPSNAP", 0, 0) > 0) { Buf b; b.str("stops on other companies' roads: off (MPFEVER_NOSTOPSNAP)"); LogLine(b); return; }
+    u32 at = FindSigRva("8B 9D E0 1B 00 00 89 5C 24 28 4C 89 44 24 20 4C 8B 48 78 4C 8D 85 B8 00 00 00 48 8D 95 A0 00 00 00 49 8B CE E8");
+    u8* mem = at ? AllocNear(0x200) : 0;
+    bool ok = mem && Splice(mem, at + 10, 9, StopSnapAnyOwner);
+    Buf b; b.str("stops on other companies' roads: ").str(ok ? "the stop tool's snap hooked at " : "OFF (the stop tool's snap call was not found)");
+    if (ok) b.hex(at + 10);
+    LogLine(b);
+}
+
+// The builders' and the stop tool's owner filter (40420 0x6101d0, 40423 0x6110b0): bool IsOwnedByOtherPlayer(engine, player,
+// entity) = the entity's PlayerOwned is another player's. For the segments and nodes of the open tracks (see LoadOpenNet) it
+// answers no: the track and street builders snap to them, so another company can connect its tracks. MPFEVER_NOOPENNET=1: off.
+typedef bool (*IsOwnedF)(void* engine, i32 player, i32 entity);
+static IsOwnedF g_isOwnedOrig = 0;
+static bool IsOwnedDetour(void* engine, i32 player, i32 entity)
+{
+    // (the interface's thread only, where the tools look for what to snap to: the list differs between machines, and every
+    // decision of the simulation must stay the engine's own, the same on every game)
+    if (g_mainTid && (long)GetCurrentThreadId() == g_mainTid && g_openNetN[g_openNetCur] > 0 && InOpenNet(entity)) { _InterlockedIncrement(&g_openLet); return false; }
+    return g_isOwnedOrig(engine, player, entity);
+}
+static void InstallOpenNet()
+{
+    if (GetEnvironmentVariableA("MPFEVER_NOOPENNET", 0, 0) > 0) { Buf b; b.str("open tracks: off (MPFEVER_NOOPENNET)"); LogLine(b); return; }
+    static const u8 P_ISOWNED[] = { 0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18 };
+    u32 at = FindSigRva("48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 49 63 F8 8B DA 48 8B E9 85 D2 0F 88 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 83 C1 48 4C 8D 44 24 58");
+    bool ok = at && InstallDetour(at, P_ISOWNED, sizeof(P_ISOWNED), (void*)&IsOwnedDetour, (void**)&g_isOwnedOrig);
+    Buf b; b.str("open tracks: ").str(ok ? "the builders' owner filter hooked at " : "OFF (the owner filter was not found)");
+    if (ok) b.hex(at);
+    LogLine(b);
+}
+
 static void InstallToolCompany()
 {
     if (GetEnvironmentVariableA("MPFEVER_NOTOOLCO", 0, 0) > 0) { Buf b; b.str("tools' company: off (MPFEVER_NOTOOLCO)"); LogLine(b); return; }
@@ -3052,7 +3156,7 @@ static void LogOrderCounts()
 {
     Buf b; b.str("order fixes:");
     for (int i = 0; i < ORDER_N; i++) b.str(" ").str(ORDER_FIXES[i].name).str(" ").dec(g_orderSorts[i]).str("/").dec(g_orderReorders[i]).str("/").dec(g_orderRefused[i]);
-    b.str("; tools' company written ").dec(g_toolWrites).str(" time(s); shared station icons let through ").dec(g_hudShareLet);
+    b.str("; tools' company written ").dec(g_toolWrites).str(" time(s); shared station icons let through ").dec(g_hudShareLet).str("; stop tool snaps on any owner ").dec(g_stopSnapLet).str("; open tracks let through ").dec(g_openLet);
     LogLine(b);
 }
 
@@ -3304,6 +3408,8 @@ static DWORD WINAPI Init(void*)
     InstallOrderFixes();
     if (g_layout) InstallToolCompany();
     if (g_layout) InstallHudShare();
+    if (g_layout) InstallStopSnap();
+    if (g_layout) InstallOpenNet();
     { Buf b; b.str(g_luaSeedFixed ? "Lua string hash seed: fixed (same table order on every game)" : "Lua string hash seed: NOT fixed"); LogLine(b); }
     if (g_layout && RVA_MONEYCHECK) InstallDetour(RVA_MONEYCHECK, P_MONEYCHECK, sizeof(P_MONEYCHECK), (void*)&MoneyCheckDetour, (void**)&g_moneyOrig);
     if (g_layout && RVA_LINES) InstallDetour(RVA_LINES, P_LINES, sizeof(P_LINES), (void*)&LinesDetour, (void**)&g_linesOrig);

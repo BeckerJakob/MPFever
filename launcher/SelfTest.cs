@@ -138,6 +138,30 @@ namespace MPFever
                 && c.Contains("100.80.1.2") && c.Contains("10.0.26200.6584") && c.Contains("0.4.6") && !c.Contains("2a01:cb00") && c.Contains("fe80::1"), "report: public addresses only (" + c + ")");
             string d = Redact.Text("mail me at someone.name@example.org please, time 21:34:08");
             Check(!d.Contains("example.org") && d.Contains("21:34:08"), "report: e-mail addresses (" + d + ")");
+
+            // the savegame's differences (0.5.0): a raw zstd frame reads back, and a changed copy is rebuilt from its base
+            try
+            {
+                var rnd = new Random(7);
+                var baseData = new byte[3_000_000];
+                for (int k = 0; k < baseData.Length; k++) baseData[k] = (byte)(k % 251 < 200 ? (k / 977) : rnd.Next(256));
+                var newData = new List<byte>(baseData);
+                newData.InsertRange(1_000_000, new byte[] { 1, 2, 3, 4, 5, 6, 7 });
+                for (int k = 2_000_000; k < 2_000_400; k++) newData[k] ^= 0x5a;
+                var nd = newData.ToArray();
+                string tmp = Path.Combine(Path.GetTempPath(), "mpfever-selftest-" + Guid.NewGuid().ToString("N") + ".sav");
+                Zstd.WriteRawFrame(tmp, nd);
+                var back = Zstd.DecompressFile(tmp);
+                File.Delete(tmp);
+                var delta = SaveDelta.Make(baseData, nd);
+                var rebuilt = SaveDelta.Apply(baseData, delta);
+                Check(back.SequenceEqual(nd) && rebuilt.SequenceEqual(nd) && delta.Length < nd.Length / 10,
+                    "savegame differences: raw frame read back, rebuilt from its base (" + delta.Length + " bytes for " + nd.Length + ")");
+                bool refused = false;
+                try { SaveDelta.Apply(nd, delta); } catch (InvalidDataException) { refused = true; }
+                Check(refused, "savegame differences: refused on another base");
+            }
+            catch (Exception e) { Check(false, "savegame differences: " + e.Message); }
             return ok;
         }
 
@@ -281,6 +305,24 @@ namespace MPFever
             Check(d5 == null, "reconnection of a player keeps its place");
             lena2.Dispose();
             Thread.Sleep(300);
+
+            // a binary message (the host's savegame, 0.5.0): its bytes arrive whole, and the text messages around it too
+            {
+                var data = new byte[300000];
+                for (int k = 0; k < data.Length; k++) data[k] = (byte)(k * 31 + 7);
+                var pl = relay.Admitted().FirstOrDefault();
+                if (pl != null)
+                {
+                    relay.Send(pl, Msg.Make("chat", "Server", "{[\"text\"]=\"before\"}"));
+                    relay.Send(pl, Msg.MakeBinary("resync_bin", "Server", "[\"id\"]=1,[\"i\"]=0,[\"n\"]=1", data, 0, data.Length));
+                    relay.Send(pl, Msg.Make("chat", "Server", "{[\"text\"]=\"after\"}"));
+                    Thread.Sleep(800);
+                    Msg bin; bool after;
+                    lock (lenaGot) { bin = lenaGot.LastOrDefault(m => m.Kind == "resync_bin"); after = lenaGot.Any(m => m.Kind == "chat" && m.Payload.Contains("after")); }
+                    Check(bin != null && bin.Data != null && bin.Data.Length == data.Length && bin.Data.SequenceEqual(data) && after, "binary message: " + (bin?.Data?.Length ?? -1) + " bytes, the text after it too");
+                }
+                else Check(false, "binary message: nobody to send it to");
+            }
 
             // a connection not let in gets nothing of the session
             using (var idle = new TcpClient("127.0.0.1", port))

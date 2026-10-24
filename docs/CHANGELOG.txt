@@ -1,12 +1,43 @@
 MPFever - Changelog
 ===================
 
-0.4.6 - fewer desyncs, personal mods, missing mods installed by themselves, the others' builds shown
-  - FIX (desyncs): four more orders of the simulation made the same on every game (ported from TPF3-MP, MIT): the vehicles asking
-    for a free platform and the candidate platforms of equal cost (platform choice), the passengers waiting for a path (their
-    trips), and the town street field (a town's new streets took their angle from a cache filled in another order in a game
-    just loaded than in a running one). Each is found by its bytes on builds 40420 and 40423. A test: 15 minutes at x4 on a
-    large map, in sync. MPFEVER_NOORDER2=1 turns the four off (on every game).
+0.5.0 - companies: mixed modes, bankruptcy, tolls; fewer desyncs, personal mods, missing mods installed, the others' builds shown
+  - NEW (companies): several players in one company, in the « one company per player » mode. In the MPFever window a player
+    asks to join another company (its chief accepts or refuses), leaves its company (it starts a company of its own, with
+    the start money; the company goes on with its other players), and a company's chief offers to merge it into another
+    one (the other chief accepts): its assets, its money, its loans and its players all go to that company.
+  - NEW (companies): bankruptcy. A company whose money stays below zero for the months the host chose in the lobby (3, 6,
+    12 or 24, or never; 12 by default) goes bankrupt: its lines (with their vehicles), stations and depots are auctioned to
+    the other companies, one lot after the other (a minute each, with a reserve price; the best bid wins, in the MPFever
+    window); what nobody buys is demolished. Its players start again with a new company and the start money. The chat
+    tells the months in debt, the bankruptcy and every lot.
+  - NEW (companies): a company's rule for its tracks (MPFever window): private (the others cannot connect to them, as
+    before), open (the others connect to them and run their trains on them for free) or open with a toll per passage (each
+    train of another company pays it each time it enters them). The same for each depot (its window): private, open, or a
+    toll per vehicle bought or sent there.
+  - NEW (companies): the shared stations' fees and the tolls are in the finance window: station or track upkeep for the
+    company that pays, revenue for the company that earns (before: one sum a company under « Other »); the MPFever window
+    shows what each company earned and paid.
+  - FIX (prices): the difference between what a build cost its builder and what its replay cost on the other games was
+    booked under « Other »: the players saw other expenses than the builder. It is now booked in the build's own line
+    (roads, tracks, infrastructure, bulldozer): every player sees the builder's real expenses. MPFEVER_REFUNDOTHER=1: as
+    before.
+  - FIX: a bus stop could not be placed on another company's road or bridge (one company per player): the stop tool left out
+    every road segment another company owns. It now finds them (the stop still belongs to its builder's company).
+    MPFEVER_NOSTOPSNAP=1: as before.
+  - FIX: the others' build previews were never sent (the tool's event gives its proposal by position, not by name). Checked
+    on screen: the street a player is drawing shows as a band of its company's colour in the other game.
+  - FIX: the loading bar of a player receiving the host's game came and went, the Join button showing in between: the
+    menu read its state file while MPFever.exe was writing it (dozens of times a second while the game came in). The menu
+    now takes only a complete state, and the state is written once per percent.
+  - FIX: closing the game normally was reported as a crash (« Transport Fever 3 crashed »): the game writes crash dumps of
+    its own while loading, at Steam events and when it quits. A crash is now a dump without the game's normal shutdown in its log.
+  - FIX: in the MPFever window, a gift's message named the amount twice (« 100000 sent to 100000 »).
+  - NEW (savegame transfer): a player who already has the host's savegame (copied by hand before joining, e.g. over a slow
+    connection) downloads nothing: the lobby says so, with a button to open the savegame folder and one to check again.
+  - NEW (savegame transfer): the host's game is sent in binary parts (a quarter less to send than before), to each player
+    by itself (a slow player no longer holds the others up), and the host's own game loads at once instead of after the
+    sending.
   - FIX (issue #81): a player's build during a resynchronisation was kept on its own game when that game had already loaded
     the host's: a station on one game only, and a resynchronisation right after. While a resynchronisation is under way,
     every game now refuses its player's builds (the chat says so; build again a moment later), and the host's automatic mod

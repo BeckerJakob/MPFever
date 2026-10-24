@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Windows.Forms;
 using static MPFever.L;
@@ -64,7 +65,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.4.6";
+        public const string Version = "0.5.0";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -182,7 +183,8 @@ namespace MPFever
         // ---- host authority: resynchronisation by the host's savegame
         const double ResyncCooldownSeconds = 120;   // at most one resynchronisation every 2 minutes
         const string ResyncSaveName = "MPFever resync";
-        const int ResyncChunk = 256 * 1024;
+        // (64 KB since 0.5.0: each player gets its parts by itself, and a part holds that player's other messages while it goes)
+        const int ResyncChunk = 64 * 1024;
         volatile bool resyncing;
         volatile bool resyncSending;   // from the list of the games that reload the host's game to the end of a resynchronisation
         double lastResync = -1e9;
@@ -765,7 +767,7 @@ namespace MPFever
         void InstallPendingUpdateThenClose()
         {
             if (menuGame != null) Reporter.KeepGameLog(menuGame.Dir);
-            if (!ServerMode && !autotest && Reporter.CrashedSince(gameStartedAt))
+            if (!ServerMode && !autotest && Reporter.CrashedSince(gameStartedAt, menuGame?.Dir))
             {
                 Log.Err(T("Transport Fever 3 s'est arrêté brutalement (fichier de crash écrit).", "Transport Fever 3 crashed (a crash dump was written)."));
                 // (the window was minimised while the game ran: the question must be seen)
@@ -1121,6 +1123,7 @@ namespace MPFever
                     ["lang"] = L.Code,
                     ["colors"] = lobbyOpen ? LobbyColors() : lobbyColors,
                     ["cmode"] = lobbyOpen ? companyMode : lobbyMode,
+                    ["bankrupt"] = lobbyOpen ? BankruptMonths() : "",
                     ["myMods"] = SafeMineView(),
                     ["autoMods"] = st.TryGetValue("automods", out var am) && am == "0" ? "0" : "1",
                     ["modAsk"] = lobbyOpen ? ModAskView() : "",
@@ -1128,6 +1131,7 @@ namespace MPFever
                     ["modOffer"] = lobbyOpen ? "" : modOffer,
                     ["modAskState"] = lobbyOpen ? "" : modAskState,
                     ["modRecv"] = lobbyOpen ? "" : modRecvText,
+                    ["hostSave"] = lobbyOpen || hostSaveState == "" ? "" : hostSaveState + "|" + hostSaveName + "|" + (hostSaveSize / 1048576.0).ToString("0", CultureInfo.InvariantCulture),
                 });
             }
             catch (Exception e) { Log.W("menu_state: " + e.Message); }
@@ -1297,6 +1301,23 @@ namespace MPFever
                 catch (Exception e) { menuPhase = "error"; menuText = T("Impossible d'héberger : ", "Cannot host: ") + e.Message; MenuStatus(); return; }
                 // the lobby opens: the savegame is loaded once the host starts the game (see StartLobbyGame), by every game at once
                 lobbySave = arg; lobbyOpen = true; lobbyStarting = false;
+                // its fingerprint, for the players who already have it (copied by hand before joining: nothing to send them)
+                lobbySaveSha = ""; lobbySaveSize = 0;
+                lock (saveHave) saveHave.Clear();
+                string fpSave = arg;
+                new Thread(() =>
+                {
+                    try
+                    {
+                        var f = GameInstall.FindSave(fpSave);
+                        if (f == null) return;
+                        var sha = Sha256File(f);
+                        if (lobbySave != fpSave) return;
+                        lobbySaveSize = new FileInfo(f).Length; lobbySaveSha = sha;
+                        BroadcastLobby();
+                    }
+                    catch (Exception e) { Log.W("savegame fingerprint: " + e.Message); }
+                }) { IsBackground = true, Name = "Savegame fingerprint" }.Start();
                 var t0 = DateTime.UtcNow;
                 lobbyMods = Mods.Describe(ReadHostMods());
                 LogModVerdicts(lobbyMods, (DateTime.UtcNow - t0).TotalSeconds);
@@ -1365,6 +1386,16 @@ namespace MPFever
                 if (!int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int ix) || ix < 1 || ix > 12) return;
                 if (lobbyOpen && hostName != null) { SetLobbyColor(BaseName(hostName), ix); }
                 else foreach (var cl in clients.ToList()) { try { cl.Send(Msg.Make("lobbycolor", name, "{[\"ix\"]=" + ix + "}")); } catch { } }
+            }
+            else if (cmd == "bankrupt")
+            {
+                // (the host, in the lobby or in its game's MPFever page) months in debt before a bankruptcy: every game takes it
+                // with the session (the host's game puts it into the game, see mpfever_eco.lua)
+                if (!int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int mo) || !(mo == 0 || mo == 3 || mo == 6 || mo == 12 || mo == 24)) return;
+                SaveSetting("bankrupt", mo.ToString(CultureInfo.InvariantCulture));
+                Log.W(mo == 0 ? T("Faillite : jamais", "Bankruptcy: never") : F("Faillite après {0} mois de dette", "Bankruptcy after {0} months in debt", mo));
+                if (relay != null) BroadcastSession();
+                MenuStatus();
             }
             else if (cmd == "invite")
             {
@@ -1447,6 +1478,18 @@ namespace MPFever
                 if (menuGame.InGame && !resyncing && Now - lastLoadOrder > 120) EndSession();
                 else Log.W(F("Menu principal affiché (session conservée : en jeu {0}, resynchronisation {1})", "Main menu shown (session kept: in game {0}, resynchronisation {1})", menuGame.InGame, resyncing));
             }
+            else if (cmd == "opensaves")
+            {
+                // (a player) the folder where to put the host's savegame copied by hand
+                var dir = GameInstall.SaveDirs().FirstOrDefault();
+                if (dir != null) try { Process.Start("explorer.exe", "\"" + dir + "\""); } catch (Exception e) { Log.W("open: " + e.Message); }
+            }
+            else if (cmd == "recheck")
+            {
+                // (a player) the savegame was copied: look again
+                var cl = clients.FirstOrDefault();
+                if (hostSaveSha != "") CheckHostSave(hostSaveSha, hostSaveSize, hostSaveName, cl, menuGame?.Name ?? name, true);
+            }
             else if (cmd == "leave")
             {
                 // the player went back to the game's main menu: the session ends here (not during a resynchronisation)
@@ -1491,6 +1534,7 @@ namespace MPFever
             lock (hashes) hashes.Clear();
             lock (chatLog) { chatLog.Clear(); chatId = 0; }
             lock (resyncParts) resyncParts.Clear();   // a host game half received in the session that ends
+            hostSaveSha = ""; hostSaveState = ""; hostSaveLocal = null;   // (a lobby opened again is looked at again)
             hashN = 0; syncText = "—"; actsRelayed = actRefused = actFails = desyncs = 0;
             resyncing = false; resyncDropping = false; resyncSending = false; resyncWaiting.Clear(); ignoredParts.Clear(); postResyncHashN = -1; driftSince = -1; diffStreak = 0; lastDiffKeys = ""; lock (partStreak) partStreak.Clear();
             joinPending = false;
@@ -1550,6 +1594,7 @@ namespace MPFever
         {
             if (!lobbyOpen || relay == null) return;
             relay.Broadcast(Msg.Make("lobby", hostName, "{[\"players\"]=" + LuaLit.Quote(LobbyList()) + ",[\"save\"]=" + LuaLit.Quote(lobbySave)
+                + (lobbySaveSha != "" ? ",[\"sha\"]=" + LuaLit.Quote(lobbySaveSha) + ",[\"size\"]=" + lobbySaveSize : "")
                 + ",[\"host\"]=" + LuaLit.Quote(BaseName(hostName ?? "")) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods)
                 + ",[\"colors\"]=" + LuaLit.Quote(LobbyColors()) + ",[\"cmode\"]=" + LuaLit.Quote(companyMode) + "}"));
         }
@@ -1572,19 +1617,17 @@ namespace MPFever
                 Log.W(F("=== Lancement de la partie « {0} » pour {1} joueur(s) : envoi de la sauvegarde ({2:0.0} Mo) ===", "=== Starting the game « {0} » for {1} player(s): sending the savegame ({2:0.0} MB) ===", lobbySave, peers.Length + 1, bytes.Length / 1048576.0));
                 HostChat("msg", "MPFever", T("L'hôte lance la partie : chargement...", "The host starts the game: loading..."));
                 resyncBytes = bytes; resyncBytesId = id; resyncSentUpTo = 0;
-                int parts = (bytes.Length + ResyncChunk - 1) / ResyncChunk;
-                for (int i = 0; i < parts; i++)
-                {
-                    int len = Math.Min(ResyncChunk, bytes.Length - i * ResyncChunk);
-                    relay?.Broadcast(Msg.Make("resync_file", hostName,
-                        "{[\"id\"]=" + id + ",[\"i\"]=" + i + ",[\"n\"]=" + parts + ",[\"data\"]=\"" + Convert.ToBase64String(bytes, i * ResyncChunk, len) + "\"}"));
-                    resyncSentUpTo = i + 1;
-                }
-                // the host's own game loads the savegame from the main menu (mpfever_auto.lua)
+                // (the bytes read now: the file may have changed since the lobby took its fingerprint)
+                string sha = Sha256(bytes);
+                if (lobbySaveSha != "" && sha != lobbySaveSha) { Log.W("the lobby's savegame changed since it opened: sent to everybody"); lock (saveHave) saveHave.Clear(); }
+                resyncBytesSha = sha;
+                // the host's own game loads the savegame from the main menu (mpfever_auto.lua), while the players receive it
                 lastLoadOrder = Now;
                 menuLoad = lobbySave; menuLoadSeq = "h" + DateTime.Now.Ticks;
                 menuPhase = "loading"; menuText = T("Chargement de la partie...", "Loading the game...");
                 MenuStatus();
+                SendSave(id, bytes, sha, peers);
+                KeepDeltaBase(bytes, sha);
             }
             catch (Exception e)
             {
@@ -1604,6 +1647,7 @@ namespace MPFever
             {
                 bool all = WaitUntil(() => { lock (resyncWaiting) return resyncWaiting.Count == 0; }, 600);
                 if (!all) { lock (resyncWaiting) Log.Warn(T("Lancement : sans nouvelles de ", "Start: no news from ") + string.Join(", ", resyncWaiting) + T(" (la partie démarre quand même).", " (the game starts anyway).")); }
+                saveCancel = resyncBytesId;
                 lock (resyncWaiting) resyncWaiting.Clear();
                 lobbyStarting = false;
                 Thread.Sleep(1000);
@@ -1936,7 +1980,9 @@ namespace MPFever
                 bool haveSent = false;   // resync_have: once per connection, at its first welcome
                 client.Received += m =>
                 {
-                    if (m.Kind == "resync_file") { OnResyncFile(game, m); return; }
+                    if (m.Kind == "resync_file" || m.Kind == "resync_bin") { OnResyncFile(game, m); return; }
+                    if (m.Kind == "resync_use") { OnResyncUse(game, client, name, m); return; }
+                    if (m.Kind == "delta_bin") { OnDeltaFile(game, client, name, m); return; }
                     if (m.Kind == "modfile") { OnModFile(m); return; }
                     if (m.Kind == "modoffer")
                     {
@@ -1970,6 +2016,8 @@ namespace MPFever
                             lobbyColors = S("colors");
                             lobbyMode = S("cmode");
                             SetHostMods(S("mods"), client, name);
+                            // the host's savegame: maybe on this PC already (copied by hand): then nothing to download
+                            if (S("sha") != "" && long.TryParse(S("size"), NumberStyles.Integer, CultureInfo.InvariantCulture, out long hsz)) CheckHostSave(S("sha"), hsz, S("save"), client, name);
                             menuPhase = "lobby";
                             menuText = F("Dans le salon de {0} (« {1} ») : l'hôte lance la partie quand tout le monde est là.", "In {0}'s lobby (« {1} »): the host starts the game when everybody is here.", S("host"), S("save"));
                             MenuStatus();
@@ -2328,6 +2376,16 @@ namespace MPFever
         /// when it hosts (MPFEVER_COMPANIES=separate for the developer tests).</summary>
         string companyMode = Environment.GetEnvironmentVariable("MPFEVER_COMPANIES") == "separate" ? "separate" : "shared";
 
+        /// <summary>Months in debt before a company goes bankrupt (one company per player, 0.5.0): MPFEVER_BANKRUPT, else the
+        /// host's choice in the lobby (setting bankrupt=), else 12; 0: never. One of 0, 3, 6, 12, 24.</summary>
+        string BankruptMonths()
+        {
+            var v = Environment.GetEnvironmentVariable("MPFEVER_BANKRUPT");
+            if (string.IsNullOrEmpty(v)) LoadSettings().TryGetValue("bankrupt", out v);
+            return int.TryParse(v ?? "", NumberStyles.Integer, CultureInfo.InvariantCulture, out int n) && (n == 0 || n == 3 || n == 6 || n == 12 || n == 24)
+                ? n.ToString(CultureInfo.InvariantCulture) : "12";
+        }
+
         /// <summary>Starting capital of a new company: MPFEVER_COMPANY_START, else (dedicated server) start-money in
         /// mpfever_server.properties, else companystart=N in mpfever_settings.txt, else 2,000,000.</summary>
         string StartMoney()
@@ -2344,7 +2402,7 @@ namespace MPFever
                 return "{[\"started\"]=" + (started ? "true" : "false") + ",[\"speed\"]=" + speed +
                        (pauseAt.HasValue ? ",[\"pauseAt\"]=" + pauseAt.Value : "") +
                        ",[\"cmode\"]=\"" + companyMode + "\"" +
-                       (companyMode == "separate" ? ",[\"cstart\"]=" + StartMoney() : "") +
+                       (companyMode == "separate" ? ",[\"cstart\"]=" + StartMoney() + ",[\"bankrupt\"]=" + BankruptMonths() : "") +
                        // a dedicated server plays no company: the savegame's company goes to its owner (owner=, else nobody)
                        (companyMode == "separate" && server != null ? ",[\"owner\"]=" + LuaLit.Quote(OwnerKey()) : "") +
                        // a resynchronisation is under way: every game refuses its player's builds until it ends (issue #81: a player
@@ -2526,6 +2584,42 @@ namespace MPFever
                     }
                     break;
 
+                case "savehave":
+                    {
+                        // (a player) whether it has the lobby's savegame already (its fingerprint): then nothing is sent to it
+                        if (from == null) break;
+                        var sh = LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>();
+                        string hsha = sh.TryGetValue("sha", out var sv) && sv is string ss ? ss : "";
+                        bool has = sh.TryGetValue("have", out var hv) && hv is bool hb && hb;
+                        lock (saveHave) { if (has && hsha != "") saveHave[BaseName(from.Name)] = hsha; else saveHave.Remove(BaseName(from.Name)); }
+                        Log.W(has ? F("{0} a déjà la sauvegarde du salon : elle ne lui sera pas envoyée.", "{0} already has the lobby's savegame: it will not be sent to them.", from.Name)
+                                  : F("{0} n'a pas la sauvegarde du salon : elle lui sera envoyée au lancement.", "{0} does not have the lobby's savegame: it will be sent to them at the start.", from.Name));
+                    }
+                    break;
+
+                case "savebase":
+                    {
+                        // (a player) the host's game it loaded last (its fingerprint): the base of the next one's differences
+                        if (from == null) break;
+                        var sb = LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>();
+                        string bsha = sb.TryGetValue("sha", out var bv) && bv is string bs ? bs : "";
+                        lock (peerBase) { if (bsha != "") peerBase[BaseName(from.Name)] = bsha; else peerBase.Remove(BaseName(from.Name)); }
+                    }
+                    break;
+
+                case "resync_need":
+                    {
+                        // (a player told to use its own copy, which it does not find any more): it gets the game after all
+                        if (from == null) break;
+                        var bytes = resyncBytes;
+                        var nd = LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>();
+                        int nid = nd.TryGetValue("id", out var niv) && niv is double nn ? (int)nn : 0;
+                        if (bytes == null || nid != resyncBytesId) break;
+                        lock (saveHave) saveHave.Remove(BaseName(from.Name));
+                        SendSave(nid, bytes, resyncBytesSha ?? Sha256(bytes), new[] { from.Name });
+                    }
+                    break;
+
                 case "resync_have":
                     {
                         // a player back after a cut while the host's game was being sent: only its missing parts (issue #60);
@@ -2549,13 +2643,14 @@ namespace MPFever
                         var miss = ms.Split(',').Select(x => int.TryParse(x, out int k) ? k : -1).Where(k => k >= 0 && k < parts && k < upTo).ToArray();
                         Log.W(F("{0} : de retour pendant l'envoi de la partie, {1} morceau(x) sur {2} renvoyé(s)", "{0}: back while the game was being sent, {1} part(s) of {2} sent again", from.Name, miss.Length, parts));
                         lock (resyncWaiting) { resyncWaiting.RemoveWhere(w => BaseName(w) == BaseName(from.Name)); resyncWaiting.Add(from.Name); }
+                        string rsha = resyncBytesSha ?? "";
                         new Thread(() =>
                         {
                             foreach (int k in miss)
                             {
                                 int len = Math.Min(ResyncChunk, bytes.Length - k * ResyncChunk);
-                                relay?.Send(from, Msg.Make("resync_file", hostName,
-                                    "{[\"id\"]=" + hid + ",[\"i\"]=" + k + ",[\"n\"]=" + parts + ",[\"data\"]=\"" + Convert.ToBase64String(bytes, k * ResyncChunk, len) + "\"}"));
+                                if (relay == null || !relay.TrySend(from, Msg.MakeBinary("resync_bin", hostName,
+                                    "[\"id\"]=" + hid + ",[\"i\"]=" + k + ",[\"n\"]=" + parts + ",[\"sha\"]=" + LuaLit.Quote(rsha), bytes, k * ResyncChunk, len))) break;
                             }
                         }) { IsBackground = true, Name = "Resync resume" }.Start();
                     }
@@ -2702,6 +2797,17 @@ namespace MPFever
                     }
 
                 case "notice":
+                    {
+                        // what happens to the companies (bankruptcy, auction, joining, merging: see mpfever_eco.lua), told by the
+                        // host's game (its text is the players' names and company names: not looked into below)
+                        var nt = LuaLit.Parse(m.Payload) as Dictionary<object, object>;
+                        string what = nt != null && nt.TryGetValue("what", out var wv) && wv is string ws ? ws : "";
+                        if (what == "cochat")
+                        {
+                            if (from == null && nt.TryGetValue("text", out var coText) && coText is string coChat && coChat != "") HostChat("msg", "MPFever", coChat);
+                            break;
+                        }
+                    }
                     // something every player must know, told in the chat (it shows for a few seconds on every game)
                     if (m.Payload.Contains("tutorial"))
                     {
@@ -2900,19 +3006,21 @@ namespace MPFever
                 lock (resyncWaiting) { resyncWaiting.Clear(); lock (players) foreach (var p in players) resyncWaiting.Add(p); }
                 resyncSending = true;
                 resyncBytes = bytes; resyncBytesId = id; resyncSentUpTo = 0;
-                int parts = (bytes.Length + ResyncChunk - 1) / ResyncChunk;
-                for (int i = 0; i < parts; i++)
-                {
-                    int len = Math.Min(ResyncChunk, bytes.Length - i * ResyncChunk);
-                    string data = Convert.ToBase64String(bytes, i * ResyncChunk, len);
-                    relay?.Broadcast(Msg.Make("resync_file", hostName,
-                        "{[\"id\"]=" + id + ",[\"i\"]=" + i + ",[\"n\"]=" + parts + ",[\"data\"]=\"" + data + "\"}"));
-                    resyncSentUpTo = i + 1;
-                }
+                string sha = Sha256(bytes);
+                resyncBytesSha = sha;
+                // (the host's game reloads while the players receive it: each player by itself, a slow one no longer holds the
+                // others up)
                 lastLoadOrder = Now;
                 hostGame.ToGame(Msg.Make("resync_load", hostName, "{[\"id\"]=" + id + ",[\"name\"]=" + LuaLit.Quote(ResyncSaveName) + "}"));
+                var all = relay?.PeerNames() ?? new string[0];
+                // (the whole game to the others at once; the differences worked out meanwhile)
+                var viaDelta = DeltaPeers(all);
+                SendSave(id, bytes, sha, all.Where(n => !viaDelta.Contains(n)));
+                SendDeltas(id, bytes, sha, viaDelta);
+                KeepDeltaBase(bytes, sha);
                 bool back = WaitUntil(() => { lock (resyncWaiting) return resyncWaiting.Count == 0; }, 600);
                 if (!back) { lock (resyncWaiting) Log.Warn(T("Resynchronisation : sans nouvelles de ", "Resynchronisation: no news from ") + string.Join(", ", resyncWaiting) + T(" (on reprend quand même).", " (resuming anyway).")); }
+                saveCancel = id;   // (a player still receiving it would hold everybody's messages up: it gets the next one)
                 resyncDropping = false;
                 BroadcastSession();
                 // 4. all games run the same savegame: check, then resume
@@ -2937,9 +3045,172 @@ namespace MPFever
             }
         }
 
+        /// <summary>(the host) Sends its savegame (id) to these players, each by its own thread (a slow player no longer
+        /// holds the others up), in binary parts; a player who already has the very same file (its fingerprint, see
+        /// "savehave") is told to load its own copy.</summary>
+        void SendSave(int id, byte[] bytes, string sha, IEnumerable<string> names)
+        {
+            int parts = (bytes.Length + ResyncChunk - 1) / ResyncChunk;
+            resyncSentUpTo = parts;   // (every part may be sent again to a player back after a cut, see resync_have)
+            foreach (var name in names)
+            {
+                var peer = relay?.Find(name);
+                if (peer == null) continue;
+                string has; lock (saveHave) saveHave.TryGetValue(BaseName(name), out has);
+                if (has == sha)
+                {
+                    relay.Send(peer, Msg.Make("resync_use", hostName, "{[\"id\"]=" + id + ",[\"sha\"]=" + LuaLit.Quote(sha) + "}"));
+                    Log.W(F("{0} a déjà cette partie : rien à lui envoyer.", "{0} already has this game: nothing to send them.", name));
+                    continue;
+                }
+                var p = peer;
+                new Thread(() =>
+                {
+                    var t0 = DateTime.UtcNow;
+                    for (int i = 0; i < parts; i++)
+                    {
+                        // (a newer game is being sent, or this one's wait is over: the rest would only hold the others up)
+                        if (saveCancel >= id || resyncBytesId != id) return;
+                        int len = Math.Min(ResyncChunk, bytes.Length - i * ResyncChunk);
+                        if (relay == null || !relay.TrySend(p, Msg.MakeBinary("resync_bin", hostName,
+                            "[\"id\"]=" + id + ",[\"i\"]=" + i + ",[\"n\"]=" + parts + ",[\"sha\"]=" + LuaLit.Quote(sha), bytes, i * ResyncChunk, len))) return;
+                    }
+                    double s = Math.Max(0.1, (DateTime.UtcNow - t0).TotalSeconds);
+                    lock (peerSpeed) peerSpeed[BaseName(p.Name)] = bytes.Length / 1048576.0 / s;
+                    Log.W(F("{0} : partie envoyée ({1:0.0} Mo en {2:0} s, {3:0.0} Mo/s)", "{0}: game sent ({1:0.0} MB in {2:0} s, {3:0.0} MB/s)", p.Name, bytes.Length / 1048576.0, s, bytes.Length / 1048576.0 / s));
+                }) { IsBackground = true, Name = "Save to " + p.Name }.Start();
+            }
+        }
+
+        /// <summary>(the host) At a resynchronisation, the players whose last game from this host is the base it kept get only the
+        /// differences (SaveDelta: what changed in the decompressed savegame, deflated: 9 to 15 % of the savegame in tests, worked
+        /// out in about 5 s), when they are worth it: a connection slower than 25 MB/s (or not measured yet: not a local
+        /// network), and differences under 70 % of the savegame. MPFEVER_DELTA=1: always, 0: never.</summary>
+        HashSet<string> DeltaPeers(IEnumerable<string> names)
+        {
+            var served = new HashSet<string>();
+            string mode = Environment.GetEnvironmentVariable("MPFEVER_DELTA") ?? "";
+            if (mode == "0" || deltaBaseSha == null || deltaBasePath == null || !File.Exists(deltaBasePath)) return served;
+            foreach (var name in names)
+            {
+                string b; lock (peerBase) peerBase.TryGetValue(BaseName(name), out b);
+                if (b != deltaBaseSha) continue;
+                double speed; lock (peerSpeed) if (!peerSpeed.TryGetValue(BaseName(name), out speed)) speed = 0;
+                if (mode != "1" && speed >= 25) continue;
+                if (relay?.Find(name) != null) served.Add(name);
+            }
+            return served;
+        }
+
+        /// <summary>(the host) The differences to these players (see DeltaPeers); the whole game when they cannot be worked out
+        /// or are not worth it.</summary>
+        void SendDeltas(int id, byte[] bytes, string sha, HashSet<string> names)
+        {
+            if (names.Count == 0) return;
+            string mode = Environment.GetEnvironmentVariable("MPFEVER_DELTA") ?? "";
+            var want = names.Select(n => relay?.Find(n)).Where(p => p != null).ToList();
+            byte[] delta = null;
+            try
+            {
+                var t0 = DateTime.UtcNow;
+                var baseRaw = Zstd.DecompressFile(deltaBasePath);
+                var newRaw = Zstd.Decompress(bytes);
+                delta = SaveDelta.Make(baseRaw, newRaw);
+                Log.W(F("Différences avec la partie précédente : {0:0.0} Mo au lieu de {1:0.0} Mo ({2:0} s de calcul)", "Differences from the previous game: {0:0.0} MB instead of {1:0.0} MB ({2:0} s to work out)",
+                    delta.Length / 1048576.0, bytes.Length / 1048576.0, (DateTime.UtcNow - t0).TotalSeconds));
+            }
+            catch (Exception e) { Log.W("differences: " + e.Message); delta = null; }
+            if (delta == null || (mode != "1" && delta.Length > bytes.Length * 0.7))
+            {
+                SendSave(id, bytes, sha, names);
+                return;
+            }
+            int parts = (delta.Length + ResyncChunk - 1) / ResyncChunk;
+            foreach (var peer in want)
+            {
+                var p = peer;
+                new Thread(() =>
+                {
+                    var t0 = DateTime.UtcNow;
+                    for (int i = 0; i < parts; i++)
+                    {
+                        if (saveCancel >= id || resyncBytesId != id) return;
+                        int len = Math.Min(ResyncChunk, delta.Length - i * ResyncChunk);
+                        if (relay == null || !relay.TrySend(p, Msg.MakeBinary("delta_bin", hostName,
+                            "[\"id\"]=" + id + ",[\"i\"]=" + i + ",[\"n\"]=" + parts + ",[\"sha\"]=" + LuaLit.Quote(sha) + ",[\"base\"]=" + LuaLit.Quote(deltaBaseSha ?? ""), delta, i * ResyncChunk, len))) return;
+                    }
+                    Log.W(F("{0} : différences envoyées ({1:0.0} Mo en {2:0} s)", "{0}: differences sent ({1:0.0} MB in {2:0} s)", p.Name, delta.Length / 1048576.0, (DateTime.UtcNow - t0).TotalSeconds));
+                }) { IsBackground = true, Name = "Delta to " + p.Name }.Start();
+            }
+        }
+
+        /// <summary>(the host) The game every player loads now: the base of the next resynchronisation's differences.</summary>
+        void KeepDeltaBase(byte[] bytes, string sha)
+        {
+            try
+            {
+                var dir = hostGame?.Dir;
+                if (dir == null) return;
+                deltaBasePath = Path.Combine(dir, "delta_base.sav");
+                File.WriteAllBytes(deltaBasePath, bytes);
+                deltaBaseSha = sha;
+            }
+            catch (Exception e) { deltaBaseSha = null; Log.W("differences' base: " + e.Message); }
+        }
+
+        static string Sha256(byte[] data) { using (var h = SHA256.Create()) return BitConverter.ToString(h.ComputeHash(data)).Replace("-", ""); }
+        static string Sha256File(string path) { using (var h = SHA256.Create()) using (var f = File.OpenRead(path)) return BitConverter.ToString(h.ComputeHash(f)).Replace("-", ""); }
+
+        // (the host) the sends of a game up to this id are over (see SendSave)
+        volatile int saveCancel;
+        // (the host) the base of the differences (SendDeltas), each player's last game (its fingerprint) and measured speed (MB/s)
+        string deltaBaseSha, deltaBasePath;
+        readonly Dictionary<string, string> peerBase = new Dictionary<string, string>();
+        readonly Dictionary<string, double> peerSpeed = new Dictionary<string, double>();
+        // (the host) the lobby savegame's fingerprint; the players who have it already (base name -> fingerprint)
+        volatile string lobbySaveSha = "";
+        long lobbySaveSize;
+        string resyncBytesSha;
+        readonly Dictionary<string, string> saveHave = new Dictionary<string, string>();
+        // (a player) the lobby's savegame on this PC: its fingerprint, the file found, and "checking", "have" or "missing"
+        string hostSaveSha = "", hostSaveName = "", hostSaveLocal, hostSaveState = "";
+        long hostSaveSize;
+        // (a player) the host's savegame this game loaded last, by its fingerprint (the base of the next one, see SaveDelta)
+        string lastSaveSha, lastSavePath;
+
+        /// <summary>(a player) Looks among this PC's savegames for the lobby's (same size, then same fingerprint) and tells
+        /// the host.</summary>
+        void CheckHostSave(string sha, long size, string save, Client client, string me, bool force = false)
+        {
+            if (!force && sha == hostSaveSha && hostSaveState != "") return;
+            hostSaveSha = sha; hostSaveSize = size; hostSaveName = save; hostSaveLocal = null; hostSaveState = "checking";
+            MenuStatus();
+            new Thread(() =>
+            {
+                string found = null;
+                try
+                {
+                    foreach (var d in GameInstall.SaveDirs())
+                    {
+                        if (found != null) break;
+                        foreach (var f in Directory.GetFiles(d, "*.sav"))
+                        {
+                            try { if (new FileInfo(f).Length == size && Sha256File(f) == sha) { found = f; break; } } catch { }
+                        }
+                    }
+                }
+                catch (Exception e) { Log.W("savegame check: " + e.Message); }
+                if (sha != hostSaveSha) return;
+                hostSaveLocal = found; hostSaveState = found != null ? "have" : "missing";
+                if (found != null) Log.Ok(F("La sauvegarde de l'hôte est déjà sur ce PC ({0}) : elle ne sera pas téléchargée.", "The host's savegame is already on this PC ({0}): it will not be downloaded.", Path.GetFileName(found)));
+                try { client?.Send(Msg.Make("savehave", me, "{[\"sha\"]=" + LuaLit.Quote(sha) + ",[\"have\"]=" + (found != null ? "true" : "false") + "}")); } catch { }
+                MenuStatus();
+            }) { IsBackground = true, Name = "Savegame check" }.Start();
+        }
+
         // client side: the host's savegame arrives in pieces; once complete it is written next to this player's
         // savegames and the game loads it
-        readonly Dictionary<int, string[]> resyncParts = new Dictionary<int, string[]>();
+        readonly Dictionary<int, byte[][]> resyncParts = new Dictionary<int, byte[][]>();
         /// <summary>Client: the host MPFever's run (its welcome) the parts in resyncParts come from.</summary>
         string hostRun;
         /// <summary>Host: this MPFever's run (in its welcome), and the host's game sent last, for a player who reconnects
@@ -2954,37 +3225,147 @@ namespace MPFever
             var t = LuaLit.Parse(m.Payload) as Dictionary<object, object>;
             if (t == null) return;
             int id = (int)(double)t["id"], i = (int)(double)t["i"], n = (int)(double)t["n"];
-            string[] got;
+            if (n <= 0 || n > 100000 || i < 0 || i >= n) return;
+            string sha = t.TryGetValue("sha", out var shv) && shv is string shs ? shs : null;
+            byte[][] got;
             lock (resyncParts)
             {
-                if (!resyncParts.TryGetValue(id, out got)) resyncParts[id] = got = new string[n];
-                got[i] = t["data"] as string;
+                if (!resyncParts.TryGetValue(id, out got) || got.Length != n) resyncParts[id] = got = new byte[n][];
+                got[i] = m.Data ?? (t.TryGetValue("data", out var dv) && dv is string ds ? Convert.FromBase64String(ds) : null);
                 if (got.Any(x => x == null))
                 {
-                    if (menuMode && !game.InGame) { menuPhase = "downloading"; menuText = F("Réception de la partie de l'hôte : {0} %", "Receiving the host's game: {0} %", 100 * got.Count(x => x != null) / n); MenuStatus(); }
+                    if (menuMode && !game.InGame)
+                    {
+                        // (written again only when the percentage changes: one write a part made the menu read it half written)
+                        string pct = F("Réception de la partie de l'hôte : {0} %", "Receiving the host's game: {0} %", 100 * got.Count(x => x != null) / n);
+                        if (menuPhase != "downloading" || menuText != pct) { menuPhase = "downloading"; menuText = pct; MenuStatus(); }
+                    }
                     return;
                 }
                 resyncParts.Remove(id);
             }
-            if (menuMode && !game.InGame && modCheck != null && modCheck.Differs.Count > 0)
-            {
-                // another version of a mod: this game would never match the host's (it is not loaded)
-                var text = F("Ces mods ne sont pas dans la même version que chez l'hôte ({0}) : {1}. Mettez-les à jour (mod.io ou Steam Workshop) pour avoir la même version que l'hôte, puis rejoignez à nouveau.",
-                    "These mods are not the same version as the host's ({0}): {1}. Update them (mod.io or Steam Workshop) to have the host's version, then join again.", modCheck.Differs.Count, string.Join(", ", modCheck.Differs));
-                Log.Err(T("La partie de l'hôte n'a pas été chargée. ", "The host's game was not loaded. ") + text);
-                new Thread(() =>
-                {
-                    EndSession(T("=== Mods différents de ceux de l'hôte : fin de la session ===", "=== Mods differ from the host's: the session ends ==="));
-                    menuPhase = "error"; menuText = text; MenuStatus();
-                }) { IsBackground = true, Name = "Mods differ" }.Start();
-                return;
-            }
+            if (StopIfModsDiffer(game)) return;
             try
             {
-                var bytes = got.SelectMany(Convert.FromBase64String).ToArray();
+                var all = new byte[got.Sum(x => (long)x.Length)];
+                long at = 0;
+                foreach (var x in got) { Buffer.BlockCopy(x, 0, all, (int)at, x.Length); at += x.Length; }
+                LoadReceivedSave(game, m, id, all, sha);
+            }
+            catch (Exception e) { Log.Warn(F("[{0}] partie de l'hôte : {1}", "[{0}] host game: {1}", game.Name, e.Message)); }
+        }
+
+        /// <summary>(a player, in the main menu) Another version of a mod than the host's: this game would never match the host's,
+        /// it is not loaded and the session ends.</summary>
+        bool StopIfModsDiffer(GameLink game)
+        {
+            if (!(menuMode && !game.InGame && modCheck != null && modCheck.Differs.Count > 0)) return false;
+            var text = F("Ces mods ne sont pas dans la même version que chez l'hôte ({0}) : {1}. Mettez-les à jour (mod.io ou Steam Workshop) pour avoir la même version que l'hôte, puis rejoignez à nouveau.",
+                "These mods are not the same version as the host's ({0}): {1}. Update them (mod.io or Steam Workshop) to have the host's version, then join again.", modCheck.Differs.Count, string.Join(", ", modCheck.Differs));
+            Log.Err(T("La partie de l'hôte n'a pas été chargée. ", "The host's game was not loaded. ") + text);
+            new Thread(() =>
+            {
+                EndSession(T("=== Mods différents de ceux de l'hôte : fin de la session ===", "=== Mods differ from the host's: the session ends ==="));
+                menuPhase = "error"; menuText = text; MenuStatus();
+            }) { IsBackground = true, Name = "Mods differ" }.Start();
+            return true;
+        }
+
+        /// <summary>(a player) The differences between its last game from the host and the new one, in parts: applied to its last
+        /// game (decompressed), written as a savegame (not compressed: the game reads it all the same), loaded. When they do not
+        /// apply (another base, a fingerprint that differs), the host is asked for the whole game.</summary>
+        void OnDeltaFile(GameLink game, Client client, string me, Msg m)
+        {
+            var t = LuaLit.Parse(m.Payload) as Dictionary<object, object>;
+            if (t == null) return;
+            int id = (int)(double)t["id"], i = (int)(double)t["i"], n = (int)(double)t["n"];
+            if (n <= 0 || n > 100000 || i < 0 || i >= n || m.Data == null) return;
+            string sha = t.TryGetValue("sha", out var shv) && shv is string shs ? shs : null;
+            string bsha = t.TryGetValue("base", out var bv) && bv is string bs ? bs : null;
+            byte[][] got;
+            lock (deltaParts)
+            {
+                if (!deltaParts.TryGetValue(id, out got) || got.Length != n) deltaParts[id] = got = new byte[n][];
+                got[i] = m.Data;
+                if (got.Any(x => x == null)) return;
+                deltaParts.Remove(id);
+            }
+            if (StopIfModsDiffer(game)) return;
+            new Thread(() =>
+            {
+                try
+                {
+                    if (bsha == null || bsha != lastSaveSha || lastSavePath == null || !File.Exists(lastSavePath)) throw new InvalidDataException("not the base this PC has");
+                    var t0 = DateTime.UtcNow;
+                    var delta = new byte[got.Sum(x => (long)x.Length)];
+                    long at = 0;
+                    foreach (var x in got) { Buffer.BlockCopy(x, 0, delta, (int)at, x.Length); at += x.Length; }
+                    var baseRaw = Zstd.DecompressFile(lastSavePath);
+                    var newRaw = SaveDelta.Apply(baseRaw, delta);
+                    Log.W(F("[{0}] différences de la partie de l'hôte appliquées ({1:0.0} Mo reçus, {2:0} s)", "[{0}] differences of the host's game applied ({1:0.0} MB received, {2:0} s)",
+                        game.Name, delta.Length / 1048576.0, (DateTime.UtcNow - t0).TotalSeconds));
+                    LoadReceivedSave(game, m, id, null, sha, newRaw);
+                }
+                catch (Exception e)
+                {
+                    Log.Warn(F("[{0}] différences inutilisables ({1}) : la partie entière est demandée à l'hôte.", "[{0}] differences not usable ({1}): asking the host for the whole game.", game.Name, e.Message));
+                    try { client?.Send(Msg.Make("resync_need", me, "{[\"id\"]=" + id + "}")); } catch { }
+                }
+            }) { IsBackground = true, Name = "Apply differences" }.Start();
+        }
+        readonly Dictionary<int, byte[][]> deltaParts = new Dictionary<int, byte[][]>();
+
+        /// <summary>(a player) The host says this player has its game already (the lobby's savegame, found on this PC): it is
+        /// loaded as if received; if it is not there any more, the host is asked to send it.</summary>
+        void OnResyncUse(GameLink game, Client client, string me, Msg m)
+        {
+            var t = LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>();
+            int id = t.TryGetValue("id", out var iv) && iv is double d ? (int)d : 0;
+            string sha = t.TryGetValue("sha", out var sv) && sv is string ss ? ss : "";
+            try
+            {
+                if (StopIfModsDiffer(game)) return;
+                if (hostSaveLocal != null && sha == hostSaveSha && File.Exists(hostSaveLocal))
+                {
+                    var bytes = File.ReadAllBytes(hostSaveLocal);
+                    if (Sha256(bytes) == sha)
+                    {
+                        Log.Ok(F("[{0}] partie de l'hôte prise sur ce PC ({1}) : rien à télécharger.", "[{0}] host game taken from this PC ({1}): nothing to download.", game.Name, Path.GetFileName(hostSaveLocal)));
+                        LoadReceivedSave(game, m, id, bytes, sha);
+                        return;
+                    }
+                }
+            }
+            catch (Exception e) { Log.W("own copy: " + e.Message); }
+            Log.Warn(F("[{0}] la copie de la partie de l'hôte n'est plus là : elle est demandée à l'hôte.", "[{0}] the copy of the host's game is gone: asking the host for it.", game.Name));
+            try { client?.Send(Msg.Make("resync_need", me, "{[\"id\"]=" + id + "}")); } catch { }
+        }
+
+        /// <summary>(a player) The host's game is here (received, or this PC's own copy): written next to the savegames, then
+        /// loaded by the game.</summary>
+        void LoadReceivedSave(GameLink game, Msg m, int id, byte[] bytes, string sha, byte[] raw = null)
+        {
+            try
+            {
                 string name = ResyncSaveName + " " + new string(game.Name.Where(char.IsLetterOrDigit).ToArray());
-                foreach (var d in GameInstall.SaveDirs()) File.WriteAllBytes(Path.Combine(d, name + ".sav"), bytes);
-                Log.W(F("[{0}] partie de l'hôte reçue ({1:0.0} Mo) : chargement...", "[{0}] host game received ({1:0.0} MB): loading...", game.Name, bytes.Length / 1048576.0));
+                string written = null;
+                foreach (var d in GameInstall.SaveDirs())
+                {
+                    written = Path.Combine(d, name + ".sav");
+                    if (raw != null)
+                    {
+                        // (690 MB: written beside it first, so that a write cut short never leaves a broken savegame)
+                        var part = written + ".part";
+                        Zstd.WriteRawFrame(part, raw);
+                        if (File.Exists(written)) File.Delete(written);
+                        File.Move(part, written);
+                    }
+                    else File.WriteAllBytes(written, bytes);
+                }
+                lastSaveSha = sha ?? Sha256(bytes); lastSavePath = written;
+                // (the host is told which game this PC has: the base of the next differences, see SendDeltas)
+                try { clients.FirstOrDefault()?.Send(Msg.Make("savebase", game.Name, "{[\"sha\"]=" + LuaLit.Quote(lastSaveSha) + "}")); } catch { }
+                Log.W(F("[{0}] partie de l'hôte reçue ({1:0.0} Mo) : chargement...", "[{0}] host game received ({1:0.0} MB): loading...", game.Name, (raw != null ? raw.Length : bytes.Length) / 1048576.0));
                 // the mods of this load: the host's personal ones left out, this player's own added (read by mpfever_auto.lua)
                 try
                 {

@@ -75,9 +75,11 @@ function C.T(fr, en)
 	if C.LANGCODE == "fr" then return fr end
 	return C.LANG[en] or en
 end
--- a text with one %s (put in with gsub: the value may contain % itself)
-function C.Tf(fr, en, value)
-	local s = C.T(fr, en):gsub("%%s", function() return tostring(value) end)
+-- a text with %s, each taking the next value (put in with gsub: a value may contain % itself; before 0.5.0 every %s took the
+-- first one: « 100000 sent to 100000 »)
+function C.Tf(fr, en, ...)
+	local values, i = { ... }, 0
+	local s = C.T(fr, en):gsub("%%s", function() i = i + 1; return tostring(values[i] == nil and values[1] or values[i]) end)
 	return s
 end
 
@@ -1635,6 +1637,16 @@ C.FACTORIES = {
 }
 
 -- the ranks of the companies (mpfever_progression.lua), loaded once per Lua state; false when it cannot be loaded
+-- the companies' economy (mpfever_eco.lua: mixed modes, bankruptcy, tolls), loaded once per Lua state
+function C.eco()
+	if C.ECO == nil then
+		local ok, m = pcall(ug_require, "mpfever_eco.lua")
+		if not (ok and type(m) == "table") then ok, m = pcall(ug_require, "mpfever_1::/mpfever_eco.lua") end
+		C.ECO = (ok and type(m) == "table") and m or false
+	end
+	return C.ECO or nil
+end
+
 function C.progression()
 	if C.PG == nil then
 		local ok, m = pcall(ug_require, "mpfever_progression.lua")
@@ -1647,7 +1659,7 @@ end
 -- Companies mode: the arguments of a command that name something its company must own (see the bridge's executeAction):
 -- the vehicle, the line, the depot a vehicle is bought in, the entity renamed or recoloured
 C.OWNER_ARGS = {
-	makeVehicleSellCmd = { 1 }, makeVehicleSetLineCmd = { 1, 2 }, makeVehicleSendToDepotCmd = { 1, 2 }, makeVehicleReverseCmd = { 1 },
+	makeVehicleSellCmd = { 1 }, makeVehicleSetLineCmd = { 1, 2 }, makeVehicleSendToDepotCmd = { 1, 3 }, makeVehicleReverseCmd = { 1 },
 	makeVehicleReplaceCmd = { 1 }, makeVehicleSetStoppedByUserCmd = { 1 }, makeVehicleSetManualDepartureCmd = { 1 },
 	makeVehicleTryToDepartCmd = { 1 }, makeVehicleSetModifiersCmd = { 1 }, makeVehicleBuyCmd = { 2 },
 	makeLineUpdateCmd = { 1 }, makeLineDestroyCmd = { 1 }, makeEntitySetNameCmd = { 1 }, makeEntitySetColorCmd = { 1 },
@@ -1662,7 +1674,7 @@ function C.shareFee(shares, key)
 	return f
 end
 
--- ---------------------------------------------------------------- personal mods (0.4.6)
+-- ---------------------------------------------------------------- personal mods (0.5.0)
 -- A player's load of the host's game, as the launcher planned it (load_mods.txt, see Mods.LoadPlan in the launcher): the
 -- host's personal mods this player does not run are left out, this player's own are added. nil when there is no plan.
 function C.loadPlan()

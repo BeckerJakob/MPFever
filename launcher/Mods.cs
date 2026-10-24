@@ -18,7 +18,7 @@ namespace MPFever
     /// "id|name|source|hub"; hub: the mod's number on its Mod Hub, mod.io or Steam Workshop, from which a player who lacks it
     /// installs it; size: its folder's size in MB on the host's PC, for a mod the host may send itself).
     ///
-    /// Personal mods (0.4.6): a mod that only changes this player's interface (windows, overlays, styles: nothing that reaches
+    /// Personal mods (0.5.0): a mod that only changes this player's interface (windows, overlays, styles: nothing that reaches
     /// the simulation, see Personal) may be active in one player's game and not in another's. The host's personal mods are
     /// left out of the other players' loads of its game, and each player's own are added to them (load_mods.txt, read by
     /// mpfever_auto.lua). A player may also take a mod for personal by hand (Forced: a warning says it can desynchronise the

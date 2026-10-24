@@ -267,10 +267,14 @@ namespace MPFever
         }
     }
 
-    /// <summary>One protocol message: kind TAB from TAB payload (payload = single-line Lua table literal).</summary>
+    /// <summary>One protocol message: kind TAB from TAB payload (payload = single-line Lua table literal). A message whose
+    /// kind ends with "_bin" (0.5.0: the host's savegame) carries Data, raw bytes right after its line (their count in the
+    /// payload's "len"): a quarter less to send than the base64 parts of before.</summary>
     sealed class Msg
     {
         public string Kind, From, Payload;
+        public byte[] Data;
+        public bool IsBinary => Kind != null && Kind.EndsWith("_bin", StringComparison.Ordinal);
 
         public static Msg Parse(string line)
         {
@@ -282,7 +286,96 @@ namespace MPFever
 
         public static Msg Make(string kind, string from, string payload = "{}") => new Msg { Kind = kind, From = from, Payload = payload };
 
+        /// <summary>A binary message: its payload gets the bytes' count ("len").</summary>
+        public static Msg MakeBinary(string kind, string from, string fields, byte[] data, int offset, int count)
+        {
+            var d = new byte[count];
+            Buffer.BlockCopy(data, offset, d, 0, count);
+            return new Msg { Kind = kind, From = from, Payload = "{" + fields + (fields.Length > 0 ? "," : "") + "[\"len\"]=" + count + "}", Data = d };
+        }
+
         public override string ToString() => Kind + "\t" + From + "\t" + Payload;
+
+        /// <summary>Writes the message on a connection (its line, then its bytes for a binary one). The caller holds the
+        /// connection's lock.</summary>
+        public void WriteTo(StreamWriter w)
+        {
+            w.WriteLine(ToString());
+            if (Data != null)
+            {
+                w.Flush();
+                w.BaseStream.Write(Data, 0, Data.Length);
+                w.BaseStream.Flush();
+            }
+        }
+    }
+
+    /// <summary>Reads a connection's messages: UTF-8 lines, and the raw bytes after the line of a binary message (a
+    /// StreamReader cannot: its buffer takes them).</summary>
+    sealed class NetReader
+    {
+        readonly Stream s;
+        readonly byte[] buf = new byte[1 << 16];
+        int pos, count;
+        public NetReader(Stream s) { this.s = s; }
+
+        bool Fill()
+        {
+            if (pos < count) return true;
+            pos = 0;
+            count = s.Read(buf, 0, buf.Length);
+            return count > 0;
+        }
+
+        public string ReadLine()
+        {
+            var line = new MemoryStream();
+            while (true)
+            {
+                if (!Fill()) return line.Length > 0 ? Encoding.UTF8.GetString(line.ToArray()) : null;
+                int start = pos;
+                while (pos < count && buf[pos] != (byte)'\n') pos++;
+                line.Write(buf, start, pos - start);
+                if (pos < count) { pos++; break; }
+            }
+            var bytes = line.ToArray();
+            int n = bytes.Length;
+            if (n > 0 && bytes[n - 1] == (byte)'\r') n--;
+            return Encoding.UTF8.GetString(bytes, 0, n);
+        }
+
+        public byte[] ReadBytes(int n)
+        {
+            if (n < 0 || n > 64 << 20) throw new IOException("binary message of " + n + " bytes");
+            var d = new byte[n];
+            int got = 0;
+            while (got < n)
+            {
+                if (!Fill()) throw new IOException("connection closed in a binary message");
+                int k = Math.Min(n - got, count - pos);
+                Buffer.BlockCopy(buf, pos, d, got, k);
+                pos += k; got += k;
+            }
+            return d;
+        }
+
+        /// <summary>The next message (null at the end of the connection; a line that is no message is skipped).</summary>
+        public Msg Read()
+        {
+            while (true)
+            {
+                string line = ReadLine();
+                if (line == null) return null;
+                var m = Msg.Parse(line);
+                if (m == null) continue;
+                if (m.IsBinary)
+                {
+                    int len = LuaLit.Parse(m.Payload) is Dictionary<object, object> t && t.TryGetValue("len", out var lv) && lv is double ld ? (int)ld : -1;
+                    m.Data = ReadBytes(len);
+                }
+                return m;
+            }
+        }
     }
 
     /// <summary>Tiny parser for the Lua table literals produced by the mod serializer.</summary>
@@ -514,13 +607,24 @@ namespace MPFever
         {
             var sb = new StringBuilder();
             foreach (var kv in st) sb.Append(kv.Key).Append('=').Append((kv.Value ?? "").Replace("\r", " ").Replace("\n", " ")).Append('\n');
+            // the last line: the menu takes a state only when it reads it (a file read while being written is not taken)
+            sb.Append("end=1\n");
             var tmp = Path.Combine(Dir, "menu_state.tmp");
             var dst = Path.Combine(Dir, "menu_state.txt");
             lock (writeGate)
             {
                 File.WriteAllText(tmp, sb.ToString(), Utf8);
-                try { if (File.Exists(dst)) File.Replace(tmp, dst, null); else File.Move(tmp, dst); }
-                catch { File.Copy(tmp, dst, true); }
+                // (the game may be reading it: a few tries of the swap, which the menu never sees half done, before a copy)
+                for (int i = 0; ; i++)
+                {
+                    try { if (File.Exists(dst)) File.Replace(tmp, dst, null); else File.Move(tmp, dst); break; }
+                    catch
+                    {
+                        if (i < 4) { Thread.Sleep(15); continue; }
+                        File.Copy(tmp, dst, true);
+                        break;
+                    }
+                }
             }
         }
 
@@ -797,12 +901,10 @@ namespace MPFever
         {
             try
             {
-                var r = new StreamReader(p.Tcp.GetStream(), new UTF8Encoding(false));
-                string line;
-                while ((line = r.ReadLine()) != null)
+                var r = new NetReader(p.Tcp.GetStream());
+                Msg m;
+                while ((m = r.Read()) != null)
                 {
-                    var m = Msg.Parse(line);
-                    if (m == null) continue;
                     if (m.Kind == "join")
                     {
                         if (p.Admitted) continue;
@@ -866,10 +968,13 @@ namespace MPFever
                 }
         }
 
-        public void Send(Peer p, Msg m)
+        public void Send(Peer p, Msg m) => TrySend(p, m);
+
+        /// <summary>Sends, and says whether it went (a closed connection: false).</summary>
+        public bool TrySend(Peer p, Msg m)
         {
-            try { lock (p.Gate) p.Writer.WriteLine(m.ToString()); }
-            catch (Exception e) { Log.Warn(L.F("envoi vers {0} : {1}", "sending to {0}: {1}", p.Name, e.Message)); }
+            try { lock (p.Gate) m.WriteTo(p.Writer); return true; }
+            catch (Exception e) { Log.Warn(L.F("envoi vers {0} : {1}", "sending to {0}: {1}", p.Name, e.Message)); return false; }
         }
 
         public void Broadcast(Msg m, Peer except = null)
@@ -963,12 +1068,10 @@ namespace MPFever
         {
             try
             {
-                var r = new StreamReader(tcp.GetStream(), new UTF8Encoding(false));
-                string line;
-                while ((line = r.ReadLine()) != null)
+                var r = new NetReader(tcp.GetStream());
+                Msg m;
+                while ((m = r.Read()) != null)
                 {
-                    var m = Msg.Parse(line);
-                    if (m == null) continue;
                     if (m.Kind == "denied")
                     {
                         Denied?.Invoke(LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>());
@@ -983,7 +1086,7 @@ namespace MPFever
 
         public void Send(Msg m)
         {
-            try { lock (gate) writer.WriteLine(m.ToString()); }
+            try { lock (gate) m.WriteTo(writer); }
             catch (Exception e) { Log.Warn(L.T("envoi vers l'hôte : ", "sending to the host: ") + e.Message); }
         }
 

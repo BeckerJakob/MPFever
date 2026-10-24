@@ -63,7 +63,10 @@ Players can also join a game already running, and a lost connection reconnects b
   - Each player picks their company's colour in the lobby; the map's icons show who owns what.
   - What belongs to another company can't be sold, edited or used.
   - Stations are shared: other companies' lines can stop there and pay a fee set by the owner.
-  - Companies can give each other money, and the MPFever window ranks them.
+  - Tracks and depots too, if their owner wants: private, open, or open with a toll per passage.
+  - Several players can run one company together: ask to join another company (its chief accepts), leave yours, or merge two companies.
+  - A company in debt for too long (3 to 24 months, set by the host in the lobby) goes bankrupt: its lines, stations and depots are auctioned to the others, and its players start again.
+  - Fees and tolls show in the finance window. Companies can give each other money, and the MPFever window ranks them.
 
 ### Everything is replicated
 
@@ -72,6 +75,7 @@ Players can also join a game already running, and a lost connection reconnects b
 - Vehicles, lines, game speed and pause.
 - Demolishing what you just built gives the money back, as in a solo game.
 - What another player's tool shows before their click (a road, a track, a station) shows on the ground in your game, in their colour. The host can turn it off.
+- The host's game reaches each player by itself, and after a reload only what changed is sent (about a tenth of the savegame). A player who already has the host's savegame downloads nothing.
 
 ### In-game tools
 
@@ -125,7 +129,7 @@ The mods tested so far are listed in [MODS](docs/MODS.md).
 
 ## Known limitations
 
-- **One company per player:** a company can't go bankrupt yet, and the fees of shared stations don't show in the finances.
+- **One company per player:** a merger into the savegame's company leaves the merged company's loans behind (they are the game's own loans).
 - **Steam and Windows only.**
 - **Small drifts of vehicles and passengers** can happen. They are repaired by a reload if they last.
 

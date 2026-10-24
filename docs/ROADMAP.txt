@@ -30,8 +30,8 @@ it is stable enough.
   [x] Chat inside the game interface (0.3.5)
   [ ] Settings for the host (who may build, bulldoze, spend money)
   [x] Personal mods (interface only) that every player may have or not, missing mods installed from the game's Mod Hub,
-      the host's local mods sent from its PC (0.4.6)
-  [x] What the others are building shown on the ground before their click (0.4.6)
+      the host's local mods sent from its PC (0.5.0)
+  [x] What the others are building shown on the ground before their click (0.5.0)
 
 0.4 - Separate companies
   [x] Each player runs their own company on the same map, chosen by the host (0.3.0)
@@ -41,14 +41,15 @@ it is stable enough.
   [x] Contracts for every company, owner shown in the windows, company tied to the Steam account (0.3.3)
   [x] Company-window actions for every company, money transfers, colour picked in the lobby,
       a table of the companies (0.4.4)
-  [ ] Bankruptcy: the company's empire auctioned to the other companies, the player starts again
-  [ ] Shared stations' fees in the finances, competition on cargo and passengers
+  [x] Bankruptcy: the company's empire auctioned to the other companies, the player starts again (0.5.0)
+  [x] Shared stations' fees in the finances (0.5.0)
+  [ ] Competition on cargo and passengers
 
 0.5 - Mixed modes
-  [ ] Shared companies and separate companies in the same game
-  [ ] Joining, leaving and merging companies
+  [x] Shared companies and separate companies in the same game (0.5.0)
+  [x] Joining, leaving and merging companies (0.5.0)
   [x] Shared stations with a fee per stop (0.3.3)
-  [ ] Rules for shared tracks and depots
+  [x] Rules for shared tracks and depots: private, open, or a toll per passage (0.5.0)
 
 Later - Persistent worlds
   [x] Dedicated server running the world without the host's PC (0.3.12: MPFever.exe --server, separate archive,

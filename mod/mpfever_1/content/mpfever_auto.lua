@@ -52,7 +52,7 @@ end
 
 local MOD_ID = "mpfever_1"
 
--- personal mods (0.4.6): the launcher's plan for this player's load of the host's game (load_mods.txt, see Mods.LoadPlan):
+-- personal mods (0.5.0): the launcher's plan for this player's load of the host's game (load_mods.txt, see Mods.LoadPlan):
 -- "drop TAB id" (the host's personal mods this player does not run) and "add TAB id" (this player's own)
 local function loadPlan()
 	if not (DIR and IO) then return nil end
@@ -198,6 +198,8 @@ local function menuLoad()
 	if not f then return end
 	local s = f:read("*a") or ""
 	f:close()
+	-- (read while MPFever.exe wrote it: its last line "end=1" is missing, a name may be cut)
+	if s:find("end=1", 1, true) then S.stateEnd = true elseif S.stateEnd then return end
 	local name = s:match("load=([^" .. string.char(10, 13) .. "]*)")
 	local seq = s:match("loadSeq=([^" .. string.char(10, 13) .. "]*)")
 	if not name or name == "" or not seq or seq == "" or seq == lastLoadSeq then return end

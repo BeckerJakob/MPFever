@@ -19,6 +19,9 @@
 [list]
 [*][b]One shared company (co-op):[/b] shared money, vehicles, lines and infrastructure.
 [*][b]One company per player (competition):[/b] your own money, roads, stations, vehicles, lines, loans, contracts and Company window, on the same map. Each company has its own rank and permits, and nobody can touch another company's infrastructure. Your company belongs to your Steam account, even after a disconnection.
+[*][b]Mixed companies:[/b] play some companies together and others alone in the same game: ask to join a company (its chief accepts), leave it, or merge two companies.
+[*][b]Bankruptcy:[/b] a company in debt for too long (set by the host in the lobby) goes bankrupt; its lines, stations and depots are auctioned to the other companies, and its players start again.
+[*][b]Your network, your rules:[/b] shared stations, tracks and depots: private, open, or with a fee or toll that shows in the finances.
 [/list]
 [*][b]Your colour, picked in the lobby.[/b] Each player chooses their company's colour before the game starts, and the map's icons show at a glance which company owns which station, depot or vehicle.
 [*][b]Shared stations with a fee.[/b] Let other companies' lines stop at your stations, for a fee per stop that you set. Shared stations show in the line tool like your own.
@@ -45,11 +48,10 @@ Your solo games are not affected: MPFever only acts when the game is started thr
 
 [size=4][b]Good to know[/b][/size]
 [list]
-[*]MPFever is in active development (version 0.4.6), with new versions released often. Backing up your savegames is always a good idea.
+[*]MPFever is in active development (version 0.5.0), with new versions released often. Backing up your savegames is always a good idea.
 [*]Every player needs the same MPFever version (automatic), the same mods (installed by themselves from the Mod Hub) and [b]the same game version[/b]: make sure Steam has updated Transport Fever 3 on every PC.
 [*]Made for the current Steam version of the game, on Windows.
 [*]The tutorial is made for solo play.
-[*]In « one company per player », a company can't go bankrupt yet.
 [/list]
 
 [size=4][b]Open source and transparent[/b][/size]
@@ -58,7 +60,7 @@ MPFever copies a small winhttp.dll file into the game folder, which the game loa
 
 [size=4][b]Roadmap[/b][/size]
 [list]
-[*][b]Next for companies:[/b] bankruptcy with an auction of the company's empire, shared station fees in the finances, competition on cargo and passengers.
+[*][b]Next for companies:[/b] competition on cargo and passengers.
 [*][b]0.5 – Mixed modes:[/b] shared and separate companies in the same game, joining and merging companies.
 [*][b]Later:[/b] faster resyncs, more players.
 [/list]

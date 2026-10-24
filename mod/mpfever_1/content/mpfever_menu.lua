@@ -63,13 +63,23 @@ local function writeFile(name, text)
 end
 
 -- what MPFever.exe tells the menu
+-- (a state read while MPFever.exe writes it lacks its last line "end=1": the last whole one is kept, else the page showed the
+-- tabs for a moment, then the session again, over and over while the host's game came in)
+local lastState, endSeen = nil, false
 local function readState()
 	local st = {}
 	for line in (readFile("menu_state.txt") or ""):gmatch("[^" .. NL .. "]+") do
 		local k, v = line:match("^([%w_]+)=(.*)$")
 		if k then st[k] = v:gsub(string.char(13), "") end
 	end
-	return st
+	if st["end"] then endSeen = true end
+	if st["end"] or not lastState or not endSeen then
+		lastState = st
+		return st
+	end
+	local copy = {}
+	for k, v in pairs(lastState) do copy[k] = v end
+	return copy
 end
 
 local reqSeq = 0
@@ -196,7 +206,7 @@ local function modInstalled(id)
 	return nil
 end
 
--- Installing a host's mod from its Mod Hub (0.4.6): the game's own Mod Hub subscribes this player to it and downloads it
+-- Installing a host's mod from its Mod Hub (0.5.0): the game's own Mod Hub subscribes this player to it and downloads it
 -- (api.modhub, as its Mod Manager does; the way of TPF3-MP's roommods.lua). Each mod is asked once per menu; MPFEVER_AUTOMODS=0
 -- (the launcher's setting): not by itself, a button per mod instead.
 local hub = { installs = {}, requests = {} }
@@ -786,6 +796,22 @@ local function setup()
 				right[#right + 1] = gap(1, 14)
 				right[#right + 1] = colorRow(mine, pickColor, nil, true, taken)
 			end
+			-- (the host) months in debt before a company goes bankrupt (its assets auctioned to the others, its players start
+			-- again with a new company): the game's rule, sent with the session (see MPFever.exe's BankruptMonths)
+			if separate and isHost then
+				local cur = tonumber(st.bankrupt) or 12
+				local opts = { box(H, { text(T("Faillite d'une entreprise endettée après :", "A company in debt goes bankrupt after:"), "font-scale-title-4") }), gap(1, 6) }
+				local row = {}
+				for _, mo in ipairs({ 0, 3, 6, 12, 24 }) do
+					local m = mo
+					row[#row + 1] = button(m == 0 and T("Jamais", "Never") or (T("%s mois", "%s months"):gsub("%%s", tostring(m))),
+						function() request("bankrupt", tostring(m), playerName()) end, { font = "font-scale-body", primary = cur == m })
+					row[#row + 1] = gap(6, 1)
+				end
+				opts[#opts + 1] = box(H, row)
+				right[#right + 1] = gap(1, 14)
+				right[#right + 1] = box(V, opts)
+			end
 			-- (the host) players who lack mods no Mod Hub has: send them from this PC? (with their size)
 			if isHost then
 				for e in (st.modAsk or ""):gmatch("[^;]+") do
@@ -829,6 +855,28 @@ local function setup()
 					right[#right + 1] = text(T("Les mods locaux de l'hôte ne vous seront pas envoyés : installez-les vous-même.", "The host's local mods will not be sent to you: install them yourself."), "font-scale-body, warning", PAGE_W - SIDE_W - 80)
 				end
 				if (st.modRecv or "") ~= "" then right[#right + 1] = text(st.modRecv, "font-scale-body", PAGE_W - SIDE_W - 80) end
+				-- the host's savegame: on this PC already (copied by hand before joining: nothing to download), or sent at the start
+				local hs, hn, hmb = (st.hostSave or ""):match("^([^|]*)|([^|]*)|([^|]*)$")
+				if hs and hs ~= "" then
+					local w = PAGE_W - SIDE_W - 80
+					right[#right + 1] = gap(1, 10)
+					if hs == "have" then
+						right[#right + 1] = text((T("La sauvegarde de l'hôte (« %s ») est déjà sur ce PC : rien à télécharger au lancement.", "The host's savegame (« %s ») is already on this PC: nothing to download at the start."):gsub("%%s", (hn:gsub("%%", "%%%%")))), "font-scale-body, success", w)
+					elseif hs == "checking" then
+						right[#right + 1] = text(T("Recherche de la sauvegarde de l'hôte sur ce PC...", "Looking for the host's savegame on this PC..."), "font-scale-body", w)
+					else
+						right[#right + 1] = box(V, {
+							text((T("La sauvegarde de l'hôte (« %s », %s Mo) vous sera envoyée au lancement.", "The host's savegame (« %s », %s MB) will be sent to you at the start."):gsub("%%s", (hn:gsub("%%", "%%%%")), 1):gsub("%%s", hmb, 1)), "font-scale-body", w),
+							text(T("Pour éviter ce téléchargement (connexion lente), copiez ce fichier .sav depuis le PC de l'hôte dans votre dossier de sauvegardes, puis cliquez sur « Vérifier ».",
+								"To avoid this download (slow connection), copy this .sav file from the host's PC into your savegame folder, then click « Check »."), "font-scale-body", w),
+							box(H, {
+								button(T("Ouvrir le dossier des sauvegardes", "Open the savegame folder"), function() request("opensaves", "", playerName()) end, { font = "font-scale-body" }),
+								gap(8, 1),
+								button(T("Vérifier", "Check"), function() request("recheck", "", playerName()) end, { font = "font-scale-body", primary = true }),
+							}),
+						}, nil, { padding = { 8, 8, 8, 8 }, background = { 1, 1, 1, 0.05 } })
+					end
+				end
 			end
 			right[#right + 1] = vfill()
 			-- the buttons

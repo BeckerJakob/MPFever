@@ -87,12 +87,33 @@ namespace MPFever
             catch (Exception e) { Log.Dim("report: " + e.Message); }
         }
 
-        /// <summary>Did the game crash after <paramref name="since"/>? (a crash dump or a crash savegame written since)</summary>
-        public static bool CrashedSince(DateTime since)
+        /// <summary>Did the game crash after <paramref name="since"/>? (a crash dump written since, and its log does not end with
+        /// the game's normal shutdown: the game writes dumps of its own while it loads, at Steam events and when it quits,
+        /// and every normal close was reported as a crash)</summary>
+        public static bool CrashedSince(DateTime since, string sessionDir = null)
         {
+            bool dump = false;
             foreach (var d in CrashDumpDirs())
-                try { if (Directory.GetFiles(d, "*.dmp").Any(f => File.GetLastWriteTime(f) > since)) return true; } catch { }
-            return false;
+                try { if (Directory.GetFiles(d, "*.dmp").Any(f => File.GetLastWriteTime(f) > since)) dump = true; } catch { }
+            if (!dump) return false;
+            try
+            {
+                var log = sessionDir != null ? Path.Combine(sessionDir, "stdout.txt") : null;
+                if (log == null || !File.Exists(log)) log = GameLog();
+                if (log != null && File.Exists(log) && File.GetLastWriteTime(log) > since)
+                {
+                    using (var fs = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        long from = Math.Max(0, fs.Length - 4096);
+                        fs.Seek(from, SeekOrigin.Begin);
+                        var buf = new byte[fs.Length - from];
+                        int n = fs.Read(buf, 0, buf.Length);
+                        if (Encoding.UTF8.GetString(buf, 0, n).Contains("Normal shutdown")) return false;
+                    }
+                }
+            }
+            catch { }
+            return true;
         }
 
         [DllImport("kernel32.dll")] static extern bool IsProcessorFeaturePresent(int feature);

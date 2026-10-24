@@ -9,6 +9,12 @@
 -- finds it again under the same name after a reconnection (or a later session on the same savegame).
 -- A dedicated server (MPFever.exe --server) plays no company: it announces itself with an empty key and leaves company 1 to the
 -- player its settings name as the owner (reg.owner, the player's key), or to nobody.
+--
+-- Mixed modes (0.5.0): a company has players, its members ({ key, sid }...; the first registries had one, its `key`), one of
+-- them its chief (`chief`: the player who created it, or whom the others left it to). A player asks to join another company
+-- and its chief accepts; a player leaves its company (it gets a new one); two chiefs merge their companies. A company can be
+-- gone (`gone` = "bankrupt", "merged", "empty"): its player entity stays in the game, nobody plays it any more. See
+-- mpfever_eco.lua for the events that change all this.
 
 local CO = {}
 
@@ -36,8 +42,59 @@ end
 
 function CO.byKey(reg, key)
 	if type(key) ~= "string" or key == "" then return nil end
-	for _, c in ipairs(reg.list) do if c.key == key then return c end end
+	for _, c in ipairs(reg.list) do if c.key == key and not c.gone then return c end end
 	return nil
+end
+
+-- the players of a company: its members, or the one player of a company of the first registries (its key)
+function CO.members(c)
+	if not c then return {} end
+	if type(c.members) == "table" then return c.members end
+	if type(c.key) == "string" and c.key ~= "" then return { { key = c.key, sid = c.sid } } end
+	return {}
+end
+
+-- (the members' list written into the company, before it changes)
+function CO.ensureMembers(c)
+	if type(c.members) ~= "table" then c.members = CO.members(c) end
+	if not c.chief and c.members[1] then c.chief = c.members[1].key end
+	return c.members
+end
+
+function CO.chief(c)
+	if not c then return nil end
+	if c.chief then return c.chief end
+	local m = CO.members(c)[1]
+	return m and m.key or nil
+end
+
+-- the company a player plays now (by its key), nil when none (gone companies left out)
+function CO.memberOf(reg, key)
+	if not reg or type(key) ~= "string" or key == "" then return nil end
+	for _, c in ipairs(reg.list) do
+		if not c.gone then
+			for _, m in ipairs(CO.members(c)) do if m.key == key then return c end end
+		end
+	end
+	return nil
+end
+
+function CO.addMember(c, key, sid)
+	local list = CO.ensureMembers(c)
+	for _, m in ipairs(list) do if m.key == key then return end end
+	list[#list + 1] = { key = key, sid = sid }
+	if c.left then c.left[key] = nil end
+	if not c.chief then c.chief = key end
+end
+
+-- takes a player out of its company; its chief role goes to the next member. Returns the member's entry (with its sid)
+function CO.removeMember(c, key)
+	local list = CO.ensureMembers(c)
+	local out = nil
+	for i, m in ipairs(list) do if m.key == key then out = table.remove(list, i) break end end
+	if c.chief == key then c.chief = list[1] and list[1].key or nil end
+	if c.key == key and list[1] then c.key = list[1].key end
+	return out
 end
 
 function CO.entityOf(reg, id)
@@ -77,18 +134,27 @@ function CO.match(reg, key, sid, isHost)
 	if not reg then return nil end
 	-- (a dedicated server: its game shows the savegame's company, which it never claims)
 	if isHost and key == "" then return reg.list[1] end
+	-- (a member of a company: gone companies, bankrupt or merged, have no members any more)
 	for _, c in ipairs(reg.list) do
-		if c.key == key and key ~= "" and (sid == nil or c.sid == nil or c.sid == sid) then return c end
+		if not c.gone and key ~= "" then
+			for _, m in ipairs(CO.members(c)) do
+				if m.key == key and (sid == nil or m.sid == nil or m.sid == sid) then return c end
+			end
+		end
 	end
 	-- (the host plays the savegame's company: CO.join gives it company 1)
 	if isHost then return nil end
 	-- the owner named by a dedicated server takes the savegame's company while nobody has it
 	local first = reg.list[1]
-	if first and first.key == "" and type(reg.owner) == "string" and reg.owner ~= "" and key == reg.owner then return first end
+	if first and not first.gone and #CO.members(first) == 0 and type(reg.owner) == "string" and reg.owner ~= "" and key == reg.owner then return first end
 	if sid then
 		local found, n = nil, 0
 		for _, c in ipairs(reg.list) do
-			if c.sid == sid and c.id ~= 1 then found = found or c; n = n + 1 end
+			if not c.gone and c.id ~= 1 then
+				for _, m in ipairs(CO.members(c)) do
+					if m.sid == sid then found = found or c; n = n + 1 end
+				end
+			end
 		end
 		if n == 1 then return found end
 	end
@@ -103,15 +169,30 @@ function CO.join(reg, key, name, isHost, newName, sid, color)
 	if mine and key == "" then return mine, false end
 	if mine then
 		-- (a new name for a known account: the company follows it)
-		if mine.key ~= key then mine.key = key end
-		if sid and not mine.sid then mine.sid = sid end
+		if type(mine.members) == "table" then
+			for _, m in ipairs(mine.members) do
+				if m.key ~= key and sid and m.sid == sid then
+					if mine.chief == m.key then mine.chief = key end
+					if mine.key == m.key then mine.key = key end
+					m.key = key
+				end
+				if m.key == key and sid and not m.sid then m.sid = sid end
+			end
+		else
+			if mine.key ~= key then mine.key = key end
+			if sid and not mine.sid then mine.sid = sid end
+		end
 		return mine, false, nil
 	end
 	local first = reg.list[1]
-	if isHost then
-		-- the savegame's own company belongs to whoever hosts it
+	-- the savegame's own company belongs to whoever hosts it, unless it is gone (bankrupt, merged), the host left it, or
+	-- other players kept it (mixed modes: the host then gets a new company, as anybody)
+	local claim = isHost and first and not first.gone and not (first.left and first.left[key])
+		and (type(first.members) ~= "table" or #first.members == 0)
+	if claim then
 		first.key = key
 		first.sid = sid
+		if type(first.members) == "table" then first.members = { { key = key, sid = sid } }; first.chief = key end
 		-- (the colour the host picked in the menu, the first time it claims the savegame's company)
 		local recolor = nil
 		if color and color ~= first.color and not first.colorPicked and CO.colorFree(reg, color, first.id) then
@@ -122,7 +203,8 @@ function CO.join(reg, key, name, isHost, newName, sid, color)
 	-- (a name another account already has: the new company's key carries the account, so that both are told apart)
 	local k = key
 	if CO.byKey(reg, k) then k = key .. "@" .. tostring(sid or #reg.list + 1) end
-	local c = { id = #reg.list + 1, key = k, name = newName or name, color = CO.colorFree(reg, color) and tonumber(color) or freeColor(reg), sid = sid }
+	local c = { id = #reg.list + 1, key = k, name = newName or name, color = CO.colorFree(reg, color) and tonumber(color) or freeColor(reg), sid = sid,
+		members = { { key = key, sid = sid } }, chief = key }
 	reg.list[#reg.list + 1] = c
 	return c, true
 end
@@ -131,7 +213,17 @@ end
 function CO.signature(reg)
 	if not reg then return "none" end
 	local t = { reg.mode or "?" }
-	for _, c in ipairs(reg.list) do t[#t + 1] = c.id .. ":" .. tostring(c.key) .. ":" .. tostring(c.name) .. ":" .. tostring(c.color) end
+	for _, c in ipairs(reg.list) do
+		local s = c.id .. ":" .. tostring(c.key) .. ":" .. tostring(c.name) .. ":" .. tostring(c.color)
+		-- (mixed modes: its players and whether it is gone, when there is something to say)
+		if type(c.members) == "table" then
+			local ks = {}
+			for _, m in ipairs(c.members) do ks[#ks + 1] = tostring(m.key) end
+			s = s .. ":" .. table.concat(ks, ",") .. ":" .. tostring(c.chief)
+		end
+		if c.gone then s = s .. ":" .. tostring(c.gone) end
+		t[#t + 1] = s
+	end
 	return table.concat(t, "|")
 end
 

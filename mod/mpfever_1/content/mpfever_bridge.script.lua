@@ -251,7 +251,7 @@ function REFUND.book(st, now)
 	if #REFUND.pending > 0 then
 		local live = {}
 		for _, p in ipairs(REFUND.pending) do
-			if p.till >= now then live[#live + 1] = p else log("refund booking of " .. p.amount .. " (" .. p.key .. ") not answered by the engine within two steps: no longer counted") end
+			if p.till >= now then live[#live + 1] = p elseif not p.quiet then log("refund booking of " .. p.amount .. " (" .. p.key .. ") not answered by the engine within two steps: no longer counted") end
 		end
 		REFUND.pending = live
 	end
@@ -269,7 +269,16 @@ function REFUND.book(st, now)
 					local entry = api.type.JournalEntry.new()
 					entry.amount = d
 					entry.time = -1
-					entry.category.type = api.type.JournalEntry.Type.OTHER
+					-- (in the finance window's line of the build, as the builder's game booked it: roads, tracks, infrastructure,
+					-- bulldozer; before 0.5.0 under « Other »: the players saw other expenses than the builder. MPFEVER_REFUNDOTHER=1:
+					-- as before)
+					local sub = rc.kind and os.getenv("MPFEVER_REFUNDOTHER") ~= "1" and api.type.JournalEntry.Construction[rc.kind] or nil
+					if sub then
+						entry.category.type = api.type.JournalEntry.Type.CONSTRUCTION
+						entry.category.construction = sub
+					else
+						entry.category.type = api.type.JournalEntry.Type.OTHER
+					end
 					-- (applied with the next iteration's commands; counted until its answer, at most two steps)
 					local p = { key = REFUND.key(st.co, rc.co), amount = d, till = now + 2 * STEP }
 					REFUND.pending[#REFUND.pending + 1] = p
@@ -277,9 +286,11 @@ function REFUND.book(st, now)
 					local okcb = pcall(api.cmd.sendCommand, cmd, function()
 						for i, q in ipairs(REFUND.pending or {}) do if q == p then table.remove(REFUND.pending, i); break end end
 					end)
-					if not okcb then api.cmd.sendCommand(cmd) end
+					-- (the simulation's states take no callback: applied with the next iteration all the same, counted until then,
+					-- without the "not answered" note)
+					if not okcb then api.cmd.sendCommand(cmd); p.quiet = true end
 					log("refund: build " .. tostring(rc.uid) .. " cost its builder " .. rc.cost .. ", its replay here " .. rc.got .. " (" .. rc.n
-						.. " proposal(s)): " .. d .. " booked on company " .. tostring(rc.co or "-") .. " at t=" .. now)
+						.. " proposal(s)): " .. d .. " booked on company " .. tostring(rc.co or "-") .. " as " .. (sub and ("construction " .. rc.kind) or "other") .. " at t=" .. now)
 				else
 					log("refund: build " .. tostring(rc.uid) .. ": company " .. tostring(rc.co) .. " unknown here, difference " .. d .. " not booked")
 				end
@@ -595,6 +606,8 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 		and (a.args[2] == "Subvention" or a.args[2] == "mpfever" or (a.args[2] == "Companies" and os.getenv("MPFEVER_NOCOACTIONS") ~= "1"))
 		and type(a.args[4]) == "table" then
 		a.args[4].mpfCo = a.co
+		-- (and the player who sent it: a company's chief answers the requests to join it, see mpfever_eco.lua)
+		if a.args[2] == "mpfever" then a.args[4].mpfFrom = a.origin end
 	end
 	if a.fn == "makeScriptingSendEventCmd" and a.co and R.CO and R.CO.canon and a.co ~= CO.idOfEntity(R.CO, R.CO.canon)
 		and type(a.args) == "table" and (a.args[2] == "Loan" or a.args[2] == "Company"
@@ -635,15 +648,24 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 	-- editing, renaming, recolouring, buying a vehicle in its depot). What belongs to no company (the towns' streets, the
 	-- savegame's objects without an owner) stays everyone's. MPFEVER_NOOWNERGUARD=1 turns it off (on every game).
 	if a.co and R.CO and R.CO.mode == "separate" and type(a.args) == "table" and C.OWNER_ARGS[a.fn] and os.getenv("MPFEVER_NOOWNERGUARD") ~= "1" then
-		local refused = nil
+		local refused, toll = nil, nil
 		pcall(function()
 			for _, i in ipairs(C.OWNER_ARGS[a.fn]) do
 				local e = a.args[i]
 				local owner = type(e) == "number" and CO.idOfEntity(R.CO, R.ownerOf(e)) or nil
 				if owner and owner ~= a.co then
-					local c = CO.find(R.CO, owner)
-					refused = "it belongs to company " .. owner .. ((c and c.name ~= "") and (" (" .. c.name .. ")") or "")
-					break
+					-- (a depot its company opened to the others, 0.5.0: a vehicle bought there or sent there, for a toll or not)
+					local open, fee = false, 0
+					if ((a.fn == "makeVehicleBuyCmd" and i == 2) or (a.fn == "makeVehicleSendToDepotCmd" and i == 3)) and C.eco() then
+						open, fee = C.eco().depotUse(R.CO, nil, e, a.co)
+					end
+					if open then
+						if fee > 0 then toll = { to = owner, fee = fee } end
+					else
+						local c = CO.find(R.CO, owner)
+						refused = "it belongs to company " .. owner .. ((c and c.name ~= "") and (" (" .. c.name .. ")") or "")
+						break
+					end
 				end
 			end
 		end)
@@ -651,6 +673,32 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 			result.err = refused
 			log("action " .. tostring(a.uid) .. " " .. tostring(a.fn) .. " of company " .. tostring(a.co) .. " refused on every game: " .. refused)
 			return result
+		end
+		if toll then
+			pcall(function()
+				local JE = api.type.JournalEntry
+				local from, to = CO.entityOf(R.CO, a.co), CO.entityOf(R.CO, toll.to)
+				local function entry(n, earn)
+					local x = JE.new()
+					x.amount = n
+					x.time = -1
+					if earn then
+						x.category.type = JE.Type.INCOME
+						x.category.carrier = JE.Carrier.OTHER
+					else
+						x.category.type = JE.Type.MAINTENANCE
+						x.category.maintenance = JE.Maintenance.INFRASTRUCTURE
+						x.category.construction = JE.Construction.DEPOT
+						x.category.carrier = JE.Carrier.OTHER
+					end
+					return x
+				end
+				if from and to then
+					api.cmd.sendCommand(api.cmd.makeJournalBookAssetCmd(from, entry(-toll.fee, false), api.type.Vec3f.new(0, 0, 0)))
+					api.cmd.sendCommand(api.cmd.makeJournalBookAssetCmd(to, entry(toll.fee, true), api.type.Vec3f.new(0, 0, 0)))
+				end
+				log("companies: company " .. tostring(a.co) .. " uses a depot of company " .. toll.to .. " for " .. toll.fee)
+			end)
 		end
 	end
 	-- companies mode: a line stops only at its company's stations and at the stations another company shares
@@ -1403,7 +1451,20 @@ end
 
 -- Shared stations: the vehicles of a company stopping at a station another company shares pay the fee set by its owner (per stop),
 -- booked to both companies. Every few steps: the lines using such stations (recomputed now and then), their vehicles' next stop
--- (a vehicle whose next stop moved on has left the stops in between).
+-- (a vehicle whose next stop moved on has left the stops in between). In the finance window (0.5.0): the line's company pays them
+-- as station upkeep of its vehicles' carrier, the station's company earns them as revenue of that carrier (before: one sum per
+-- company under « Other »). MPFEVER_FEEOTHER=1: as before.
+-- the journal's carrier of a vehicle's carrier (api.type.enum.Carrier, as the game's achievements read it)
+SIM.journalCarrier = function(carrier)
+	local JC = api.type.JournalEntry.Carrier
+	local ok, EC = pcall(function() return api.type["enum"].Carrier end)
+	if ok and EC then
+		for _, n in ipairs({ "ROAD", "RAIL", "TRAM", "AIR", "WATER" }) do
+			if carrier == EC[n] then return JC[n] end
+		end
+	end
+	return JC.OTHER
+end
 local function chargeShares(st, dt)
 	local reg = st.co
 	if not (reg and reg.mode == "separate" and #(reg.list or {}) > 1 and dt and dt > 0) then return false end
@@ -1440,6 +1501,7 @@ local function chargeShares(st, dt)
 		for _, v in ipairs(okv and vehicles or {}) do
 			local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
 			local idx = tv and tv.stopIndex
+			if tv and not l.carrier then l.carrier = SIM.journalCarrier(tv.carrier) end
 			if type(idx) == "number" and l.n > 0 then
 				local k = tostring(v)
 				local last = reg.vstop[k]
@@ -1448,7 +1510,7 @@ local function chargeShares(st, dt)
 					local s, guard = last, 0
 					while s ~= idx and guard < l.n do
 						local f = l.stops[s]
-						if f then owed[#owed + 1] = { from = l.co, to = f.co, fee = f.fee } end
+						if f then owed[#owed + 1] = { from = l.co, to = f.co, fee = f.fee, carrier = l.carrier } end
 						s = (s + 1) % l.n
 						guard = guard + 1
 					end
@@ -1458,20 +1520,42 @@ local function chargeShares(st, dt)
 		end
 	end
 	if #owed == 0 then return true end
-	local sums = {}
-	reg.shareIncome = reg.shareIncome or {}
-	for _, o in ipairs(owed) do
-		sums[o.from] = (sums[o.from] or 0) - o.fee
-		sums[o.to] = (sums[o.to] or 0) + o.fee
-		reg.shareIncome[tostring(o.to)] = (reg.shareIncome[tostring(o.to)] or 0) + o.fee
+	local JE = api.type.JournalEntry
+	local plain = os.getenv("MPFEVER_FEEOTHER") == "1"
+	-- (one entry per company, way and carrier, booked in the order of their keys: the same on every game)
+	local sums, order = {}, {}
+	local function add(co, way, carrier, amount)
+		local k = string.format("%04d %s %s", co, way, plain and "-" or tostring(carrier or "-"))
+		if not sums[k] then sums[k] = { co = co, way = way, carrier = carrier, amount = 0 }; order[#order + 1] = k end
+		sums[k].amount = sums[k].amount + amount
 	end
-	for co, amount in pairs(sums) do
-		local c = CO.find(reg, co)
-		if c and c.ent and amount ~= 0 then
-			local entry = api.type.JournalEntry.new()
-			entry.amount = amount
+	reg.shareIncome = reg.shareIncome or {}
+	reg.shareExpense = reg.shareExpense or {}
+	for _, o in ipairs(owed) do
+		add(o.from, "pay", o.carrier, -o.fee)
+		add(o.to, "earn", o.carrier, o.fee)
+		reg.shareIncome[tostring(o.to)] = (reg.shareIncome[tostring(o.to)] or 0) + o.fee
+		reg.shareExpense[tostring(o.from)] = (reg.shareExpense[tostring(o.from)] or 0) + o.fee
+	end
+	table.sort(order)
+	for _, k in ipairs(order) do
+		local b = sums[k]
+		local c = CO.find(reg, b.co)
+		if c and c.ent and b.amount ~= 0 then
+			local entry = JE.new()
+			entry.amount = b.amount
 			entry.time = -1
-			entry.category.type = api.type.JournalEntry.Type.OTHER
+			if plain then
+				entry.category.type = JE.Type.OTHER
+			elseif b.way == "earn" then
+				entry.category.type = JE.Type.INCOME
+				entry.category.carrier = b.carrier or JE.Carrier.OTHER
+			else
+				entry.category.type = JE.Type.MAINTENANCE
+				entry.category.maintenance = JE.Maintenance.INFRASTRUCTURE
+				entry.category.construction = JE.Construction.STATION
+				entry.category.carrier = b.carrier or JE.Carrier.OTHER
+			end
 			api.cmd.sendCommand(api.cmd.makeJournalBookAssetCmd(c.ent, entry, api.type.Vec3f.new(0, 0, 0)))
 		end
 	end
@@ -1496,6 +1580,15 @@ local function simLocalCo()
 		end)
 	end
 	return SIM.localCo
+end
+
+-- what mpfever_eco.lua needs from here
+SIM.ecoEnv = function()
+	if not SIM.eco then
+		SIM.eco = { log = log, CO = CO, R = R, STEP = STEP, gameTime = gameTime, journalCarrier = SIM.journalCarrier, loanTable = coLoanTable,
+			payBack = function(loan) local M = loanMods(); return M and M.lu.getFullLoanAndInterestPayBack(loan) or 0 end }
+	end
+	return SIM.eco
 end
 
 local function update(userParams, state, dt)
@@ -1570,6 +1663,14 @@ local function update(userParams, state, dt)
 		end
 	end)
 	if not okl then log("companies: loans failed: " .. tostring(errl)) end
+	-- the months in debt, the bankruptcies, the tolls (mpfever_eco.lua)
+	local oke, erre = pcall(function()
+		local st = state:get()
+		if st and st.co and st.co.mode == "separate" and dt and dt > 0 and C.eco() then
+			if C.eco().tick(st, SIM.ecoEnv()) then state:set(st) end
+		end
+	end)
+	if not oke then log("companies: economy failed: " .. tostring(erre)) end
 end
 
 -- A native build by this machine's player, announced by the engine just BEFORE it is applied (onPreBuildProposal).
@@ -2196,6 +2297,10 @@ local function handleEvent(userParams, state, src, id, name, param)
 				while #reg.gifts > 20 do table.remove(reg.gifts, 1) end
 				log("companies: company " .. from .. " gave " .. amount .. " to company " .. to)
 			end
+		elseif C.eco() and C.eco().EVENTS[name] then
+			-- mixed modes, bankruptcy, auctions, tracks' and depots' rules (mpfever_eco.lua)
+			local okE, errE = pcall(C.eco().event, st, name, param, SIM.ecoEnv())
+			if not okE then log("companies: event " .. name .. " failed: " .. tostring(errE)) end
 		elseif name == "co_set" then
 			local c = st.co and CO.find(st.co, param.id)
 			if c then c.ent = param.ent; log("companies: company " .. c.id .. " is player entity " .. tostring(param.ent) .. " here") end
@@ -2214,7 +2319,7 @@ local function handleEvent(userParams, state, src, id, name, param)
 		elseif name == "replay_cost" then
 			-- (a shipped native build about to be replayed here, with what it cost its builder: see REFUND.book)
 			st.rcost = st.rcost or {}
-			st.rcost[#st.rcost + 1] = { at = gameTime(), uid = param.uid, cost = tonumber(param.cost), co = param.co, got = 0, n = 0 }
+			st.rcost[#st.rcost + 1] = { at = gameTime(), uid = param.uid, cost = tonumber(param.cost), co = param.co, got = 0, n = 0, kind = param.kind }
 			while #st.rcost > 8 do table.remove(st.rcost, 1) end
 		elseif name == "replay_unused" then
 			-- (a counted replay the engine refused: no build of it will come, see replaySend)
@@ -2712,9 +2817,9 @@ end
 H.chat = function(from, p) log("chat " .. tostring(from) .. ": " .. tostring(p.text)) end
 
 H.session = function(from, p)
-	if p.cmode ~= nil then G.cmode = p.cmode; G.coStart = p.cstart; G.coOwner = p.owner end
+	if p.cmode ~= nil then G.cmode = p.cmode; G.coStart = p.cstart; G.coOwner = p.owner; G.coBankrupt = p.bankrupt end
 	G.session.started = p.started == true
-	-- a resynchronisation is under way (see G.resyncRefuse); MPFEVER_RESYNCBUILDS=1: builds are not refused then (as before 0.4.6)
+	-- a resynchronisation is under way (see G.resyncRefuse); MPFEVER_RESYNCBUILDS=1: builds are not refused then (as before 0.5.0)
 	local rs = p.resync == true and os.getenv("MPFEVER_RESYNCBUILDS") ~= "1"
 	if rs ~= (G.session.resync == true) then log("session: resynchronisation " .. (rs and "under way: this player's builds are refused" or "over")) end
 	G.session.resync = rs
@@ -5162,7 +5267,7 @@ local function runNativeReplays()
 			elseif a.fn == "assetBuild" then okr, errr = pcall(withActor, PL(a), replayAssets, a)
 			elseif a.fn == "mpfCoJoin" then G.coBusy = { a = a, phase = "apply", frame = G.frames }; okr = true
 			else
-				if type(a.cost) == "number" then toSim("replay_cost", { uid = a.uid, cost = a.cost, co = a.co }) end
+				if type(a.cost) == "number" then toSim("replay_cost", { uid = a.uid, cost = a.cost, co = a.co, kind = G.costKind(a) }) end
 				G.refund = a.refund
 				okr, errr = pcall(withActor, PL(a), replayNative, a, 1)
 				G.refund = nil
@@ -5411,6 +5516,12 @@ end
 -- and on a game that has already loaded the host's savegame nothing would undo it (issue #81: a station that stayed on one game
 -- only, a resync right after). The player is told in the chat.
 G.resyncRefuse = function(what)
+	-- (a player between two companies, after leaving one or a bankruptcy: nothing of it is applied until its new company is
+	-- there, a few seconds; see coGui)
+	if G.coNone and G.cmode == "separate" and G.session.started then
+		if G.frames - (G.coNoneToldAt or -1000) > 300 then G.coNoneToldAt = G.frames; log("companies: " .. tostring(what) .. " refused: this player has no company yet") end
+		return true
+	end
 	if not G.session.resync then return false end
 	log("resynchronisation under way: " .. tostring(what) .. " refused here")
 	if G.frames - (G.resyncToldAt or -1000) > 300 then
@@ -5418,6 +5529,20 @@ G.resyncRefuse = function(what)
 		pcall(send, "notice", { what = "resyncbuild" })
 	end
 	return true
+end
+
+-- an MPFever event sent by this game itself (the host closing an auction's lot, its rules), stamped and shipped as the
+-- interface's events are: applied by every game at the same step (see mpfever_eco.lua)
+G.coEvent = function(name, param)
+	if G.session.resync then log("companies: event " .. name .. " not sent during the resynchronisation"); return false end
+	local now = gameTime()
+	G.oseq = G.oseq + 1
+	local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt and gameSpeed() == 0
+	local a = { fn = "makeScriptingSendEventCmd", args = { "mpfever", "mpfever", name, param or {} }, origin = G.me, oseq = G.oseq, co = G.myCo,
+		uid = G.me .. ":" .. G.oseq, at = paused and pausedStamp(now) or stampFor(now), paused = paused or nil }
+	send("act", a)
+	queueLocal(a)
+	log("companies: event " .. name .. " sent")
 end
 
 -- commands held by the UI hook: stamp them (two steps ahead, or at the pause point) and ship them
@@ -8566,16 +8691,100 @@ H.pvtest = function(from, p)
 		if be and #segs < 3 and (#segs == 0 or be.node0 == segs[#segs].node1) then segs[#segs + 1] = be end
 		if #segs >= 3 then break end
 	end
-	local param = { proposal = { proposal = { addedNodes = {}, addedSegments = {} } } }
-	for i, be in ipairs(segs) do param.proposal.proposal.addedSegments[i] = { comp = be } end
+	-- the event as the street tool gives it: { Proposal, ProposalData } by position, here the engine's own proposal that
+	-- replaces the first of those segments (a real Proposal, as the tool's)
+	local edge = nil
+	for _, e in ipairs(R.allEdges()) do
+		local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+		if be and segs[1] and be.node0 == segs[1].node0 and be.node1 == segs[1].node1 then edge = e break end
+	end
+	local okP, P = pcall(function() return api.engine.util.proposal.replaceSegment(edge) end)
+	if not okP or not P then
+		AUTO.results[#AUTO.results + 1] = "no engine proposal for segment " .. tostring(edge) .. ": " .. tostring(P)
+		return autoFinish()
+	end
+	local param = { P, nil }
 	local pts = G.pvPoints(param)
-	G.pv.sentAt = -1000
-	G.previewOut("streetBuilder", param)
-	AUTO.results[#AUTO.results + 1] = "preview of " .. #segs .. " segment(s): " .. #pts .. " point(s) sent"
-	G.waits[#G.waits + 1] = { at = G.frames + 240, fn = function()
+	-- (the others look at it: MPFEVER_PVCAM=1 moves their camera there, for a screenshot)
+	if pts[1] then send("pvcam", { x = pts[1][1], y = pts[1][2] }) end
+	local sent = 0
+	local function again()
+		G.pv.sentAt = -1000
+		G.previewOut("streetBuilder", param)
+		sent = sent + 1
+		if sent < 30 then G.waits[#G.waits + 1] = { at = G.frames + 20, fn = again } end
+	end
+	again()
+	AUTO.results[#AUTO.results + 1] = "preview of an engine proposal on segment " .. tostring(edge) .. ": " .. #pts .. " point(s) sent"
+	G.waits[#G.waits + 1] = { at = G.frames + 20 * 30 + 240, fn = function()
 		AUTO.results[#AUTO.results + 1] = "preview " .. (G.pv.sending and "still shown" or "taken away after the tool's silence")
 		autoFinish()
 	end }
+end
+
+-- Finance lines (MPFEVER_SCENARIO=fincat): books three entries on this game's company (a road construction, station upkeep
+-- and road revenue, as the refunds and the shared stations' fees are now booked) and reads the finance window's table before
+-- and after: each must land in its own line ("Roads", "Upkeep Stations" of Road, "Revenue" of Road), none in « Other »
+H.fincat = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local player = api.engine.util.getPlayer()
+	local function table_()
+		local t = {}
+		local cfg = api.type.ChartConfig.new()
+		cfg.count = 1
+		local fd = api.engine.util.finance.computeFinanceTable(player, cfg)
+		fd:foreach_investment(function(key, values)
+			local k = fd:unfoldKey(key)
+			t["investment " .. tostring(k[1]) .. "/" .. tostring(k[3])] = values[#values]
+		end)
+		fd:foreach_carrier(function(carrier)
+			fd:foreach_transport(function(key, values)
+				local k = fd:unfoldKey(key)
+				t["transport " .. tostring(carrier) .. " " .. tostring(k[1]) .. "/" .. tostring(k[2]) .. "/" .. tostring(k[3])] = values[#values]
+			end, carrier)
+		end)
+		fd:foreach_other(function(key, values) t["other " .. tostring(key)] = values[#values] end)
+		return t
+	end
+	local okB, before = pcall(table_)
+	local JE = api.type.JournalEntry
+	local function book(amount, fill)
+		local e = JE.new()
+		e.amount = amount
+		e.time = -1
+		local okF, err = pcall(fill, e)
+		if not okF then AUTO.results[#AUTO.results + 1] = "category not writable: " .. tostring(err) end
+		api.cmd.sendCommand(api.cmd.makeJournalBookAssetCmd(player, e, api.type.Vec3f.new(0, 0, 0)))
+	end
+	book(-12345, function(e) e.category.type = JE.Type.CONSTRUCTION; e.category.construction = JE.Construction.STREET end)
+	book(-111, function(e) e.category.type = JE.Type.MAINTENANCE; e.category.maintenance = JE.Maintenance.INFRASTRUCTURE; e.category.construction = JE.Construction.STATION; e.category.carrier = JE.Carrier.ROAD end)
+	book(222, function(e) e.category.type = JE.Type.INCOME; e.category.carrier = JE.Carrier.ROAD end)
+	G.waits[#G.waits + 1] = { at = G.frames + 180, fn = function()
+		local okA, after = pcall(table_)
+		if not (okB and okA) then
+			AUTO.results[#AUTO.results + 1] = "finance table not read: " .. tostring(okB and after or before)
+			return autoFinish()
+		end
+		local keys = {}
+		for k in pairs(after) do keys[k] = true end
+		for k in pairs(before) do keys[k] = true end
+		for k in pairs(keys) do
+			local d = (after[k] or 0) - (before[k] or 0)
+			if d ~= 0 then AUTO.results[#AUTO.results + 1] = k .. ": " .. d end
+		end
+		AUTO.results[#AUTO.results + 1] = "keys: CONSTRUCTION=" .. tostring(JE.Type.CONSTRUCTION) .. " STREET=" .. tostring(JE.Construction.STREET)
+			.. " MAINTENANCE=" .. tostring(JE.Type.MAINTENANCE) .. " INCOME=" .. tostring(JE.Type.INCOME) .. " ROAD=" .. tostring(JE.Carrier.ROAD)
+		autoFinish()
+	end }
+end
+
+H.pvcam = function(from, p)
+	if from == G.me or os.getenv("MPFEVER_PVCAM") ~= "1" then return end
+	pcall(function() api.gui.camera.setManualCamera(api.type.Vec2f.new(p.x, p.y), 250) end)
+	log("preview test: camera moved to " .. tostring(p.x) .. "," .. tostring(p.y))
 end
 
 H.wait = function(from, p)
@@ -8690,6 +8899,100 @@ H.cofeat = function(from, p)
 		for _, r in ipairs(AUTO.results) do log("AUTOTEST " .. r) end
 		autoFinish()
 	end }
+end
+
+-- Mixed modes scenario (MPFEVER_SCENARIO=coeco, companies mode, the host with MPFEVER_COAUTO=1 and MPFEVER_LOTSECONDS=8): the
+-- host opens its tracks for a toll; the client asks to join company 1 (the host's chief accepts), leaves it (a new company),
+-- offers to merge it into company 1 (accepted), leaves again; then company 1 goes bankrupt (its first two lots at auction): the
+-- client bids on the first, nobody on the second. The checks then say whether every game did the same.
+H.coeco = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function ev(name, param) uiRequest("makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = name, [4] = param }) end
+	local function note(t) AUTO.results[#AUTO.results + 1] = t; log("AUTOTEST " .. t) end
+	if not (G.co and G.myCo) then note("coeco: not in the companies mode"); return autoFinish() end
+	if C.ROLE == "host" then
+		ev("co_track_rule", { rule = "toll", toll = 1500 })
+		G.waits[#G.waits + 1] = { at = G.frames + 300, fn = function()
+			local r = C.eco() and C.eco().trackRule(G.co, CO.find(G.co, G.myCo))
+			note("host: tracks of company " .. tostring(G.myCo) .. ": " .. tostring(r and r.rule) .. " " .. tostring(r and r.toll))
+			autoFinish()
+		end }
+		return
+	end
+	-- the client: a list of steps, each waiting for its condition (at most 40 s)
+	local steps = {}
+	local function step(what, start, done) steps[#steps + 1] = { what = what, start = start, done = done } end
+	local first = nil
+	step("join company 1", function() first = G.myCo; ev("co_join_ask", { to = 1 }) end, function() return G.myCo == 1 end)
+	step("leave company 1", function() ev("co_leave", {}) end, function() return G.myCo ~= nil and G.myCo ~= 1 end)
+	step("merge into company 1", function() ev("co_merge_ask", { to = 1 }) end, function() return G.myCo == 1 end)
+	step("leave again", function() ev("co_leave", {}) end, function() return G.myCo ~= nil and G.myCo ~= 1 end)
+	step("company 1 bankrupt", function() ev("co_test", { op = "bankrupt", co = 1, maxLots = 2 }) end,
+		function() local c1 = CO.find(G.co, 1); return c1 and c1.gone == "bankrupt" and G.co.auction ~= nil end)
+	step("bid on lot 1", function()
+			local au = G.co.auction
+			local lot = au and au.lots[au.idx]
+			if lot then ev("co_bid", { seq = au.seq, lot = au.idx, amount = lot.reserve }) end
+		end,
+		function() local au = G.co.auction; return au and au.bidder == G.myCo end)
+	step("auction over", function() end, function() return G.co.auction == nil end)
+	local i, since = 0, 0
+	local function nextStep()
+		i = i + 1
+		local s = steps[i]
+		if not s then
+			note("client plays company " .. tostring(G.myCo) .. " (first " .. tostring(first) .. ")")
+			for _, c in ipairs(G.co.list) do
+				local m = {}
+				for _, x in ipairs(CO.members(c)) do m[#m + 1] = x.key end
+				note("company " .. c.id .. " " .. tostring(c.gone or "playing") .. " members " .. table.concat(m, ","))
+			end
+			G.waits[#G.waits + 1] = { at = G.frames + 600, fn = autoFinish }
+			return
+		end
+		pcall(s.start)
+		since = G.frames
+		local function poll()
+			local ok, d = pcall(s.done)
+			if ok and d then note("step '" .. s.what .. "': done in " .. (G.frames - since) .. " frames"); return nextStep() end
+			if G.frames - since > 2400 then note("step '" .. s.what .. "': NOT DONE within 40 s"); return nextStep() end
+			G.waits[#G.waits + 1] = { at = G.frames + 30, fn = poll }
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 30, fn = poll }
+	end
+	nextStep()
+end
+
+-- Bankruptcy scenario (MPFEVER_SCENARIO=cobroke, companies mode, MPFEVER_BANKRUPT=3 for the host's rule): the client's company
+-- spends all its money and 100000 more; the host's look at each new month counts it in debt; after 3 months it goes bankrupt
+-- and the client gets a new company. Waits at most 12 minutes (the game's speed: MPFEVER_SPEED).
+H.cobroke = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function note(t) AUTO.results[#AUTO.results + 1] = t; log("AUTOTEST " .. t) end
+	if not (G.co and G.myCo) then note("cobroke: not in the companies mode"); return autoFinish() end
+	if C.ROLE == "host" then note("host: rule " .. tostring((G.co.rules or {}).bankrupt) .. ", month " .. tostring(G.co.month) .. " (a month is " .. tostring(api.util.getDefaultMonthDuration()) .. " ms of game time)"); return autoFinish() end
+	local first = G.myCo
+	uiRequest("makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "co_test", [4] = { op = "broke", co = first } })
+	local since = G.frames
+	local lastDebt = nil
+	local function poll()
+		local c = CO.find(G.co, first)
+		if c and c.debt ~= lastDebt then lastDebt = c.debt; note("company " .. first .. " in debt for " .. tostring(c.debt) .. " month(s) at t=" .. tostring(gameTime())) end
+		if c and c.gone == "bankrupt" and G.myCo and G.myCo ~= first and not G.coNone then
+			note("company " .. first .. " bankrupt after " .. math.floor((G.frames - since) / 60) .. " s; the client now plays company " .. tostring(G.myCo))
+			G.waits[#G.waits + 1] = { at = G.frames + 900, fn = autoFinish }
+			return
+		end
+		if G.frames - since > 60 * 720 then note("NOT bankrupt within 12 minutes (debt " .. tostring(c and c.debt) .. ")"); return autoFinish() end
+		G.waits[#G.waits + 1] = { at = G.frames + 60, fn = poll }
+	end
+	G.waits[#G.waits + 1] = { at = G.frames + 60, fn = poll }
 end
 
 -- Broke scenario (companies mode): the host's company is left 100000 in debt; the other scenarios then show whether another
@@ -10538,7 +10841,7 @@ local function coGui(st)
 	end
 	-- the interface's own Lua state (tools, windows) maps player entities to company numbers through this file
 	if st.co then
-		local lines = { "me	" .. tostring(G.myCo or 0) }
+		local lines = { "me	" .. tostring((not G.coNone and G.myCo) or 0) }
 		for _, c in ipairs(st.co.list) do if c.ent then lines[#lines + 1] = c.id .. "	" .. c.ent .. "	" .. tostring(c.name or ""):gsub("[%c]", " ") end end
 		-- (each company's colour, a palette index: see CO.PALETTE)
 		for _, c in ipairs(st.co.list) do lines[#lines + 1] = "color	" .. c.id .. "	" .. tostring(c.color or 1) end
@@ -10600,9 +10903,19 @@ local function coGui(st)
 	local reg = st.co
 	if reg then
 		local c = CO.match(reg, G.coMyKey(), G.coMySid(), C.ROLE == "host")
+		-- (no company any more: this player left its company, or its company went bankrupt; it acts as nobody's until its new
+		-- one is there, see G.coEco)
+		-- (G.myCo stays the company it played: the native module still acts as it; its actions are refused meanwhile, see
+		-- G.resyncRefuse)
+		if not c and G.myCo and G.session.started and G.coAsked and not G.coNone then
+			log("companies: this game plays no company any more (it was company " .. tostring(G.myCo) .. "): a new one is coming")
+			G.coNone = true
+		elseif c and G.coNone and c.ent then
+			G.coNone = nil
+		end
 		-- the other companies' player entities (the native module empties their money popups, see ClearOthers)
 		local others = {}
-		for _, o in ipairs(reg.list) do if o.ent and c and o.ent ~= c.ent then others[#others + 1] = o.ent end end
+		for _, o in ipairs(reg.list) do if o.ent and not o.gone and c and o.ent ~= c.ent then others[#others + 1] = o.ent end end
 		table.sort(others)
 		local osig = table.concat(others, " ")
 		-- (said again every few seconds: the native module forgets the value when a game is loaded, see ApplyLocalPlayer. Said
@@ -10646,7 +10959,195 @@ local function coGui(st)
 			G.hudShareAt = G.frames
 			pcall(G.hudShare, reg, c)
 		end
+		-- the tracks the other companies opened (their rule "open" or "toll", or gone companies'): this game's track tool may
+		-- connect to them (see the native module's IsOwnedDetour). Every 300 frames, written only when the list changes
+		if c and c.ent and G.frames - (G.openNetAt or -1000) >= 300 then
+			G.openNetAt = G.frames
+			local okO, errO = pcall(G.openNet, reg, c)
+			if not okO then log("companies: open tracks failed: " .. tostring(errO)) end
+		end
+		local okE, errE = pcall(G.coEco, st, reg, c)
+		if not okE and G.frames - (G.coEcoErrAt or -10000) > 600 then G.coEcoErrAt = G.frames; log("companies: economy view failed: " .. tostring(errE)) end
 	end
+end
+
+-- Mixed modes, bankruptcy, auctions, rules (mpfever_eco.lua), the interface's side, every frame:
+--  * eco.txt for the interface (the MPFever window): this player's key, the members and chiefs, the companies gone, the months in
+--    debt, the requests and offers, the rules, the fees and tolls, the auction under way;
+--  * a player left without a company (it left one, its company went bankrupt) announces itself again: it gets a new one;
+--  * the host: the bankruptcy rule of its session into the game, the auction's clock (a lot closes a minute after it opened,
+--    and 15 s after its last bid), and what happens told in the chat.
+G.coEco = function(st, reg, c)
+	local E = C.eco()
+	if not E then return end
+	local function clean(t) return (tostring(t or ""):gsub("[%c]", " ")) end
+	local L = { "mykey\t" .. G.coMyKey(), "rules\t" .. tostring((reg.rules or {}).bankrupt or E.BANKRUPT_DEFAULT) }
+	local function num(t, id) return math.floor(tonumber(t and t[tostring(id)]) or 0) end
+	for _, co in ipairs(reg.list) do
+		if co.gone then L[#L + 1] = "gone\t" .. co.id .. "\t" .. tostring(co.gone) end
+		for _, m in ipairs(CO.members(co)) do L[#L + 1] = "member\t" .. co.id .. "\t" .. clean(m.key) end
+		local ch = CO.chief(co)
+		if ch and not co.gone then L[#L + 1] = "chief\t" .. co.id .. "\t" .. clean(ch) end
+		if co.debt then L[#L + 1] = "debt\t" .. co.id .. "\t" .. co.debt end
+		local r = E.trackRule(reg, co)
+		L[#L + 1] = "track\t" .. co.id .. "\t" .. tostring(r.rule) .. "\t" .. tostring(r.toll or 0)
+		L[#L + 1] = "fees\t" .. co.id .. "\t" .. num(reg.shareIncome, co.id) .. "\t" .. num(reg.shareExpense, co.id) .. "\t" .. num(reg.tollIncome, co.id) .. "\t" .. num(reg.tollExpense, co.id)
+	end
+	for _, r in ipairs(reg.requests or {}) do L[#L + 1] = "req\t" .. clean(r.key) .. "\t" .. clean(r.name) .. "\t" .. tostring(r.to) end
+	for _, o in ipairs(reg.mergeOffers or {}) do L[#L + 1] = "merge\t" .. tostring(o.from) .. "\t" .. tostring(o.to) end
+	local au = reg.auction
+	-- (when this game saw the lot open: the time left it shows)
+	local nowT = os.time()
+	if au and au.lots[au.idx] then
+		if not G.coAuSeen or G.coAuSeen.seq ~= au.seq or G.coAuSeen.idx ~= au.idx then G.coAuSeen = { seq = au.seq, idx = au.idx, t = nowT } end
+		if au.lastBidAt and G.coAuSeen.bidAt ~= au.lastBidAt then G.coAuSeen.bidAt = au.lastBidAt; G.coAuSeen.bidT = nowT end
+		local left = math.max(0, E.LOT_SECONDS - (nowT - G.coAuSeen.t))
+		if G.coAuSeen.bidT then left = math.max(left, E.LAST_BID_SECONDS - (nowT - G.coAuSeen.bidT)) end
+		local lot = au.lots[au.idx]
+		local minBid = math.max(lot.reserve or 0, au.best and math.ceil(au.best * (1 + E.MIN_RAISE)) or 0)
+		L[#L + 1] = "auction\t" .. au.seq .. "\t" .. au.co .. "\t" .. au.idx .. "\t" .. #au.lots .. "\t" .. tostring(lot.kind) .. "\t" .. clean(lot.label)
+			.. "\t" .. tostring(lot.reserve or 0) .. "\t" .. tostring(au.best or 0) .. "\t" .. tostring(au.bidder or 0) .. "\t" .. left .. "\t" .. minBid
+	else
+		G.coAuSeen = nil
+	end
+	local dk = {}
+	for k in pairs(reg.depots or {}) do dk[#dk + 1] = k end
+	table.sort(dk)
+	for _, k in ipairs(dk) do local d = reg.depots[k]; L[#L + 1] = "depot\t" .. clean(k) .. "\t" .. tostring(d.rule) .. "\t" .. tostring(d.toll or 0) .. "\t" .. tostring(d.co or 0) end
+	local txt = table.concat(L, NL) .. NL
+	if txt ~= G.ecoFile then
+		G.ecoFile = txt
+		local f = C.IO.open(C.DIR .. BS .. "eco.txt", "wb")
+		if f then f:write(txt); f:close() end
+	end
+	-- a player without a company (it left its company, or its company went bankrupt): announced again two seconds later
+	if G.session.started and G.coAsked and not G.coBusy and not c then
+		G.coNoneSince = G.coNoneSince or G.frames
+		if G.frames - G.coNoneSince > 120 and G.frames - (G.coReannAt or -100000) > 900 then
+			G.coNoneSince = nil
+			G.coReannAt = G.frames
+			G.coAsked = false
+			log("companies: this player has no company any more: it asks for a new one")
+		end
+	else
+		G.coNoneSince = nil
+	end
+	-- (autotests, MPFEVER_COAUTO=1: this game's chief accepts the requests and offers to its company by itself)
+	if os.getenv("MPFEVER_COAUTO") == "1" and c and CO.chief(c) == G.coMyKey() and G.frames - (G.coAutoAt or -1000) > 120 then
+		for _, r in ipairs(reg.requests or {}) do
+			if r.to == c.id then G.coAutoAt = G.frames; uiRequest("makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "co_join_answer", [4] = { key = r.key, accept = true } }) end
+		end
+		for _, o in ipairs(reg.mergeOffers or {}) do
+			if o.to == c.id then G.coAutoAt = G.frames; uiRequest("makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "co_merge_answer", [4] = { from = o.from, accept = true } }) end
+		end
+	end
+	if C.ROLE ~= "host" then return end
+	-- the host's rule into the game (once, and again if the game did not take it)
+	local want = tonumber(G.coBankrupt)
+	if want and want ~= tonumber((reg.rules or {}).bankrupt) and G.frames - (G.coRulesAt or -100000) > 600 then
+		G.coRulesAt = G.frames
+		G.coEvent("co_rules", { bankrupt = want })
+	end
+	-- each new month: the companies in debt on this game (the host's money is every game's), applied by all at the same step
+	if reg.month and reg.month ~= (reg.monthSeen or -1) and (G.coMonthSent ~= reg.month or G.frames - (G.coMonthAt or 0) > 900) then
+		G.coMonthSent = reg.month
+		G.coMonthAt = G.frames
+		local debt = {}
+		for _, co in ipairs(reg.list) do
+			if co.ent and not co.gone then
+				local okB, b = pcall(api.engine.util.finance.getPlayersBalance, co.ent)
+				if okB and type(b) == "number" and b < 0 then debt[#debt + 1] = co.id end
+			end
+		end
+		G.coEvent("co_month", { month = reg.month, debt = debt })
+	end
+	-- the auction's clock (the host's real time: the game may be paused, its speed may change)
+	if au and au.lots[au.idx] then
+		local A = G.coAu
+		if not A or A.seq ~= au.seq or A.idx ~= au.idx then
+			A = { seq = au.seq, idx = au.idx, start = nowT, sent = -1000 }
+			G.coAu = A
+			local lot = au.lots[au.idx]
+			-- (after what happened up to now: the bankruptcy is told before its first lot)
+			G.coNewsSay(reg)
+			G.coSay(C.Tf("Enchères de %s : lot %s/%s, %s (mise à prix %s). Enchérissez dans la fenêtre MPFever.", "Auction of %s: lot %s/%s, %s (reserve %s). Bid in the MPFever window.",
+				G.coName(reg, au.co), au.idx, #au.lots, G.coLotText(lot), G.coMoney(lot.reserve)))
+		end
+		if au.lastBidAt ~= A.bidAt then A.bidAt = au.lastBidAt; A.bidT = nowT end
+		if nowT - A.start >= E.LOT_SECONDS and (not A.bidT or nowT - A.bidT >= E.LAST_BID_SECONDS) and nowT - A.sent >= 10 then
+			A.sent = nowT
+			G.coEvent("co_lot_close", { seq = au.seq, lot = au.idx })
+		end
+	else
+		G.coAu = nil
+	end
+	G.coNewsSay(reg)
+end
+
+-- what happened, in the chat (from the host only: one message for everybody)
+G.coNewsSay = function(reg)
+	if G.coNewsSeen == nil then G.coNewsSeen = reg.newsSeq or 0 end
+	for _, n in ipairs(reg.news or {}) do
+		if n.n > G.coNewsSeen then
+			G.coNewsSeen = n.n
+			local okT, t = pcall(G.coNewsText, reg, n)
+			if okT and t then G.coSay(t) end
+		end
+	end
+end
+
+G.coMoney = function(n)
+	local s = tostring(math.floor(tonumber(n) or 0))
+	local out = s:reverse():gsub("(%d%d%d)", "%1 "):reverse():gsub("^ ", "")
+	return "$" .. out
+end
+
+G.coLotText = function(lot)
+	if lot.kind == "line" then return C.Tf("la ligne « %s » et ses %s véhicule(s)", "line « %s » and its %s vehicle(s)", lot.label, lot.vehicles or 0) end
+	if lot.kind == "station" then return C.Tf("la gare « %s »", "station « %s »", lot.label) end
+	return C.Tf("le dépôt « %s »", "depot « %s »", lot.label)
+end
+
+G.coSay = function(text)
+	pcall(send, "notice", { what = "cochat", text = text })
+	log("companies (chat): " .. text)
+end
+
+-- a company's name as the players see it: the game's (the savegame's company has none in the registry), else the registry's
+G.coName = function(reg, id)
+	local c = CO.find(reg, id)
+	if not c then return "#" .. tostring(id) end
+	local n = nil
+	pcall(function() n = api.engine.getComponent(c.ent, api.type.ComponentType.NAME).name end)
+	if type(n) == "string" and n ~= "" then return n end
+	if c.name and c.name ~= "" then return c.name end
+	return "#" .. tostring(id)
+end
+
+G.coNewsText = function(reg, n)
+	local function nm(id) return G.coName(reg, id) end
+	local k = n.kind
+	if k == "bankrupt" then return C.Tf("%s fait faillite : %s lot(s) mis aux enchères. Ses joueurs reçoivent une nouvelle entreprise.", "%s goes bankrupt: %s lot(s) put up for auction. Its players get a new company.", nm(n.co), n.lots or 0) end
+	if k == "debt" then
+		if (n.limit or 0) <= 0 then return nil end
+		return C.Tf("%s est endettée depuis %s mois (faillite à %s mois de dette).", "%s has been in debt for %s month(s) (bankruptcy after %s months).", nm(n.co), n.months, n.limit)
+	end
+	if k == "bid" then return C.Tf("%s offre %s.", "%s bids %s.", nm(n.by), G.coMoney(n.amount)) end
+	if k == "lot_sold" then return C.Tf("Adjugé : « %s » à %s pour %s.", "Sold: « %s » to %s for %s.", n.label, nm(n.to), G.coMoney(n.amount)) end
+	if k == "lot_unsold" then return C.Tf("« %s » : aucune offre, démoli.", "« %s »: no bid, demolished.", n.label) end
+	if k == "auction_end" then return C.Tf("Fin des enchères de %s.", "The auction of %s is over.", nm(n.co)) end
+	if k == "ask" then return C.Tf("%s demande à rejoindre %s (son chef répond dans la fenêtre MPFever).", "%s asks to join %s (its chief answers in the MPFever window).", n.name or n.key, nm(n.co)) end
+	if k == "joined" then return C.Tf("%s rejoint %s.", "%s joins %s.", n.key, nm(n.co)) end
+	if k == "refused" then return C.Tf("%s refuse la demande de %s.", "%s refuses %s's request.", nm(n.co), n.key) end
+	if k == "left" then return C.Tf("%s quitte %s et fonde sa propre entreprise.", "%s leaves %s and starts its own company.", n.key, nm(n.co)) end
+	if k == "merge_ask" then return C.Tf("%s propose de fusionner avec %s.", "%s offers to merge with %s.", nm(n.co), nm(n.to)) end
+	if k == "merged" then return C.Tf("%s fusionne avec %s : tous ses biens, son argent et ses joueurs passent à %s.", "%s merges with %s: all its assets, its money and its players go to %s.", nm(n.co), nm(n.into), nm(n.into)) end
+	if k == "merge_refused" then return C.Tf("%s refuse de fusionner avec %s.", "%s refuses to merge with %s.", nm(n.to), nm(n.co)) end
+	if k == "track_rule" then
+		local what = n.rule == "open" and C.T("ouvertes à tous", "open to all") or n.rule == "toll" and C.Tf("ouvertes avec un péage de %s par passage", "open with a toll of %s per passage", G.coMoney(n.toll)) or C.T("privées", "private")
+		return C.Tf("Voies de %s : %s.", "%s's tracks: %s.", nm(n.co), what)
+	end
+	return nil
 end
 
 -- (a field of G: the main chunk is at Lua's limit of 200 locals)
@@ -10684,7 +11185,80 @@ G.hudShare = function(reg, me)
 	log("companies: " .. #ids .. " entities of the stations the other companies share shown on the map")
 end
 
--- ---------------------------------------------------------------- the others' build previews (0.4.6)
+G.openNet = function(reg, me)
+	local E = C.eco()
+	if not E then return end
+	local open = {}
+	local any = false
+	for _, co in ipairs(reg.list) do
+		if co.ent and co.id ~= me.id then
+			local r = E.trackRule(reg, co)
+			if r.rule == "open" or r.rule == "toll" then open[co.ent] = true; any = true end
+		end
+	end
+	local ids, seen = {}, {}
+	local function add(e) if type(e) == "number" and e >= 0 and not seen[e] then seen[e] = true; ids[#ids + 1] = e end end
+	if any then
+		for _, e in ipairs(R.allEdges()) do
+			local okc, po = pcall(api.engine.getComponent, e, api.type.ComponentType.PLAYER_OWNED)
+			if okc and po and open[po.player] then
+				local okt, tr = pcall(api.engine.getComponent, e, api.type.ComponentType.BASE_EDGE_TRACK)
+				if okt and tr then
+					add(e)
+					pcall(function()
+						local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+						add(be.node0)
+						add(be.node1)
+					end)
+				end
+			end
+		end
+	end
+	table.sort(ids)
+	local txt = table.concat(ids, " ")
+	if txt == G.openNetTxt then return end
+	G.openNetTxt = txt
+	local f = C.IO.open(C.DIR .. BS .. "open_net.txt", "wb")
+	if not f then return end
+	f:write(txt .. NL)
+	f:close()
+	K.coCtlSeq = K.coCtlSeq + 1
+	local okT, tm = pcall(os.time)
+	nativeCtl("opennet " .. (((okT and tm or 0) % 1000000) * 100 + K.coCtlSeq % 100))
+	log("companies: " .. #ids .. " entities of the tracks the other companies opened")
+end
+
+-- The finance window's line of a shipped native build (JournalEntry.Construction key), where its builder's game booked it and
+-- where the difference its replay costs here is booked (REFUND.book): a construction (station, depot, warehouse), stops and
+-- signals, tracks, streets, else a removal (bulldozer)
+G.costKind = function(a)
+	local m = type(a.args) == "table" and type(a.args[1]) == "table" and a.args[1] or {}
+	local sp = type(m.proposal) == "table" and m.proposal or {}
+	for _, ce in ipairs(m.toAdd or {}) do
+		local f = tostring(type(ce) == "table" and ce.fileName or ""):lower()
+		-- (the town buildings a street moves: not the build's)
+		if f:find("building") or f:find("/town") or f:find("industry") then goto continue end
+		if f:find("depot") then return "DEPOT" end
+		if f:find("warehouse") then return "WAREHOUSE" end
+		if f:find("station") or f:find("airport") or f:find("airfield") or f:find("harbor") or f:find("port") or f:find("stop") then return "STATION" end
+		if f ~= "" then return "OTHER" end
+		::continue::
+	end
+	local objs = sp.edgeObjectsToAdd or {}
+	if #objs > 0 then
+		for _, o in ipairs(objs) do if type(o) == "table" and (o.category == 0 or o.category == nil) then return "STATION" end end
+		return "SIGNAL"
+	end
+	local segs = sp.addedSegments or {}
+	if #segs > 0 then
+		for _, sg in ipairs(segs) do if type(sg) == "table" and sg.type == 1 then return "TRACK" end end
+		return "STREET"
+	end
+	if #(m.toRemove or {}) > 0 or #(sp.removedSegments or {}) > 0 then return "BULLDOZER" end
+	return nil
+end
+
+-- ---------------------------------------------------------------- the others' build previews (0.5.0)
 -- What a player's build tool shows before the click (a street, a track, a station, a stop), the others see on the ground in
 -- their games while it shows: a chain of circles along its segments, a circle where a construction goes, in the builder's
 -- company colour (the game's mission zones, as the pending builds' circles: nothing of it reaches the world). Sent at most four
@@ -10694,7 +11268,8 @@ G.pv = { lastEv = -1000, sentAt = -1000, sending = false, shown = {}, out = 0, l
 G.PV_TOOLS = { streetBuilder = "street", trackBuilder = "track", constructionBuilder = "construction", streetTerminalBuilder = "stop" }
 G.pvPoints = function(param)
 	local pts, r = {}, 6
-	local pr = param and (param.proposal or param)
+	-- the tool's event gives { Proposal, ProposalData } by position (as the game's missions read it: mission_sim.script)
+	local pr = type(param) == "table" and (param[1] or param.proposal) or param
 	local sp = pr and pr.proposal
 	local nodes = {}
 	local function V(v) if v == nil then return nil end return { x = v.x or v[1], y = v.y or v[2], z = v.z or v[3] } end
@@ -10745,10 +11320,22 @@ G.previewOut = function(tool, param)
 	if not kind or not G.session.started then return end
 	G.pv.lastEv = G.frames
 	if G.frames - G.pv.sentAt < 15 then return end
-	local pts, r = G.pvPoints(param)
-	if not G.pv.logged[tool] then
-		G.pv.logged[tool] = true
-		log("build preview of the " .. kind .. " tool: " .. #pts .. " point(s) sent to the others")
+	local okP, pts, r = pcall(G.pvPoints, param)
+	local why = not okP and tostring(pts) or nil
+	if not okP then pts, r = {}, 6 end
+	-- (logged once per tool when it has points, and the first empty ones with what the event gave, to see why)
+	local lk = tool .. (#pts > 0 and "" or ":empty")
+	G.pv.logged[lk] = (G.pv.logged[lk] or 0) + 1
+	if G.pv.logged[lk] == 1 then
+		local shape = ""
+		if #pts == 0 then
+			pcall(function()
+				local t = {}
+				for k, v in pairs(type(param) == "table" and param or {}) do t[#t + 1] = tostring(k) .. "=" .. type(v) end
+				shape = " (event " .. type(param) .. " {" .. table.concat(t, ",") .. "}" .. (why and (", " .. why) or "") .. ")"
+			end)
+		end
+		log("build preview of the " .. kind .. " tool: " .. #pts .. " point(s) sent to the others" .. shape)
 	end
 	if #pts == 0 then return end
 	G.pv.sentAt = G.frames
