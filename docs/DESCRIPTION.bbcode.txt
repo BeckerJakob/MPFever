@@ -28,9 +28,11 @@
 [*][b]Fair refunds.[/b] Demolishing what you just built gives your money back on every game, as in a solo game.
 [*][b]Easy hosting.[/b] Host any savegame from the main menu: the players gather in a lobby, MPFever opens the port on your router by itself (UPnP / NAT-PMP) and sends your world to your friends. Joining a game already running works too, over IPv4 or IPv6.
 [*][b]Chat and MPFever window in the game.[/b] Talk with the other players from the pause menu. The MPFever window shows the connected players, the sync state, the companies and, for the host, a button to invite Steam friends.
+[*][b]Mods made easy.[/b] Missing mods install themselves from the game's Mod Hub, the host can send its own local mods, and mods that only change your interface (personal mods) may differ from one player to another.
+[*][b]See what the others are building.[/b] What another player's tool shows before their click shows on the ground in your game, in their colour.
 [*][b]Dedicated server[/b] (separate download): the world waits while nobody is connected, saves regularly, restarts by itself after a crash, and has a console (status, say, save, kick, restart...).
 [*][b]Built into the game.[/b] Nothing clutters the screen: just a button in the main menu and two cards in the pause menu.
-[*][b]One-click bug reports.[/b] One button gathers every log and opens a prefilled report.
+[*][b]One-click bug reports.[/b] One button gathers every log (without your personal data) and opens a prefilled report.
 [/list]
 
 [size=4][b]Installation[/b][/size]
@@ -44,7 +46,7 @@ Your solo games are not affected: MPFever only acts when the game is started thr
 [size=4][b]Good to know[/b][/size]
 [list]
 [*]MPFever is in active development (version 0.4.6), with new versions released often. Backing up your savegames is always a good idea.
-[*]Every player needs the same MPFever version (automatic), the same mods and [b]the same game version[/b]: make sure Steam has updated Transport Fever 3 on every PC.
+[*]Every player needs the same MPFever version (automatic), the same mods (installed by themselves from the Mod Hub) and [b]the same game version[/b]: make sure Steam has updated Transport Fever 3 on every PC.
 [*]Made for the current Steam version of the game, on Windows.
 [*]The tutorial is made for solo play.
 [*]In « one company per player », a company can't go bankrupt yet.

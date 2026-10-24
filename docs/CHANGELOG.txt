@@ -30,7 +30,10 @@ MPFever - Changelog
     ground in your game, in their company's colour. Host setting « See what the others are building » (on).
   - NEW: the problem report leaves out what tells who and where you are (the issues are public): the Windows account and
     PC names in paths, Steam account numbers, public IP and e-mail addresses.
-  - TESTS: two games on one PC: stops on reversed segments, vehicle purchases at x3, 15 minutes at x4 (in sync).
+  - TESTS: two games on one PC on a large map: 15 minutes at x4, then again after a resynchronisation (in sync); a build during a
+    resynchronisation (refused, then in sync); the client reloaded with 7 personal interface mods the host does not have (in sync);
+    previews drawn on the other game; stops on reversed segments, vehicle purchases at x3 (in sync); the costs of the friends'
+    street upgrades still exact. The lobby's new texts and buttons were checked on screen.
 
 0.4.5 - town street upgrades replayed exactly, stops, speed x2 and x3
   - FIX: an upgrade of several street segments at once (one build of the tool) was replayed segment by segment on the
