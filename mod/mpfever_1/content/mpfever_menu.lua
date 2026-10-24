@@ -132,9 +132,10 @@ local function listSaves()
 	return out
 end
 
--- The mods of a savegame (MPFever left out), as the host sends them to the players of its lobby: "id|name|source"
+-- The mods of a savegame (MPFever left out), as the host sends them to the players of its lobby: "id|name|source|hub"
 -- entries separated by ";;" (one line of menu_state.txt). The mod's display name and origin (Steam Workshop, mod.io...)
--- come from the savegame's mod descriptions.
+-- come from the savegame's mod descriptions; hub is its number on its Mod Hub (mod.io, Steam Workshop), from which a player
+-- who lacks it installs it (empty for a local mod).
 local MOD_ID = "mpfever_1"
 local function modsOf(info)
 	local out, descs = {}, {}
@@ -148,7 +149,12 @@ local function modsOf(info)
 			local id = m.name
 			if id and id ~= "" and id ~= MOD_ID then
 				local d = descs[id]
-				out[#out + 1] = { id = id, name = d and d.name ~= "" and d.name or id, source = d and d.modSource or "" }
+				local hub = ""
+				pcall(function()
+					local h = api.modhub.getModHubModIdForModId(m)
+					if h and h:isValid() and tostring(h.value):match("^[%w_-]+$") then hub = tostring(h.value) end
+				end)
+				out[#out + 1] = { id = id, name = d and d.name ~= "" and d.name or id, source = d and d.modSource or "", hub = hub }
 			end
 		end
 	end)
@@ -158,12 +164,13 @@ end
 local function encodeMods(mods)
 	local parts = {}
 	local function clean(s) return (tostring(s or ""):gsub("[|;%c]", " ")) end
-	for _, m in ipairs(mods or {}) do parts[#parts + 1] = clean(m.id) .. "|" .. clean(m.name) .. "|" .. clean(m.source) end
+	for _, m in ipairs(mods or {}) do parts[#parts + 1] = clean(m.id) .. "|" .. clean(m.name) .. "|" .. clean(m.source) .. "|" .. clean(m.hub) end
 	return table.concat(parts, ";;")
 end
 
--- MPFever.exe adds what it knows of each mod (see Mods.cs): "id|name|source|kind|level|here|note", kind = assets, load, ui
--- or sim (a script acting on the game), level = ok, fixed, caution or bad, here = ok, differs or notfound (a player's PC)
+-- MPFever.exe adds what it knows of each mod (see Mods.cs): "id|name|source|kind|level|here|note|personal", kind = assets,
+-- load, ui or sim (a script acting on the game), level = ok, fixed, caution or bad, here = ok, differs or notfound (a player's
+-- PC), personal = host (the host's personal mod, not needed by the others), mine (taken for personal by this player) or empty
 local function decodeMods(s)
 	local out = {}
 	for e in (s or ""):gmatch("[^;]+") do
@@ -172,7 +179,7 @@ local function decodeMods(s)
 		local id = f[1]
 		if id and id ~= "" then
 			out[#out + 1] = { id = id, name = (f[2] or "") ~= "" and f[2] or id, source = f[3] or "", kind = f[4] or "",
-				level = f[5] or "", here = f[6] or "", note = f[7] or "" }
+				level = f[5] or "", here = f[6] or "", note = f[7] or "", personal = f[8] or "", hub = f[9] or "", size = f[10] or "" }
 		end
 	end
 	return out
@@ -187,6 +194,79 @@ local function modInstalled(id)
 	end)
 	if ok then return r and true or false end
 	return nil
+end
+
+-- Installing a host's mod from its Mod Hub (0.4.6): the game's own Mod Hub subscribes this player to it and downloads it
+-- (api.modhub, as its Mod Manager does; the way of TPF3-MP's roommods.lua). Each mod is asked once per menu; MPFEVER_AUTOMODS=0
+-- (the launcher's setting): not by itself, a button per mod instead.
+local hub = { installs = {}, requests = {} }
+function hub.backend(source)
+	local ok, id = pcall(function() return api.modhub.getBackendIdForSource((source and source ~= "") and source or "mod.io") end)
+	if ok and type(id) == "number" and id >= 0 then return id end
+	ok, id = pcall(function() return api.modhub.getBackendIdForSource("mod.io") end)
+	if ok and type(id) == "number" and id >= 0 then return id end
+	return nil
+end
+function hub.modId(number)
+	local id = api.type.modhub.ModId.new()
+	id.value = tostring(number)
+	return id
+end
+-- "ok", or why not: "offline" (no Mod Hub), "signed_out" (not signed in to it)
+function hub.ready(source)
+	local b = hub.backend(source)
+	if not b then return "offline" end
+	local ok, st = pcall(function()
+		if not api.modhub.isInitialized(b) then return "offline" end
+		if api.modhub.getCapabilities(b).isInfoOnly then return "offline" end
+		if api.modhub.getUserInfo(b) == nil then return "signed_out" end
+		return "ok"
+	end)
+	return ok and st or "offline"
+end
+-- "none", "subscribed", "downloading", "installed" or "failed"
+function hub.state(source, number)
+	local b = hub.backend(source)
+	if not b then return "none" end
+	local ok, st = pcall(function()
+		local id = hub.modId(number)
+		local states = api.type.modhub.InstallState
+		local s = api.modhub.getModInstallState(b, id)
+		if s == states.Installed then return "installed" end
+		if s == states.InsufficientSpace or s == states.MiscError then return "failed" end
+		if s == states.Downloading or s == states.Extracting or s == states.InstallationPending or s == states.UpdatePending then return "downloading" end
+		if api.modhub.getModSubscriptionState(b, id) then return "subscribed" end
+		return "none"
+	end)
+	return ok and st or "none"
+end
+function hub.install(m)
+	if hub.installs[m.hub] then return end
+	local b = hub.backend(m.source)
+	if not b then hub.installs[m.hub] = { state = "failed", err = "Mod Hub" }; return end
+	hub.installs[m.hub] = { state = "asked" }
+	log("Mod Hub: subscribing to " .. tostring(m.id) .. " (" .. tostring(m.source) .. " " .. tostring(m.hub) .. ")")
+	local ok, err = pcall(function()
+		local key, over = {}, false
+		local handle = api.modhub.subscribeModAsync(b, api.type.modhub.SubscribeModRequest.new(hub.modId(m.hub)), function(result)
+			over = true
+			hub.requests[key] = nil
+			local okr, failed = pcall(function()
+				if result:isSuccess() then return nil end
+				local e = result:getError()
+				return e and e.message or "?"
+			end)
+			if okr and failed == nil then
+				hub.installs[m.hub] = { state = "subscribed" }
+				log("Mod Hub: subscribed to " .. tostring(m.id))
+			else
+				hub.installs[m.hub] = { state = "failed", err = tostring(failed) }
+				log("Mod Hub: " .. tostring(m.id) .. " not subscribed: " .. tostring(failed))
+			end
+		end)
+		if not over then hub.requests[key] = handle end
+	end)
+	if not ok then hub.installs[m.hub] = { state = "failed", err = tostring(err) }; log("Mod Hub: " .. tostring(err)) end
 end
 
 -- loads a savegame of this player; the application script (mpfever_auto.lua) starts it once loaded
@@ -706,6 +786,50 @@ local function setup()
 				right[#right + 1] = gap(1, 14)
 				right[#right + 1] = colorRow(mine, pickColor, nil, true, taken)
 			end
+			-- (the host) players who lack mods no Mod Hub has: send them from this PC? (with their size)
+			if isHost then
+				for e in (st.modAsk or ""):gmatch("[^;]+") do
+					local who, ids, mb = e:match("^([^|]*)|([^|]*)|([^|]*)$")
+					if who and who ~= "" then
+						local n = 0
+						for _ in ids:gmatch("[^,]+") do n = n + 1 end
+						local w = who
+						right[#right + 1] = gap(1, 10)
+						right[#right + 1] = box(V, {
+							text((T("%s n'a pas %s mod(s) qu'aucun Mod Hub ne propose (%s Mo) : ", "%s lacks %s mod(s) no Mod Hub has (%s MB): "):gsub("%%s", (who:gsub("%%", "%%%%")), 1):gsub("%%s", tostring(n), 1):gsub("%%s", mb, 1))
+								.. ids:gsub(",", ", "), "font-scale-title-4, warning", PAGE_W - SIDE_W - 80),
+							text(T("Les lui envoyer depuis votre PC ? Il devra accepter.", "Send them from your PC? They will have to accept."), "font-scale-body", PAGE_W - SIDE_W - 80),
+							box(H, {
+								button(T("Envoyer", "Send"), function() request("sendmods", w, playerName(), "1") end, { font = "font-scale-body", primary = true }),
+								gap(8, 1),
+								button(T("Non", "No"), function() request("sendmods", w, playerName(), "0") end, { font = "font-scale-body" }),
+							}),
+						}, nil, { padding = { 8, 8, 8, 8 }, background = { 0.6, 0.45, 0.1, 0.25 } })
+					end
+				end
+				if (st.modSend or "") ~= "" then right[#right + 1] = text(st.modSend, "font-scale-body", PAGE_W - SIDE_W - 80) end
+			else
+				-- (a player) the host's offer: its mods hold code this game will run, so the player decides
+				local ids, mb = (st.modOffer or ""):match("^([^|]*)|([^|]*)$")
+				if ids and ids ~= "" then
+					right[#right + 1] = gap(1, 10)
+					right[#right + 1] = box(V, {
+						text((T("L'hôte propose de vous envoyer ces mods (%s Mo) : ", "The host offers to send you these mods (%s MB): "):gsub("%%s", mb, 1)) .. ids:gsub(",", ", "), "font-scale-title-4", PAGE_W - SIDE_W - 80),
+						text(T("Un mod contient du code qui s'exécutera dans votre jeu : n'acceptez que d'un hôte de confiance.", "A mod holds code that will run in your game: only accept from a host you trust."), "font-scale-body, warning", PAGE_W - SIDE_W - 80),
+						box(H, {
+							button(T("Accepter", "Accept"), function() request("takemods", "", playerName(), "1") end, { font = "font-scale-body", primary = true }),
+							gap(8, 1),
+							button(T("Refuser", "Refuse"), function() request("takemods", "", playerName(), "0") end, { font = "font-scale-body" }),
+						}),
+					}, nil, { padding = { 8, 8, 8, 8 }, background = { 0.6, 0.45, 0.1, 0.25 } })
+				elseif st.modAskState == "waiting" then
+					right[#right + 1] = text(T("Des mods de l'hôte ne s'installent pas automatiquement : l'hôte a été prévenu et peut vous les envoyer. Sinon, installez-les vous-même.",
+						"Some of the host's mods cannot be installed by themselves: the host was told and can send them to you. Otherwise, install them yourself."), "font-scale-body, warning", PAGE_W - SIDE_W - 80)
+				elseif st.modAskState == "refused" then
+					right[#right + 1] = text(T("Les mods locaux de l'hôte ne vous seront pas envoyés : installez-les vous-même.", "The host's local mods will not be sent to you: install them yourself."), "font-scale-body, warning", PAGE_W - SIDE_W - 80)
+				end
+				if (st.modRecv or "") ~= "" then right[#right + 1] = text(st.modRecv, "font-scale-body", PAGE_W - SIDE_W - 80) end
+			end
 			right[#right + 1] = vfill()
 			-- the buttons
 			local actions = {}
@@ -738,6 +862,9 @@ local function setup()
 				for _, m in ipairs(mods) do
 					-- (an incompatible mod first: the player is never told to install it)
 					if m.level == "bad" then m.state = "bad"
+					-- (a personal mod, the host's or taken so by this player: never needed, nor in the host's version)
+					elseif m.personal == "mine" then m.state = "pmine"
+					elseif m.personal == "host" then m.state = isHost and "pown" or "phost"
 					elseif not isHost and modInstalled(m.id) == false then m.state = "missing"
 					elseif m.here == "differs" then m.state = "differs"
 					else m.state = m.level ~= "" and m.level or "ok" end
@@ -779,6 +906,9 @@ local function setup()
 					bad = { T("incompatible", "incompatible"), "error" },
 					caution = { T("script non testé", "untested script"), "warning" },
 					fixed = { T("rendu compatible", "made compatible"), "success" },
+					phost = { T("mod personnel de l'hôte, pas nécessaire ici", "the host's personal mod, not needed here"), "success" },
+					pown = { T("mod personnel, pas nécessaire chez les autres", "personal mod, not needed by the others"), "success" },
+					pmine = { T("ignoré : pris pour personnel", "left out: taken for personal"), "warning" },
 				}
 				for gi = 1, 4 do
 					for _, m in ipairs(groups[gi]) do
@@ -787,9 +917,38 @@ local function setup()
 						if lab then
 							rows[#rows + 1] = text(line .. " : " .. lab[1], "font-scale-title-4, " .. lab[2], W)
 							local why = m.note
-							if m.state == "missing" then why = T("Installez-le (mod.io ou Steam Workshop) avant que l'hôte lance la partie.", "Install it (mod.io or Steam Workshop) before the host starts the game.")
-							elseif m.state == "differs" then why = T("Mettez-le à jour pour avoir la même version que l'hôte.", "Update it to have the host's version.") end
+							if m.state == "missing" and m.hub ~= "" then
+								local inst = hub.installs[m.hub]
+								local hs = hub.state(m.source, m.hub)
+								if hs == "downloading" then why = T("Téléchargement par le Mod Hub du jeu...", "Downloading through the game's Mod Hub...")
+								elseif hs == "installed" then why = T("Installé : il apparaît dans un instant.", "Installed: it shows in a moment.")
+								elseif inst and inst.state == "failed" then why = T("Installation automatique impossible : ", "Cannot be installed by itself: ") .. tostring(inst.err):gsub("[%.%s]+$", "") .. ". " .. T("Installez-le vous-même (mod.io ou Steam Workshop).", "Install it yourself (mod.io or Steam Workshop).")
+								elseif inst or hs == "subscribed" then why = T("Abonné : le Mod Hub du jeu le télécharge...", "Subscribed: the game's Mod Hub downloads it...")
+								elseif hub.ready(m.source) == "signed_out" then why = T("Connectez-vous au Mod Hub du jeu (bouton Mods du menu principal) pour qu'il s'installe tout seul.", "Sign in to the game's Mod Hub (Mods button of the main menu) to have it installed by itself.")
+								else why = T("Installez-le (mod.io ou Steam Workshop) avant que l'hôte lance la partie.", "Install it (mod.io or Steam Workshop) before the host starts the game.") end
+							elseif m.state == "missing" then why = T("Aucun Mod Hub ne le propose (mod local de l'hôte) : l'hôte peut vous l'envoyer, sinon installez-le vous-même.", "No Mod Hub has it (the host's local mod): the host can send it to you, else install it yourself.")
+							elseif m.state == "differs" then why = T("Mettez-le à jour pour avoir la même version que l'hôte.", "Update it to have the host's version.")
+							elseif m.state == "pmine" then why = T("La partie de l'hôte est chargée sans lui chez vous. S'il agit sur la partie, elle se désynchronisera.", "The host's game loads without it here. If it acts on the game, the game will desynchronise.")
+							elseif m.state == "phost" or m.state == "pown" then why = "" end
 							if why ~= "" then rows[#rows + 1] = text("   " .. why, "font-scale-body", W) end
+							-- (a player may take a mod it is missing, or has in another version, for personal: the host's game is then
+							-- loaded without it here, with a warning; and give it back)
+							local id = m.id
+							if m.state == "missing" and m.hub ~= "" and not isHost and not hub.installs[m.hub] and hub.state(m.source, m.hub) == "none" and hub.ready(m.source) == "ok" then
+								if st.autoMods ~= "0" then
+									hub.install(m)
+								else
+									local mm = m
+									rows[#rows + 1] = box(H, { gap(12, 1), button(T("Installer (Mod Hub)", "Install (Mod Hub)"), function() hub.install(mm) end, { font = "font-scale-body" }) })
+								end
+							end
+							if (m.state == "missing" or m.state == "differs") and not isHost then
+								rows[#rows + 1] = box(H, { gap(12, 1), button(T("Jouer sans (le prendre pour personnel)", "Play without it (take it for personal)"),
+									function() request("modpersonal", id .. " 1", playerName()) end,
+									{ font = "font-scale-body", tooltip = T("Seulement pour un mod qui ne change que votre interface : un autre fera se désynchroniser la partie.", "Only for a mod that only changes your interface: any other will make the game desynchronise.") }) })
+							elseif m.state == "pmine" then
+								rows[#rows + 1] = box(H, { gap(12, 1), button(T("Annuler", "Undo"), function() request("modpersonal", id .. " 0", playerName()) end, { font = "font-scale-body" }) })
+							end
 						else
 							rows[#rows + 1] = text(line, "font-scale-body", W)
 						end
@@ -802,6 +961,27 @@ local function setup()
 				elseif #groups[2] > 0 then
 					rows[#rows + 1] = text(T("Les scripts non testés peuvent désynchroniser la partie : MPFever la recharge alors chez tout le monde.",
 						"Untested scripts can desynchronise the game: MPFever then reloads it for everybody."), "font-scale-body, warning", W)
+				end
+				-- this player's own personal mods (only its interface: loaded in its game alone), each on or off
+				if not isHost then
+					local mine = {}
+					for e in (st.myMods or ""):gmatch("[^;]+") do
+						local id, how, on = e:match("^([^|]*)|([^|]*)|([^|]*)$")
+						if id and id ~= "" then mine[#mine + 1] = { id = id, how = how, on = on == "1" } end
+					end
+					if #mine > 0 then
+						rows[#rows + 1] = gap(1, 10)
+						rows[#rows + 1] = text(T("Vos mods personnels", "Your personal mods"), "font-scale-title-3")
+						rows[#rows + 1] = text(T("Ils ne changent que votre interface : ajoutés à la partie de l'hôte chez vous seul.", "They only change your interface: added to the host's game for you alone."), "font-scale-body", W)
+						for _, pm in ipairs(mine) do
+							local id = pm.id
+							rows[#rows + 1] = box(H, {
+								text(id .. (pm.how == "forced" and T(" (pris pour personnel)", " (taken for personal)") or ""), pm.on and "font-scale-body" or "font-scale-body, warning", W - 130),
+								hfill(),
+								button(pm.on and T("Activé", "On") or T("Désactivé", "Off"), function() request("modmine", id .. (pm.on and " 0" or " 1"), playerName()) end, { font = "font-scale-body" }),
+							})
+						end
+					end
 				end
 				local picH = 220
 				leftCol = {

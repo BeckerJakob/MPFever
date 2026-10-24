@@ -29,6 +29,9 @@ it is stable enough.
   [x] Player list and sync state inside the game, from the pause menu (0.3.4)
   [x] Chat inside the game interface (0.3.5)
   [ ] Settings for the host (who may build, bulldoze, spend money)
+  [x] Personal mods (interface only) that every player may have or not, missing mods installed from the game's Mod Hub,
+      the host's local mods sent from its PC (0.4.6)
+  [x] What the others are building shown on the ground before their click (0.4.6)
 
 0.4 - Separate companies
   [x] Each player runs their own company on the same map, chosen by the host (0.3.0)

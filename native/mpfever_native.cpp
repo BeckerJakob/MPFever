@@ -378,6 +378,11 @@ static long g_inRelease = 0;
 static volatile long g_dropHeld = 0;  // a game was loaded: the builds still held belong to the previous one
 static int g_dropTarget = 0;          // the releases asked for until then
 static int g_dropId = 0;              // the last build held until then
+// builds the mod asks to drop (dropid N: made during a resynchronisation, see the bridge's pollNativeEvents): never released,
+// their command destroyed when they come to the head of the queue
+static volatile long g_dropIds[16];
+static volatile long g_nDropIds = 0;
+static bool IsDropped(int id) { for (long i = 0; i < g_nDropIds && i < 16; i++) if (g_dropIds[i] == id) return true; return false; }
 static int g_deferNextTarget = 0, g_deferNextDone = 0;   // test mode: defer the mod's own next commands
 
 static void PathOf(char* out, const char* name)
@@ -557,6 +562,10 @@ static void ReadControl()
         else if (len >= 9 && memcmp(l, "release ", 8) == 0) {
             for (int k = 8; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
             if (v > g_releaseTarget) g_releaseTarget = v;
+        }
+        else if (len >= 8 && memcmp(l, "dropid ", 7) == 0) {
+            for (int k = 7; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
+            if (v > 0 && !IsDropped((int)v)) { long n = g_nDropIds; g_dropIds[n % 16] = v; if (n < 16) g_nDropIds = n + 1; }
         }
         else if (len >= 11 && memcmp(l, "releaseid ", 10) == 0) {
             for (int k = 10; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
@@ -1494,6 +1503,16 @@ static void ReleaseOne()
     Buf b; b.str("released build ").dec(h->id).str(" (tool site ").hex(h->site).str(")"); LogLine(b);
 }
 
+// a held build the mod dropped: its command is destroyed, never given to the engine (its callback is never called)
+static void DropOne()
+{
+    if (g_heldHead == g_heldTail) return;
+    Held* h = g_held[g_heldHead % 64];
+    g_heldHead++;
+    ((Dtor)(g_base + RVA_CMD_DTOR))(h->cmd);
+    Buf b; b.str("held build ").dec(h->id).str(" dropped (made during a resynchronisation)"); LogLine(b);
+}
+
 static bool Writable(const void* p, u64 n)
 {
     u64 a = (u64)p, end = a + n;
@@ -1669,11 +1688,15 @@ extern "C" void* AddDetour(void* list, void* out, void* cmd, void* done, void* p
             if (g_released < g_dropTarget) g_released = g_dropTarget;
             Buf b; b.str("held build(s) of the previous game dropped: ").dec(n); LogLine(b);
         }
+        while (g_nDropIds > 0 && g_heldHead != g_heldTail && IsDropped(g_held[g_heldHead % 64]->id)) DropOne();
         if (g_releaseUpTo > 0) {
             // by id: what the mod asks for is exactly the builds it announced (a dropped one is simply not there any more)
             if (g_heldHead != g_heldTail && g_held[g_heldHead % 64]->id <= g_releaseUpTo) {
                 g_inRelease = 1;
-                while (g_heldHead != g_heldTail && g_held[g_heldHead % 64]->id <= g_releaseUpTo) { ReleaseOne(); g_released++; }
+                while (g_heldHead != g_heldTail && g_held[g_heldHead % 64]->id <= g_releaseUpTo) {
+                    if (g_nDropIds > 0 && IsDropped(g_held[g_heldHead % 64]->id)) DropOne(); else ReleaseOne();
+                    g_released++;
+                }
                 g_inRelease = 0;
             }
         }
@@ -2617,7 +2640,7 @@ extern "C" void RemoveEntityDetour(void* engine, int entity, u8 flag)
 struct SavedRegs { u64 r15, r14, r13, r12, r11, r10, r9, r8, rdi, rsi, rbp, rbx, rdx, rcx, rax, rflags; };
 static inline u64 OrigRsp(const SavedRegs* r) { return (u64)r + sizeof(SavedRegs); }
 typedef void (*SpliceFn)(SavedRegs*);
-static volatile long g_orderSorts[8], g_orderReorders[8], g_orderRefused[8];
+static volatile long g_orderSorts[16], g_orderReorders[16], g_orderRefused[16];
 
 static void SortIds(i32* a, u64 n, int which)
 {
@@ -2679,6 +2702,133 @@ static void FixArrivals(SavedRegs* r) { SortEntityVector(r->rbp - 0x78, 4); }
 // 5: the vehicles at a line stop (the vector the getter returned, in rax) before the boarding loop
 static void FixVehiclesAtStop(SavedRegs* r) { SortEntityVector(r->rax, 5); }
 
+// 6: the platform choice (TPF3-MP's platform-order, visit site). ecs::TransportVehicleSystem::Update2 walks its node list,
+// 8-byte {entity, TransportVehicle index} records ([[r13+8]], as many as its int argument spilled at [rbp+0x5b0]), with rsi
+// 0, 8, 16... and reloads the list's begin into rdi every iteration; each en-route vehicle asks FindNextFreeTerminal for a
+// platform, and what it takes is seen by the vehicles asked after it. The list is the engine's add/remove history (another
+// order in a loaded world than in a running one): rdi is pointed at a copy sorted by entity id, made at the first iteration.
+// The engine's list is never written, and rdi is set anew after the loop.
+struct VisitSlot { u32 tid; u64 list, count, cap; u64* sorted; bool active; };
+static VisitSlot g_visit[8];
+static VisitSlot* VisitOf()
+{
+    u32 tid = GetCurrentThreadId();
+    for (int i = 0; i < 8; i++) if (g_visit[i].tid == tid) return &g_visit[i];
+    for (int i = 0; i < 8; i++) if (_InterlockedCompareExchange((volatile long*)&g_visit[i].tid, (long)tid, 0) == 0) return &g_visit[i];
+    return 0;
+}
+static void FixPlatformVisit(SavedRegs* r)
+{
+    VisitSlot* v = VisitOf();
+    if (!v) { _InterlockedIncrement(&g_orderRefused[6]); return; }
+    if (r->rsi == 0) {
+        v->active = false;
+        _InterlockedIncrement(&g_orderSorts[6]);
+        u64 holder = r->rax, begin = r->rdi;
+        if (!Readable((void*)(r->rbp + 0x5b0), 4) || !Readable((void*)holder, 16)) { _InterlockedIncrement(&g_orderRefused[6]); return; }
+        i32 cnt = *(i32*)(r->rbp + 0x5b0);
+        u64 end = *(u64*)(holder + 8);
+        if (cnt < 0 || cnt > (1 << 20) || *(u64*)holder != begin || end < begin || end - begin != (u64)cnt * 8) { _InterlockedIncrement(&g_orderRefused[6]); return; }
+        u64 n = (u64)cnt;
+        if (n < 2 || !Readable((void*)begin, n * 8)) return;
+        const u64* rec = (const u64*)begin;
+        bool sorted = true;
+        for (u64 i = 1; i < n; i++) if ((i32)(u32)rec[i - 1] >= (i32)(u32)rec[i]) { sorted = false; break; }
+        if (sorted) return;
+        if (v->cap < n) {
+            u64 cap = n + n / 2 + 16;
+            u64* p = (u64*)HeapAlloc(GetProcessHeap(), 0, cap * 8);
+            if (!p) { _InterlockedIncrement(&g_orderRefused[6]); return; }
+            if (v->sorted) HeapFree(GetProcessHeap(), 0, v->sorted);
+            v->sorted = p; v->cap = cap;
+        }
+        u64* s = v->sorted;
+        for (u64 i = 0; i < n; i++) s[i] = rec[i];
+        u64 gap = 1;
+        while (gap < n / 3) gap = gap * 3 + 1;
+        for (; gap > 0; gap /= 3)
+            for (u64 i = gap; i < n; i++) { u64 x = s[i]; i32 k = (i32)(u32)x; u64 j = i; while (j >= gap && (i32)(u32)s[j - gap] > k) { s[j] = s[j - gap]; j -= gap; } s[j] = x; }
+        for (u64 i = 1; i < n; i++) if ((u32)s[i - 1] == (u32)s[i]) { _InterlockedIncrement(&g_orderRefused[6]); return; }   // two records of one entity
+        _InterlockedIncrement(&g_orderReorders[6]);
+        v->list = begin; v->count = n; v->active = true;
+    }
+    if (!v->active) return;
+    if (r->rsi / 8 >= v->count || r->rdi != v->list) { v->active = false; _InterlockedIncrement(&g_orderRefused[6]); return; }
+    r->rdi = (u64)v->sorted;
+}
+
+// 7: the platform choice, candidate site: FindNextFreeTerminal std::sorts its 12-byte candidate terminals [r13, r14) by a
+// cost compared as floats only; equal costs keep an order that depends on the input's. They are first put in one order (by
+// their second, third, then first word), so equal costs break the same way in every game.
+static inline bool CandLess(const u32* a, const u32* b)
+{
+    if (a[1] != b[1]) return a[1] < b[1];
+    if (a[2] != b[2]) return a[2] < b[2];
+    return a[0] < b[0];
+}
+static void FixPlatformCandidates(SavedRegs* r)
+{
+    u64 b = r->r13, e = r->r14;
+    _InterlockedIncrement(&g_orderSorts[7]);
+    if (e < b || (e - b) % 12) { _InterlockedIncrement(&g_orderRefused[7]); return; }
+    u64 n = (e - b) / 12;
+    if (n < 2) return;
+    if (n > 4096 || !Writable((void*)b, e - b)) { _InterlockedIncrement(&g_orderRefused[7]); return; }
+    u32* c = (u32*)b;
+    bool sorted = true;
+    for (u64 i = 1; i < n; i++) if (CandLess(c + 3 * i, c + 3 * (i - 1))) { sorted = false; break; }
+    if (sorted) return;
+    _InterlockedIncrement(&g_orderReorders[7]);
+    for (u64 i = 1; i < n; i++) {
+        u32 x0 = c[3 * i], x1 = c[3 * i + 1], x2 = c[3 * i + 2];
+        u32 x[3] = { x0, x1, x2 };
+        u64 j = i;
+        while (j > 0 && CandLess(x, c + 3 * (j - 1))) { c[3 * j] = c[3 * j - 3]; c[3 * j + 1] = c[3 * j - 2]; c[3 * j + 2] = c[3 * j - 1]; j--; }
+        c[3 * j] = x0; c[3 * j + 1] = x1; c[3 * j + 2] = x2;
+    }
+}
+
+// 8: the town street field (TPF3-MP's town-field-cache). When a town builds a street, the street's end is bent towards the
+// town's street field, read by StreetField::At, which keeps its answers in a std::map keyed by the point's 50 m cell (not
+// saved) and answers a later point of the same cell with the first point's answer. Which points asked before (in this game
+// since it was loaded) decides the angle: a loaded world (a player who joined, a resync) and a running one differ. The
+// lookup's end test (cmp byte [r9+0x19],0: the found node's nil flag) is given the map's head (r10, nil set), so every call
+// computes the answer at the point asked; the engine's own insert runs as before.
+static void FixTownField(SavedRegs* r)
+{
+    _InterlockedIncrement(&g_orderSorts[8]);
+    u64 head = r->r10;
+    if (!head || !Readable((void*)(head + 0x19), 1) || *(u8*)(head + 0x19) == 0) { _InterlockedIncrement(&g_orderRefused[8]); return; }
+    if (r->r9 != head) { _InterlockedIncrement(&g_orderReorders[8]); r->r9 = head; }
+}
+
+// 9: the persons waiting for a path (TPF3-MP's person-needs-path-order, TF2's idle). ecs::SimEntityNeedsPathSystem::Update
+// builds one input per entry of its list ([[r13+0x10]], a vector<Entity> in insertion order) and PathFactory::Compute seeds a
+// generator per chunk from the step and the chunk's start: each trip follows the person's place in the list. The outputs are
+// matched back by position in the same call, so the list is sorted in place before its first read. The list is copy-on-
+// write, shared with the replicated engine's copy: when shared, a private copy is taken first through the engine's own getter.
+typedef u64 (*CowGetter)(u64 sharedPtr);
+static u32 g_needsPathGetter = 0;
+static void FixNeedsPath(SavedRegs* r)
+{
+    u64 sys = r->r13;
+    if (!g_needsPathGetter || !Readable((void*)(sys + 0x10), 16)) { _InterlockedIncrement(&g_orderRefused[9]); return; }
+    u64 control = *(u64*)(sys + 0x18);
+    if (!control || !Readable((void*)(control + 8), 4)) { _InterlockedIncrement(&g_orderRefused[9]); return; }
+    i32 uses = *(i32*)(control + 8);
+    if (uses < 1) { _InterlockedIncrement(&g_orderRefused[9]); return; }
+    u64 data = *(u64*)(sys + 0x10);
+    if (!data || !Readable((void*)data, 24)) { _InterlockedIncrement(&g_orderRefused[9]); return; }
+    u64 b = *(u64*)data, e = *(u64*)(data + 8);
+    if (e < b) { _InterlockedIncrement(&g_orderRefused[9]); return; }
+    if (e - b < 8) { _InterlockedIncrement(&g_orderSorts[9]); return; }   // fewer than two: nothing to order (and no copy)
+    if (uses > 1) {
+        ((CowGetter)(g_base + g_needsPathGetter))(sys + 0x10);
+        data = *(u64*)(sys + 0x10);
+    }
+    SortEntityVector(data, 9);
+}
+
 // A mid-function splice: steal whole instructions at the site (no branch, call or rip-relative operand, nothing jumping
 // inside them), jump to a stub that saves every register and xmm0-5, calls fn with the saved registers, restores them,
 // runs the stolen bytes and jumps back.
@@ -2719,6 +2869,11 @@ static const OrderFix ORDER_FIXES[] = {
     { "departures", "48 8B C8 E8 ?? ?? ?? ?? 48 8B 4D 07 48 3B 4D 0F 74 1A 48 8B 47 30", 8, 8, FixDepartures },
     { "arrivals", "E8 ?? ?? ?? ?? 48 8B 45 90 48 39 45 88 74 17 49 8B 4F 68 48 85 C9 74 0E", 5, 8, FixArrivals },
     { "vehicles at stop", "49 8B 4F 28 E8 ?? ?? ?? ?? 48 89 84 24 48 02 00 00 41 8B 7F 50 48 8B 4C 24 58", 9, 8, FixVehiclesAtStop },
+    // TPF3-MP's signatures of build 40423 (the same bytes in 40420); 0.4.6
+    { "platform visit", "49 8B 45 08 48 8B 38 49 8B 4D 10 48 63 44 3E 04 48 69 D8 E8 01 00 00", 7, 9, FixPlatformVisit },
+    { "platform candidates", "49 8B CE 49 2B CD 48 8B C7 48 F7 E9 48 D1 FA 4C 8B C2 49 C1 E8 3F 4C 03 C2 4C 8D 4D F0 49 8B D6 49 8B CD E8", 0, 6, FixPlatformCandidates },
+    { "town street field", "80 79 19 00 74 D6 41 80 79 19 00 75 35 41 3B 69 1C 75 0A 41 3B 71 20 75 04 32 D2 EB 04 41 0F 4D D3 84 D2 78 1D 4D 3B CA 74 18", 6, 5, FixTownField },
+    { "needs path", "49 8B 45 10 48 8B 50 08 48 2B 10 48 C1 FA 02 4C 8D 45 30 48 8D 4D E0 E8", 0, 8, FixNeedsPath },
 };
 static const int ORDER_N = (int)(sizeof(ORDER_FIXES) / sizeof(ORDER_FIXES[0]));
 
@@ -2729,11 +2884,32 @@ static void InstallOrderFixes()
     if (!mem) { Buf b; b.str("order fixes: no memory near the game's code"); LogLine(b); return; }
     // the land vehicles' sort reads the records the way the engine's reservation loop does: refused unless that loop is there
     bool recordsOk = FindSigRva("4C 8B 45 80 49 8B 50 08 49 63 45 00 48 8D 0C 80 48 8B 02 4C 8D 24 88 49 8B 50 18") != 0;
+    // the town street field's site lies 0xba into StreetField::At, whose miss path its jne reaches
+    u32 fieldAt = FindSigRva("40 55 56 41 54 41 55 41 56 41 57 48 81 EC 98 00 00 00 C4 C1 7A 10 00 C5 FA 5E 0D ?? ?? ?? ?? C5 F2 58 15 ?? ?? ?? ?? 4C 8B 51 18");
+    // the needs-path list's copy-on-write getter, called the way EntityToBeRemoved calls it (its head checked), and the
+    // results loop that reads the list again by position
+    u32 getCall = FindSigRva("48 8D 4F 10 E8 ?? ?? ?? ?? 48 8B F8 4C 8B 40 08 48 8B 10 49 3B D0 74 40");
+    if (getCall) {
+        u32 g = (u32)(getCall + 9 + *(i32*)(g_base + getCall + 5));
+        static const u8 head[] = { 0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9,
+            0x48, 0x8B, 0x41, 0x08, 0x48, 0x85, 0xC0, 0x0F, 0x84, 0xA7, 0x00, 0x00, 0x00, 0x83, 0x78, 0x08, 0x01, 0x0F, 0x8E, 0x9D, 0x00, 0x00, 0x00 };
+        if (memcmp((void*)(g_base + g), head, sizeof(head)) == 0) g_needsPathGetter = g;
+    }
     Buf b; b.str("order fixes (from TPF3-MP):");
     for (int i = 0; i < ORDER_N; i++) {
         const OrderFix& f = ORDER_FIXES[i];
         u32 at = FindSigRva(f.sig);
-        bool ok = at && !(i == 1 && !recordsOk) && Splice(mem, at + f.offset, f.steal, f.fn);
+        bool layout = true;
+        if (i == 1) layout = recordsOk;
+        if (i >= 6 && GetEnvironmentVariableA("MPFEVER_NOORDER2", 0, 0) > 0) layout = false;      // the 0.4.6 ones only (tests)
+        if (i == 8) layout = layout && fieldAt && at + f.offset == fieldAt + 0xba && GetEnvironmentVariableA("MPFEVER_NOTOWNFIELD", 0, 0) == 0;
+        if (i == 6 || i == 7) layout = layout && GetEnvironmentVariableA("MPFEVER_NOPLATFORMORDER", 0, 0) == 0;
+        if (i == 9) {
+            static const u8 ctx[] = { 0x49, 0x8B, 0x45, 0x10, 0x48, 0x8B, 0x08, 0x42, 0x8B, 0x1C, 0xA1 };
+            layout = layout && g_needsPathGetter && at && memcmp((void*)(g_base + at + 0x1ad), ctx, sizeof(ctx)) == 0
+                && GetEnvironmentVariableA("MPFEVER_NONEEDSPATH", 0, 0) == 0;
+        }
+        bool ok = at && layout && Splice(mem, at + f.offset, f.steal, f.fn);
         b.str(" ").str(f.name).str(ok ? " on" : " OFF").str(i + 1 < ORDER_N ? "," : "");
     }
     LogLine(b);

@@ -1662,4 +1662,77 @@ function C.shareFee(shares, key)
 	return f
 end
 
+-- ---------------------------------------------------------------- personal mods (0.4.6)
+-- A player's load of the host's game, as the launcher planned it (load_mods.txt, see Mods.LoadPlan in the launcher): the
+-- host's personal mods this player does not run are left out, this player's own are added. nil when there is no plan.
+function C.loadPlan()
+	local f = C.IO and C.DIR and C.IO.open(C.DIR .. BS .. "load_mods.txt", "rb")
+	if not f then return nil end
+	local s = f:read("*a") or ""
+	f:close()
+	local plan = { drop = {}, add = {}, n = 0 }
+	for line in s:gmatch("[^" .. NL .. CR .. "]+") do
+		local k, id = line:match("^(%a+)" .. string.char(9) .. "(.+)$")
+		if k == "drop" then plan.drop[id] = true; plan.n = plan.n + 1
+		elseif k == "add" then plan.add[#plan.add + 1] = id; plan.n = plan.n + 1 end
+	end
+	if plan.n == 0 then return nil end
+	return plan
+end
+
+-- a savegame's mods (a ModId list) with a plan applied: the new list, the mods left out and those added (installed ones only)
+function C.planMods(mods, plan)
+	local out, dropped, added, seen = {}, {}, {}, {}
+	for _, m in ipairs(mods or {}) do
+		if plan.drop[m.name] then dropped[#dropped + 1] = m.name else out[#out + 1] = m; seen[m.name] = true end
+	end
+	local rep
+	pcall(function() rep = app.getUserProfile():getModRep() end)
+	for _, id in ipairs(plan.add) do
+		if not seen[id] then
+			local m = api.type.ModId.new()
+			m.name = id
+			local ok, ex = pcall(function() return rep and rep:exists(m) end)
+			if ok and ex then out[#out + 1] = m; added[#added + 1] = id; seen[id] = true end
+		end
+	end
+	return out, dropped, added
+end
+
+-- loads a savegame of this player (the host's game) with the plan: its details are read first, which takes a few frames
+-- (later(fn) calls fn at a coming frame). Without a plan, or without the details, it loads with its own mods as before.
+function C.loadWithPlan(id, logf, later)
+	local plan = C.loadPlan()
+	if not plan then app.loadGame(id, false) return end
+	local ok, async = pcall(app.getSavegameInfo, id)
+	if not ok or not async then
+		logf("personal mods: the savegame's details cannot be read here, loaded with its own mods")
+		app.loadGame(id, false)
+		return
+	end
+	local tries = 0
+	local function poll()
+		tries = tries + 1
+		local okc, done = pcall(function() return async:isCompleted() end)
+		if okc and not done and tries < 600 then later(poll) return end
+		local info
+		if okc and done then
+			local okg, d = pcall(function() return async:get() end)
+			if okg and d and d.info then info = d.info end
+		end
+		if not info then
+			logf("personal mods: the savegame's details did not come, loaded with its own mods")
+			app.loadGame(id, false)
+			return
+		end
+		local details = api.type.SaveGameDetails.new(info)
+		local mods, dropped, added = C.planMods(info.mods, plan)
+		details.mods = mods
+		logf("personal mods: the host's game loaded without " .. (#dropped > 0 and table.concat(dropped, ", ") or "none") .. ", with "
+			.. (#added > 0 and table.concat(added, ", ") or "none") .. " added")
+		app.loadGame(id, false, details)
+	end
+	later(poll)
+end
+
 return C

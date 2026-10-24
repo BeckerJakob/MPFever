@@ -7,6 +7,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Win32;
 using static MPFever.L;
 
@@ -194,14 +195,20 @@ namespace MPFever
                         // (the game may still be writing its logs: read them shared)
                         using (var src = new FileStream(e.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                         using (var dst = z.CreateEntry(e.Name, CompressionLevel.Optimal).Open())
-                            src.CopyTo(dst);
+                        {
+                            // the text files without what tells who and where the player is (the issues are public)
+                            if (Redact.IsText(e.Name)) Redact.Copy(src, dst);
+                            else src.CopyTo(dst);
+                        }
                     }
                     catch (Exception ex) { left.Add(e.Name + " (" + ex.Message + ")"); }
                 }
                 var info = z.CreateEntry("report.txt");
                 using (var w = new StreamWriter(info.Open(), new UTF8Encoding(false)))
                 {
-                    w.WriteLine(summary);
+                    w.WriteLine(Redact.Text(summary));
+                    w.WriteLine();
+                    w.WriteLine("Personal data removed from the text files: Windows account and PC names in paths, Steam account numbers, public IP addresses, e-mail addresses.");
                     if (left.Count > 0) { w.WriteLine(); w.WriteLine("Left out (too large or unreadable):"); foreach (var l in left) w.WriteLine("  " + l); }
                 }
             }
@@ -227,6 +234,7 @@ namespace MPFever
         /// <summary>The issue's text (English: the issues are written in English).</summary>
         public static string IssueBody(string zipName, long zipSize, string summary, bool crashed)
         {
+            summary = Redact.Text(summary);
             var sb = new StringBuilder();
             sb.AppendLine("### What happened");
             sb.AppendLine(crashed ? "The game crashed. What was I doing just before:" : "What I did just before (built a station, bulldozed a road, bought a vehicle...):");
@@ -246,6 +254,94 @@ namespace MPFever
             sb.AppendLine(summary.Trim());
             sb.AppendLine("```");
             return sb.ToString();
+        }
+    }
+}
+
+namespace MPFever
+{
+    /// <summary>What a problem report must not show (the issues are public): the Windows account's and the PC's names in paths,
+    /// the Steam account (its number in userdata, its 64-bit id: each becomes a short code, the same throughout one report, so
+    /// that the logs can still be followed), public IP addresses (the local and private ones stay: they tell a LAN from the
+    /// Internet) and e-mail addresses. The players' names stay: the logs are about them.</summary>
+    static class Redact
+    {
+        static readonly string[] TextExt = { ".log", ".txt", ".lua", ".json", ".csv", ".cfg", ".ini", ".xml", ".md" };
+        public static bool IsText(string name) => TextExt.Contains(Path.GetExtension(name).ToLowerInvariant());
+
+        static Regex userPath, machine;
+        static readonly Regex userdata = new Regex(@"(?i)(userdata[\\/]+)(\d{3,})", RegexOptions.Compiled);
+        static readonly Regex steam64 = new Regex(@"\b7656119\d{10}\b", RegexOptions.Compiled);
+        static readonly Regex ipv4 = new Regex(@"(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\d]|\.\d)", RegexOptions.Compiled);
+        static readonly Regex ipv6 = new Regex(@"(?i)(?<![0-9a-f:])[23][0-9a-f]{3}(?::[0-9a-f]{0,4}){3,7}(?![0-9a-f:])", RegexOptions.Compiled);
+        static readonly Regex mail = new Regex(@"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}", RegexOptions.Compiled);
+
+        static void Init()
+        {
+            if (userPath != null) return;
+            var names = new List<string>();
+            try { names.Add(Environment.UserName); } catch { }
+            try
+            {
+                var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                names.Add(Path.GetFileName(home));
+                var sb = new StringBuilder(520);
+                if (GetShortPathName(home, sb, sb.Capacity) > 0) names.Add(Path.GetFileName(sb.ToString()));
+            }
+            catch { }
+            var alts = names.Where(n => !string.IsNullOrEmpty(n)).Distinct(StringComparer.OrdinalIgnoreCase).Select(Regex.Escape).ToList();
+            // C:\Users\<name>\..., C:/Users/<name>/..., C:\\Users\\<name> (in Lua strings)
+            userPath = new Regex(@"(?i)([\\/]+users[\\/]+)(" + (alts.Count > 0 ? string.Join("|", alts) : "(?!x)x") + @")(?=[\\/""'\s]|$)", RegexOptions.Compiled | RegexOptions.Multiline);
+            string m = null;
+            try { m = Environment.MachineName; } catch { }
+            machine = m != null && m.Length >= 4 ? new Regex(@"(?i)(?<![\w-])" + Regex.Escape(m) + @"(?![\w-])", RegexOptions.Compiled) : null;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        static extern int GetShortPathName(string path, StringBuilder shortPath, int size);
+
+        static string Code(string what, string v)
+        {
+            uint h = 2166136261;
+            foreach (char c in v) { h ^= c; h *= 16777619; }
+            return what + (h % 0xFFFFFF).ToString("x6", CultureInfo.InvariantCulture);
+        }
+
+        static bool KeepIp(int a, int b, int c, int d)
+        {
+            if (a > 255 || b > 255 || c > 255 || d > 255) return true;    // not an address (a version number...)
+            if (a == 127 || a == 10 || a == 0 || (a == 192 && b == 168) || (a == 172 && b >= 16 && b <= 31) || (a == 169 && b == 254)) return true;
+            if (a == 100 && b >= 64 && b <= 127) return true;               // the provider's shared space (CGNAT): not the player's
+            if (a >= 224) return true;                                       // multicast, broadcast
+            return false;
+        }
+
+        public static string Text(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return s;
+            Init();
+            s = userPath.Replace(s, x => x.Groups[1].Value + "user");
+            if (machine != null) s = machine.Replace(s, "pc");
+            s = userdata.Replace(s, x => x.Groups[1].Value + Code("account-", x.Groups[2].Value));
+            s = steam64.Replace(s, x => Code("steam-", x.Value));
+            s = ipv4.Replace(s, x => KeepIp(int.Parse(x.Groups[1].Value), int.Parse(x.Groups[2].Value), int.Parse(x.Groups[3].Value), int.Parse(x.Groups[4].Value))
+                ? x.Value : Code("ip-", x.Value));
+            s = ipv6.Replace(s, x => Code("ipv6-", x.Value.ToLowerInvariant()));
+            s = mail.Replace(s, "mail");
+            return s;
+        }
+
+        /// <summary>A text file (read as UTF-8, else as Windows-1252), written back as UTF-8 without the personal data.</summary>
+        public static void Copy(Stream src, Stream dst)
+        {
+            var ms = new MemoryStream();
+            src.CopyTo(ms);
+            var bytes = ms.ToArray();
+            string text;
+            try { text = new UTF8Encoding(false, true).GetString(bytes); }
+            catch { text = Encoding.GetEncoding(1252).GetString(bytes); }
+            var outBytes = new UTF8Encoding(false).GetBytes(Text(text));
+            dst.Write(outBytes, 0, outBytes.Length);
         }
     }
 }

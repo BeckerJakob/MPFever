@@ -6,7 +6,8 @@ extern "C" void* _ReturnAddress();
 #pragma intrinsic(_ReturnAddress)
 extern "C" long _InterlockedExchange(long volatile*, long);
 extern "C" long _InterlockedIncrement(long volatile*);
-#pragma intrinsic(_InterlockedExchange, _InterlockedIncrement)
+extern "C" long _InterlockedCompareExchange(long volatile*, long, long);
+#pragma intrinsic(_InterlockedExchange, _InterlockedIncrement, _InterlockedCompareExchange)
 
 typedef unsigned char u8;
 typedef unsigned short u16;

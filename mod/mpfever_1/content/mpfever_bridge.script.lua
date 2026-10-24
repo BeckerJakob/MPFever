@@ -2714,6 +2714,11 @@ H.chat = function(from, p) log("chat " .. tostring(from) .. ": " .. tostring(p.t
 H.session = function(from, p)
 	if p.cmode ~= nil then G.cmode = p.cmode; G.coStart = p.cstart; G.coOwner = p.owner end
 	G.session.started = p.started == true
+	-- a resynchronisation is under way (see G.resyncRefuse); MPFEVER_RESYNCBUILDS=1: builds are not refused then (as before 0.4.6)
+	local rs = p.resync == true and os.getenv("MPFEVER_RESYNCBUILDS") ~= "1"
+	if rs ~= (G.session.resync == true) then log("session: resynchronisation " .. (rs and "under way: this player's builds are refused" or "over")) end
+	G.session.resync = rs
+	if not rs then G.resyncNewWorld = nil end
 	G.session.speed = p.speed or 0
 	-- the tutorial: its missions are validated by each game's own interface, so they diverge (a unique building the client
 	-- built for its task stays a task on the host's game...): the players are told, once per game loaded
@@ -3347,6 +3352,14 @@ local function replayStop(a, plan, variant)
 	local free = G.toolCosts(a, plan) and cc.roadTemplate == c.roadTemplate
 	local okf, cmd = pcall(function()
 		local ctx = sContext(not plan.after and a or nil, plan.cleanup)
+		-- (a stop on a bridge or in a tunnel: the stop tool shapes no ground there, the replay with the tool's terrain alignment
+		-- did, around the bridge's ends (a manual test: 4.261/12.642 against 0), and the towns drifted apart.
+		-- MPFEVER_BRIDGESTOPALIGN=1: as before)
+		if cc.type ~= 0 and ctx.checkTerrainAlignment and os.getenv("MPFEVER_BRIDGESTOPALIGN") ~= "1" then
+			ctx.checkTerrainAlignment = false
+			if not plan.alignLogged then log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: segment " .. plan.E .. " is a bridge or a tunnel (type " .. tostring(cc.type) .. "): no terrain alignment") end
+			plan.alignLogged = true
+		end
 		if free then return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true, true) end
 		return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true)
 	end)
@@ -3847,10 +3860,52 @@ G.placeStopsAfter = function(a)
 			objs[#objs + 1] = x
 		end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: " .. #objs .. " placed again on segment " .. found .. (reversed and " (reversed)" or ""))
-		replayStop(a, { E = found, seg = g.seg, objs = objs, removeIdx = {}, nodeConfigs = {}, segType = g.seg.type or 0, after = true })
+		replayStop(a, { E = found, seg = g.seg, objs = objs, removeIdx = {}, nodeConfigs = G.keptNodeConfigs(a, found, g.seg), segType = g.seg.type or 0, after = true })
 		G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function() place(k + 1) end }
 	end
 	G.waits[#G.waits + 1] = { at = G.frames + 3, fn = function() place(1) end }
+end
+
+-- The junctions of a segment as they are now, for a stop build that rebuilds it (G.placeStopsAfter): the street build just
+-- gave them the tool's lane connections and crosswalks, and the stop build removes the configurations of the segment's two
+-- nodes. Put back as they were, the segment itself named by the new segment's placeholder (-1). Without them the engine made
+-- its own there: one configuration more or less than on the builder's game, whose single build kept the tool's (a desync of
+-- nodeConfigs, then a resynchronisation). MPFEVER_AFTERNC=0: as before (none put back).
+G.keptNodeConfigs = function(a, E, seg)
+	if os.getenv("MPFEVER_AFTERNC") == "0" then return {} end
+	local out = {}
+	local ok, err = pcall(function()
+		local be = api.engine.getComponent(E, api.type.ComponentType.BASE_EDGE)
+		if not be then return end
+		-- (the new segment takes the tool's lanes: with another number of lanes than this one, a lane connection could name a
+		-- lane it does not have, which the engine asserts on: then none kept, as before)
+		local capLanes = type(seg) == "table" and type(seg.comp) == "table" and seg.comp.laneConfigs or nil
+		if type(capLanes) == "table" and #capLanes > 0 and #capLanes ~= #be.laneConfigs then
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: the tool's segment has " .. #capLanes .. " lanes, this one " .. #be.laneConfigs .. ": its junctions not kept")
+			return
+		end
+		for _, n in ipairs({ be.node0, be.node1 }) do
+			local nc = api.engine.getComponent(n, api.type.ComponentType.BASE_NODE_CONFIG)
+			if nc then
+				local lcs = {}
+				for j = 1, #nc.laneConnections do
+					local l = nc.laneConnections[j]
+					lcs[j] = { segment0 = (l.segment0 == E) and -1 or l.segment0, lane0 = l.lane0, segment1 = (l.segment1 == E) and -1 or l.segment1,
+						lane1 = l.lane1, withRoad = l.withRoad, withTram = l.withTram }
+				end
+				local cws = {}
+				pcall(function() for j = 1, #nc.crosswalks do cws[j] = nc.crosswalks[j] end end)
+				local m = { entity = n, comp = { laneConnections = lcs, crosswalks = cws } }
+				pcall(function() m.comp.trafficLightPreference = nc.trafficLightPreference end)
+				pcall(function() m.comp.doubleSlipSwitch = nc.doubleSlipSwitch end)
+				pcall(function() m.comp.userModifiedLaneConnections = nc.userModifiedLaneConnections end)
+				out[#out + 1] = m
+			end
+		end
+	end)
+	if not ok then log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: the junctions of segment " .. tostring(E) .. " not read: " .. tostring(err)); return {} end
+	log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: " .. #out .. " junction configuration(s) of segment " .. tostring(E) .. " kept")
+	return out
 end
 
 local function replayNativeStreet(a)
@@ -4633,6 +4688,11 @@ local function pollNativeEvents()
 		local rid, rst = line:match("^terrain_in (%d+) (%a+)")
 		if rid then G.terrainIn[tonumber(rid)] = rst end
 		local id = tonumber(line:match("^deferred (%d+)"))
+		if id and G.resyncRefuse("native build " .. id) then
+			-- (held by the DLL: dropped there, never given to the engine)
+			nativeCtl("dropid " .. id)
+			id = nil
+		end
 		if id then
 			-- the tool's Context flags (1 gatherBuildings, 2 terrain alignment, 4 street graph cleanup; 32 = known), shipped with the build
 			local cbits = tonumber(line:match("^deferred %d+ (%d+)"))
@@ -4678,6 +4738,11 @@ end
 -- autotest: a scripted build follows the tools' path (announced, every game holds at its time, then it is sent)
 G.autoBuildSeq = 0
 local function deferredSend(cmd, cb)
+	-- (as a tool's build: refused during a resynchronisation, see G.resyncRefuse)
+	if G.resyncRefuse("autotest build") then
+		if cb then G.waits[#G.waits + 1] = { at = G.frames + 1, fn = function() pcall(cb, nil, false) end } end
+		return
+	end
 	local now = gameTime()
 	G.autoBuildSeq = G.autoBuildSeq + 1
 	local id = 100000 + G.autoBuildSeq
@@ -5178,7 +5243,8 @@ H.resync_load = function(from, p)
 	if not id then log("resynchronisation: savegame '" .. tostring(p.name) .. "' not found"); return end
 	C.appendFile(C.DIR .. BS .. "resync_pending.txt", "1")
 	log("resynchronisation: loading the host's game '" .. tostring(p.name) .. "'")
-	app.loadGame(id, false)
+	-- (with this player's personal mods: see C.loadWithPlan)
+	C.loadWithPlan(id, log, function(fn) G.waits[#G.waits + 1] = { at = G.frames + 1, fn = fn } end)
 end
 
 -- Census (diagnostic, MPFEVER_CENSUS set): every component of every entity, written as text (census_<tag>.txt in the
@@ -5341,12 +5407,27 @@ H.det_run = function(from, p)
 	G.waits[#G.waits + 1] = { at = G.frames + 10, fn = poll }
 end
 
+-- A player's build during a resynchronisation is refused by its own game: the launcher keeps none (the others never get it),
+-- and on a game that has already loaded the host's savegame nothing would undo it (issue #81: a station that stayed on one game
+-- only, a resync right after). The player is told in the chat.
+G.resyncRefuse = function(what)
+	if not G.session.resync then return false end
+	log("resynchronisation under way: " .. tostring(what) .. " refused here")
+	if G.frames - (G.resyncToldAt or -1000) > 300 then
+		G.resyncToldAt = G.frames
+		pcall(send, "notice", { what = "resyncbuild" })
+	end
+	return true
+end
+
 -- commands held by the UI hook: stamp them (two steps ahead, or at the pause point) and ship them
 local function stampHeld()
 	for _, line in ipairs(readLines("ui.log", "uiOff")) do
 		local kind, _, payload = parseLine(line)
 		local p = payload and C.deser(payload)
-		if p and kind == "act_req" then
+		if p and kind == "act_req" and G.resyncRefuse(p.fn) then
+			-- (refused: never applied here, never sent)
+		elseif p and kind == "act_req" then
 			local now = gameTime()
 			G.oseq = G.oseq + 1
 			local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt and gameSpeed() == 0
@@ -5377,6 +5458,9 @@ local function stampHeld()
 		local e = type(p.args) == "table" and p.args[1] or nil
 		if type(e) == "number" and G.rev[e] == nil and G.frames - p.frame < 30 then
 			G.modWait[#G.modWait + 1] = p
+		elseif G.session.resync then
+			-- (during a resynchronisation the launcher keeps no command: applied here only, the games would differ)
+			log("resynchronisation under way: mod command " .. tostring(p.fn) .. " of " .. tostring(p.mod) .. " dropped")
 		else
 			pcall(R.translateOut, p.fn, p.args, G.rev)
 			local now = gameTime()
@@ -5455,6 +5539,11 @@ local function shipTerrain(o)
 		send("replay_failed", { uid = "terrain", why = "terrain modification" })
 		return "failed"
 	end
+	-- (a terrain tool edits the ground at once, it cannot be refused: made during a resynchronisation on a game that has already
+	-- loaded the host's savegame, nothing undoes it there and the launcher keeps none: the host's game is reloaded once more.
+	-- On a game still in the previous world its load undoes it.)
+	if G.session.resync and G.resyncNewWorld then return fail("made during the resynchronisation") end
+	if G.session.resync then log("terrain edit made during the resynchronisation: undone by the coming load"); return "failed" end
 	if not k then
 		if G.frames - (G.outFirstSeen[o.n] or G.frames) < 150 then return "wait" end
 		return fail("the native module did not copy the cells")
@@ -8464,6 +8553,31 @@ runContract = function(p)
 end
 
 -- Wait scenario: nothing for MPFEVER_WAIT seconds (default 60), host only: what drifts after the previous actions
+-- Build previews (MPFEVER_SCENARIO=pvtest): this game sends the preview of three existing street segments as the street tool
+-- would (G.previewOut); the other one draws it (its log: "build preview of ... circle(s) shown"), and takes it away 1.5 s later
+H.pvtest = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local segs = {}
+	for _, e in ipairs(R.allEdges()) do
+		local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+		if be and #segs < 3 and (#segs == 0 or be.node0 == segs[#segs].node1) then segs[#segs + 1] = be end
+		if #segs >= 3 then break end
+	end
+	local param = { proposal = { proposal = { addedNodes = {}, addedSegments = {} } } }
+	for i, be in ipairs(segs) do param.proposal.proposal.addedSegments[i] = { comp = be } end
+	local pts = G.pvPoints(param)
+	G.pv.sentAt = -1000
+	G.previewOut("streetBuilder", param)
+	AUTO.results[#AUTO.results + 1] = "preview of " .. #segs .. " segment(s): " .. #pts .. " point(s) sent"
+	G.waits[#G.waits + 1] = { at = G.frames + 240, fn = function()
+		AUTO.results[#AUTO.results + 1] = "preview " .. (G.pv.sending and "still shown" or "taken away after the tool's silence")
+		autoFinish()
+	end }
+end
+
 H.wait = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
 	AUTO.running = true
@@ -10322,6 +10436,9 @@ local function resumeAfterLoad(state)
 			log("resynchronisation: " .. (#s - last) .. " bytes of messages received during the load are read")
 			G.inOff = last
 		end
+		-- (loaded by a resynchronisation, which may still be under way for the others: builds refused until the launcher's
+		-- session says it is over, see H.session)
+		if last and os.getenv("MPFEVER_RESYNCBUILDS") ~= "1" then G.session.resync = true; G.resyncNewWorld = true end
 	end)
 	-- commands the UI hook held before the reload were already shipped and applied: never again
 	G.uiOff = fileSize("ui.log")
@@ -10567,9 +10684,125 @@ G.hudShare = function(reg, me)
 	log("companies: " .. #ids .. " entities of the stations the other companies share shown on the map")
 end
 
+-- ---------------------------------------------------------------- the others' build previews (0.4.6)
+-- What a player's build tool shows before the click (a street, a track, a station, a stop), the others see on the ground in
+-- their games while it shows: a chain of circles along its segments, a circle where a construction goes, in the builder's
+-- company colour (the game's mission zones, as the pending builds' circles: nothing of it reaches the world). Sent at most four
+-- times a second while the tool shows, and gone after its build or 1.5 s without a new proposal (the tool closed); a preview not
+-- heard of again for 6 s is taken away. The host's setting (MPFEVER_PREVIEWS=0) turns them off on every game.
+G.pv = { lastEv = -1000, sentAt = -1000, sending = false, shown = {}, out = 0, logged = {} }
+G.PV_TOOLS = { streetBuilder = "street", trackBuilder = "track", constructionBuilder = "construction", streetTerminalBuilder = "stop" }
+G.pvPoints = function(param)
+	local pts, r = {}, 6
+	local pr = param and (param.proposal or param)
+	local sp = pr and pr.proposal
+	local nodes = {}
+	local function V(v) if v == nil then return nil end return { x = v.x or v[1], y = v.y or v[2], z = v.z or v[3] } end
+	if sp then
+		pcall(function() for i = 1, #sp.addedNodes do local n = sp.addedNodes[i]; nodes[n.entity] = V(n.comp.position) end end)
+		local function pos(e)
+			if nodes[e] then return nodes[e] end
+			local ok, bn = pcall(function() return api.engine.getComponent(e, api.type.ComponentType.BASE_NODE) end)
+			return ok and bn and V(bn.position) or nil
+		end
+		local segs = {}
+		pcall(function() for i = 1, #sp.addedSegments do segs[#segs + 1] = sp.addedSegments[i].comp end end)
+		local total = 0
+		local geo = {}
+		for _, c in ipairs(segs) do
+			local p0, p1 = pos(c.node0), pos(c.node1)
+			if p0 and p1 then
+				local t0, t1 = V(c.tangent0) or { x = 0, y = 0 }, V(c.tangent1) or { x = 0, y = 0 }
+				local len = math.sqrt((p1.x - p0.x) ^ 2 + (p1.y - p0.y) ^ 2)
+				total = total + len
+				geo[#geo + 1] = { p0 = p0, p1 = p1, t0 = t0, t1 = t1, len = len }
+			end
+		end
+		local step = math.max(10, total / 150)
+		for _, g in ipairs(geo) do
+			local n = math.max(1, math.ceil(g.len / step))
+			for k = 0, n do
+				local t = k / n
+				local h00, h10, h01, h11 = 2 * t ^ 3 - 3 * t ^ 2 + 1, t ^ 3 - 2 * t ^ 2 + t, -2 * t ^ 3 + 3 * t ^ 2, t ^ 3 - t ^ 2
+				pts[#pts + 1] = { math.floor((h00 * g.p0.x + h10 * g.t0.x + h01 * g.p1.x + h11 * g.t1.x) * 10 + 0.5) / 10,
+					math.floor((h00 * g.p0.y + h10 * g.t0.y + h01 * g.p1.y + h11 * g.t1.y) * 10 + 0.5) / 10 }
+			end
+		end
+	end
+	-- the constructions it places: a circle each, where it goes
+	pcall(function()
+		for i = 1, #pr.toAdd do
+			local tf = pr.toAdd[i].transf
+			local x, y = tf[13], tf[14]
+			if type(x) == "number" and type(y) == "number" then pts[#pts + 1] = { math.floor(x * 10 + 0.5) / 10, math.floor(y * 10 + 0.5) / 10, 30 } end
+		end
+	end)
+	while #pts > 220 do table.remove(pts) end
+	return pts, r
+end
+G.previewOut = function(tool, param)
+	local kind = G.PV_TOOLS[tool]
+	if not kind or not G.session.started then return end
+	G.pv.lastEv = G.frames
+	if G.frames - G.pv.sentAt < 15 then return end
+	local pts, r = G.pvPoints(param)
+	if not G.pv.logged[tool] then
+		G.pv.logged[tool] = true
+		log("build preview of the " .. kind .. " tool: " .. #pts .. " point(s) sent to the others")
+	end
+	if #pts == 0 then return end
+	G.pv.sentAt = G.frames
+	G.pv.sending = true
+	local color = nil
+	pcall(function() for _, c in ipairs((R.CO or {}).list or {}) do if c.id == G.myCo then color = c.color end end end)
+	send("preview", { k = kind, r = r, c = color or G.coMyColor(), pts = pts })
+end
+G.previewGone = function()
+	if not G.pv.sending then return end
+	G.pv.sending = false
+	send("preview", { k = "", pts = {} })
+end
+G.previewClear = function(who)
+	local s = G.pv.shown[who]
+	if not s then return end
+	for k = 1, s.n do pcall(api.gui.mission.removeZone, "mpfever_pv_" .. s.tag .. "_" .. k) end
+	G.pv.shown[who] = nil
+end
+H.preview = function(from, p)
+	if from == G.me or not from then return end
+	if os.getenv("MPFEVER_PREVIEWS") == "0" then return end
+	local old = G.pv.shown[from]
+	G.pv.out = G.pv.out + 1
+	local tag = old and old.tag or tostring(G.pv.out)
+	local pts = type(p.pts) == "table" and p.pts or {}
+	local n = 0
+	local rr, gg, bb = 0.25, 0.6, 1.0
+	if type(p.c) == "number" then rr, gg, bb = CO.rgb(p.c) end
+	local col = api.type.Vec4f.new(rr, gg, bb, 0.45)
+	for _, q in ipairs(pts) do
+		if type(q) == "table" and type(q[1]) == "number" and type(q[2]) == "number" and n < 220 then
+			n = n + 1
+			pcall(api.gui.mission.setZoneCircle, "mpfever_pv_" .. tag .. "_" .. n, api.type.Vec2f.new(q[1], q[2]), (type(q[3]) == "number" and q[3]) or tonumber(p.r) or 6, true, col, false, false)
+		end
+	end
+	-- (the circles the previous preview had beyond this one's)
+	if old then for k = n + 1, old.n do pcall(api.gui.mission.removeZone, "mpfever_pv_" .. tag .. "_" .. k) end end
+	if n == 0 then G.pv.shown[from] = nil; return end
+	G.pv.shown[from] = { tag = tag, n = n, frame = G.frames }
+	if not G.pv.logged["in:" .. from] then G.pv.logged["in:" .. from] = true; log("build preview of " .. tostring(from) .. " (" .. tostring(p.k) .. "): " .. n .. " circle(s) shown") end
+end
+G.previewTick = function()
+	-- this player's tool closed (no proposal for 1.5 s): the others take its preview away
+	if G.pv.sending and G.frames - G.pv.lastEv > 90 then G.previewGone() end
+	for who, s in pairs(G.pv.shown) do
+		if G.frames - s.frame > 360 then G.previewClear(who) end
+	end
+end
+
 local function guiUpdate(userParams, state, guiState)
 	if not C.ACTIVE then return end
 	G.frames = G.frames + 1
+	if G.frames % 15 == 0 then pcall(G.previewTick) end
 	if G.frames % 600 == 0 then
 		local ps = G.pstat
 		log("gui alive frame " .. G.frames .. " t=" .. tostring(gameTime()) .. " | slowed by other clocks " .. ps.barrier .. "/" .. ps.frames .. " frames, by held actions " .. ps.hold)
@@ -10735,6 +10968,9 @@ end
 
 local function guiHandleEvent(userParams, state, guiState, src, id, name, param)
 	if not C.ACTIVE then return end
+	-- (what this player's tool shows, for the others' games: see G.previewOut)
+	if name == "builder.proposalCreate" then pcall(G.previewOut, tostring(id), param)
+	elseif name == "builder.proposalApply" then pcall(G.previewGone) end
 	if type(name) == "string" and name:find("^builder%.") then
 		G.evSeen = G.evSeen or {}
 		local key = tostring(id) .. "/" .. name

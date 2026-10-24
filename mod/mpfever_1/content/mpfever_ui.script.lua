@@ -1635,10 +1635,19 @@ local function resyncLoad(p)
 	-- the application script starts the loaded game by itself (no "press a key" screen)
 	C.appendFile(C.DIR .. C.BS .. "resync_pending.txt", "1")
 	log("resynchronisation: loading the host's game '" .. tostring(p.name) .. "'")
-	app.loadGame(id, false)
+	-- (with this player's personal mods: see C.loadWithPlan)
+	C.loadWithPlan(id, log, function(fn) U.later = U.later or {}; U.later[#U.later + 1] = fn end)
 end
 
 local function pollControl()
+	if U.later and #U.later > 0 then
+		local fns = U.later
+		U.later = {}
+		for _, fn in ipairs(fns) do
+			local ok, err = pcall(fn)
+			if not ok then log("load: " .. tostring(err)) end
+		end
+	end
 	local f = C.IO.open(C.DIR .. C.BS .. "in.log", "rb")
 	if not f then return end
 	local size = f:seek("end")

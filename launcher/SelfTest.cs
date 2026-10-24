@@ -50,6 +50,7 @@ namespace MPFever
             ok &= RunServer();
             ok &= RunUpdater();
             ok &= RunPortMap();
+            ok &= RunRedact();
             Log.W(ok ? "SELFTEST OK" : "SELFTEST FAILED");
             return ok ? 0 : 1;
         }
@@ -114,6 +115,29 @@ namespace MPFever
             }
             catch (Exception e) { Check(false, "update: " + e.Message); }
             finally { try { Directory.Delete(root, true); } catch { } }
+            return ok;
+        }
+
+        /// <summary>Problem reports: what tells who and where the player is taken out of the text (see Redact).</summary>
+        static bool RunRedact()
+        {
+            bool ok = true;
+            void Check(bool cond, string what) { Log.W((cond ? "  ok    " : "  FAIL  ") + what); ok &= cond; }
+            string user = Environment.UserName;
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string a = Redact.Text("save " + home + "\\AppData\\Local\\Temp\\mpfever\\x.txt and " + home.Replace('\\', '/') + "/y");
+            Check(!a.Contains(Path.GetFileName(home)) && a.Contains("\\Users\\user\\AppData") && a.Contains("/Users/user/y"), "report: the Windows account in paths (" + a + ")");
+            string lua = Redact.Text("C:\\\\Users\\\\" + user + "\\\\AppData");
+            Check(!lua.Contains(user) || user.Length < 2, "report: the Windows account in a Lua string (" + lua + ")");
+            string b = Redact.Text("Knight-HD joined; E:/Steam/userdata/55376607/3493540/local/save and sid 76561198015642335 again 76561198015642335");
+            Check(b.Contains("Knight-HD joined") && !b.Contains("55376607") && !b.Contains("76561198015642335") && b.Contains("userdata/account-"), "report: Steam account numbers (" + b + ")");
+            int i1 = b.IndexOf("steam-", StringComparison.Ordinal), i2 = b.LastIndexOf("steam-", StringComparison.Ordinal);
+            Check(i1 >= 0 && i2 > i1 && b.Substring(i1, 12) == b.Substring(i2, 12), "report: one Steam id gives one code");
+            string c = Redact.Text("public 89.88.206.99:28090, lan 192.168.1.20, 10.0.0.2, 127.0.0.1:28090, cgnat 100.80.1.2, Windows 10.0.26200.6584, v 0.4.6, 2a01:cb00:1234:5600::1 fe80::1");
+            Check(!c.Contains("89.88.206.99") && c.Contains(":28090") && c.Contains("192.168.1.20") && c.Contains("10.0.0.2") && c.Contains("127.0.0.1")
+                && c.Contains("100.80.1.2") && c.Contains("10.0.26200.6584") && c.Contains("0.4.6") && !c.Contains("2a01:cb00") && c.Contains("fe80::1"), "report: public addresses only (" + c + ")");
+            string d = Redact.Text("mail me at someone.name@example.org please, time 21:34:08");
+            Check(!d.Contains("example.org") && d.Contains("21:34:08"), "report: e-mail addresses (" + d + ")");
             return ok;
         }
 

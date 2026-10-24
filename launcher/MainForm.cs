@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
@@ -23,6 +24,13 @@ namespace MPFever
             bool updated = args.Contains("--updated");
             args = args.Where(a => a != "--updated").ToArray();
             Args = args;
+            // --modscan: each installed mod, whether it is personal (only this player's interface) and why not (diagnostics)
+            if (args.Length > 0 && args[0] == "--modscan")
+            {
+                Log.Init(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs"));
+                foreach (var row in Mods.ScanReport()) Console.WriteLine(row);
+                return 0;
+            }
             if (args.Length > 0 && args[0] == "--selftest")
             {
                 Log.Init(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs"));
@@ -56,7 +64,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.4.5";
+        public const string Version = "0.4.6";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -87,6 +95,15 @@ namespace MPFever
         Mods.Check modCheck;
         // (the host) the players whose mods are not the host's version, and which ones
         readonly Dictionary<string, string> modIssues = new Dictionary<string, string>();
+        // Mods a player lacks that no Mod Hub has (the host's own local mods, see Mods): the host is asked whether to send them
+        // from its PC (with their size), the player whether to take them (they hold code its game will run).
+        // (the host) the players' missing ones: player -> ids; its answer given: player -> "sent" / "refused"
+        readonly Dictionary<string, string> modAsks = new Dictionary<string, string>();
+        readonly Dictionary<string, string> modAskDone = new Dictionary<string, string>();
+        string modSendText = "";
+        // (a player) the host's offer ("ids|MB"), where the player's ask stands ("waiting", "refused") and what came
+        string modOffer = "", modAskState = "", modRecvText = "";
+        readonly Dictionary<string, string[]> modParts = new Dictionary<string, string[]>();
         // the host's addresses shown in its lobby: public (Internet, "" while looked up, "?" when unknown) and local network
         string lobbyPublic = "", lobbyLocal = "";
         int lobbyPort;
@@ -428,10 +445,26 @@ namespace MPFever
         /// <summary>Before the window: the language saved in mpfever_settings.txt (lang=), else the game's, else Windows'.</summary>
         public static void InitLanguage()
         {
+            LoadPersonalMods();
             LoadSettings().TryGetValue("lang", out var saved);
             var code = L.Detect(saved, out var source);
             L.Set(code);
             Log.W(T("Langue : ", "Language: ") + L.Name + " (" + SourceText(source) + ")");
+        }
+
+        /// <summary>This player's choices of personal mods (see Mods): taken for personal by hand, and found personal but off.</summary>
+        static void LoadPersonalMods()
+        {
+            var st = LoadSettings();
+            HashSet<string> Set(string k) => new HashSet<string>((st.TryGetValue(k, out var v) ? v : "").Split(',').Select(x => x.Trim()).Where(x => x != ""), StringComparer.OrdinalIgnoreCase);
+            Mods.Forced = Set("personal.forced");
+            Mods.Off = Set("personal.off");
+        }
+
+        static void SavePersonalMods()
+        {
+            SaveSetting("personal.forced", string.Join(",", Mods.Forced));
+            SaveSetting("personal.off", string.Join(",", Mods.Off));
         }
 
         static string SourceText(string source)
@@ -1008,7 +1041,12 @@ namespace MPFever
                 Log.Err(F("Ces mods ne sont pas dans la même version que chez l'hôte ({0}) : {1}. Mettez-les à jour avant que l'hôte lance la partie.", "These mods are not the same version as the host's ({0}): {1}. Update them before the host starts the game.", c.Differs.Count, string.Join(", ", c.Differs)));
             if (c.Bad.Count > 0)
                 Log.Err(F("La partie de l'hôte contient des mods INCOMPATIBLES avec MPFever : {0}. Demandez à l'hôte de les désactiver, sinon la partie se désynchronisera sans cesse.", "The host's game has mods INCOMPATIBLE with MPFever: {0}. Ask the host to turn them off, or the game will keep desynchronising.", string.Join(", ", c.Bad)));
-            try { client?.Send(Msg.Make("modcheck", name, "{[\"differs\"]=" + LuaLit.Quote(string.Join(", ", c.Differs)) + "}")); } catch { }
+            // (the missing ones no Mod Hub has: the host may send them, see modAsks)
+            var hubs = Mods.Parse(mods).ToDictionary(e => e.Id, e => e.Hub, StringComparer.OrdinalIgnoreCase);
+            var noHub = c.MissingIds.Where(id => !hubs.TryGetValue(id, out var hb) || hb == "").ToList();
+            if (noHub.Count == 0) { modAskState = ""; modOffer = ""; }
+            else if (modAskState == "") modAskState = "waiting";
+            try { client?.Send(Msg.Make("modcheck", name, "{[\"differs\"]=" + LuaLit.Quote(string.Join(", ", c.Differs)) + ",[\"nohub\"]=" + LuaLit.Quote(string.Join(",", noHub)) + "}")); } catch { }
             MenuStatus();
         }
 
@@ -1083,9 +1121,112 @@ namespace MPFever
                     ["lang"] = L.Code,
                     ["colors"] = lobbyOpen ? LobbyColors() : lobbyColors,
                     ["cmode"] = lobbyOpen ? companyMode : lobbyMode,
+                    ["myMods"] = SafeMineView(),
+                    ["autoMods"] = st.TryGetValue("automods", out var am) && am == "0" ? "0" : "1",
+                    ["modAsk"] = lobbyOpen ? ModAskView() : "",
+                    ["modSend"] = lobbyOpen ? modSendText : "",
+                    ["modOffer"] = lobbyOpen ? "" : modOffer,
+                    ["modAskState"] = lobbyOpen ? "" : modAskState,
+                    ["modRecv"] = lobbyOpen ? "" : modRecvText,
                 });
             }
             catch (Exception e) { Log.W("menu_state: " + e.Message); }
+        }
+
+        /// <summary>(the host) The players' missing mods no Mod Hub has, for the menu: "player|ids|MB" entries.</summary>
+        string ModAskView()
+        {
+            lock (modAsks)
+                return string.Join(";;", modAsks.Select(kv => BaseName(kv.Key) + "|" + kv.Value + "|"
+                    + kv.Value.Split(',').Sum(x => double.TryParse(Mods.SizeMb(x), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0).ToString("0.0", CultureInfo.InvariantCulture)));
+        }
+
+        /// <summary>(the host) Each mod's folder, zipped, to one player in parts (as the savegame goes).</summary>
+        void SendMods(Peer peer, List<string> ids)
+        {
+            int sent = 0;
+            foreach (var id in ids)
+            {
+                var dir = Mods.Dir(id);
+                if (dir == null) continue;
+                string tmp = Path.Combine(Path.GetTempPath(), "mpfever-mod-" + Guid.NewGuid().ToString("N") + ".zip");
+                try
+                {
+                    ZipFile.CreateFromDirectory(dir, tmp, CompressionLevel.Optimal, false);
+                    var bytes = File.ReadAllBytes(tmp);
+                    int parts = (bytes.Length + ResyncChunk - 1) / ResyncChunk;
+                    for (int i = 0; i < parts; i++)
+                    {
+                        int len = Math.Min(ResyncChunk, bytes.Length - i * ResyncChunk);
+                        relay?.Send(peer, Msg.Make("modfile", hostName, "{[\"id\"]=" + LuaLit.Quote(id) + ",[\"i\"]=" + i + ",[\"n\"]=" + parts
+                            + ",[\"data\"]=\"" + Convert.ToBase64String(bytes, i * ResyncChunk, len) + "\"}"));
+                    }
+                    sent++;
+                    modSendText = F("Mods envoyés à {0} : {1} sur {2}", "Mods sent to {0}: {1} of {2}", BaseName(peer.Name), sent, ids.Count);
+                    Log.W(F("Mod {0} envoyé à {1} ({2:0.0} Mo)", "Mod {0} sent to {1} ({2:0.0} MB)", id, BaseName(peer.Name), bytes.Length / 1048576.0));
+                    MenuStatus();
+                }
+                catch (Exception e) { Log.Warn(F("Mod {0} : envoi impossible ({1})", "Mod {0}: cannot be sent ({1})", id, e.Message)); }
+                finally { try { File.Delete(tmp); } catch { } }
+            }
+        }
+
+        /// <summary>(a player) A mod the host sends, in parts: once complete, unpacked into this player's own mods (never over a
+        /// mod already there, never outside its folder).</summary>
+        void OnModFile(Msg m)
+        {
+            var t = LuaLit.Parse(m.Payload) as Dictionary<object, object>;
+            if (t == null) return;
+            string id = t.TryGetValue("id", out var iv) && iv is string ids ? ids : "";
+            if (!(t.TryGetValue("i", out var io) && io is double di) || !(t.TryGetValue("n", out var no) && no is double dn)) return;
+            int i = (int)di, n = (int)dn;
+            // (only a mod this player was offered and took, with a plain folder name)
+            if (id == "" || n < 1 || n > 20000 || i < 0 || i >= n || !System.Text.RegularExpressions.Regex.IsMatch(id, "^[A-Za-z0-9_.-]+$") || id.Contains("..")) return;
+            string[] got;
+            lock (modParts)
+            {
+                if (!modParts.TryGetValue(id, out got) || got.Length != n) modParts[id] = got = new string[n];
+                got[i] = t["data"] as string;
+                if (got.Any(x => x == null)) { modRecvText = F("Réception du mod {0} : {1} %", "Receiving the mod {0}: {1} %", id, 100 * got.Count(x => x != null) / n); MenuStatus(); return; }
+                modParts.Remove(id);
+            }
+            try
+            {
+                var save = GameInstall.SaveDirs().FirstOrDefault(Directory.Exists);
+                if (save == null) throw new Exception(T("dossier des mods introuvable", "mods folder not found"));
+                var root = Path.Combine(Path.GetDirectoryName(save), "mods");
+                var target = Path.GetFullPath(Path.Combine(root, id));
+                if (Directory.Exists(target) || Mods.Dir(id) != null) { modRecvText = F("Le mod {0} est déjà installé : non remplacé.", "The mod {0} is already installed: not replaced.", id); MenuStatus(); return; }
+                var bytes = got.SelectMany(Convert.FromBase64String).ToArray();
+                using (var z = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read))
+                {
+                    foreach (var e in z.Entries)
+                    {
+                        var dest = Path.GetFullPath(Path.Combine(target, e.FullName));
+                        if (!dest.StartsWith(target + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new Exception("bad path " + e.FullName);
+                        if (e.FullName.EndsWith("/") || e.FullName.EndsWith("\\")) { Directory.CreateDirectory(dest); continue; }
+                        Directory.CreateDirectory(Path.GetDirectoryName(dest));
+                        e.ExtractToFile(dest, false);
+                    }
+                }
+                Mods.Rescan();
+                modRecvText = F("Mod {0} reçu de l'hôte et installé. S'il reste « manquant », redémarrez le jeu.", "Mod {0} received from the host and installed. If it stays « missing », restart the game.", id);
+                Log.Ok(F("Mod {0} reçu de l'hôte : installé dans {1}", "Mod {0} received from the host: installed in {1}", id, target));
+                var hm = lobbyMods; lobbyMods = ""; modCheck = null;
+                SetHostMods(hm, clients.FirstOrDefault(), menuGame?.Name ?? "");
+            }
+            catch (Exception e) { modRecvText = F("Mod {0} : installation impossible ({1})", "Mod {0}: cannot be installed ({1})", id, e.Message); Log.Warn(modRecvText); }
+            MenuStatus();
+        }
+
+        string mineView = ""; DateTime mineAt = DateTime.MinValue;
+        /// <summary>This player's personal mods for the menu (scanned at most every 20 s: the menu state is written often).</summary>
+        string SafeMineView()
+        {
+            if ((DateTime.UtcNow - mineAt).TotalSeconds < 20) return mineView;
+            mineAt = DateTime.UtcNow;
+            try { mineView = Mods.MineView(); } catch (Exception e) { Log.W("personal mods: " + e.Message); }
+            return mineView;
         }
 
         static string LocalAddresses()
@@ -1149,6 +1290,8 @@ namespace MPFever
                 if (Environment.GetEnvironmentVariable("MPFEVER_COMPANIES") == null) companyMode = option == "separate" ? "separate" : "shared";
                 Log.W(F("Mode des entreprises : {0}", "Company mode: {0}", companyMode));
                 menuGame.SetIdentity(name, "host");
+                // (the host plays its own savegame's mods: no plan left from a game this player joined before)
+                try { File.Delete(Path.Combine(menuGame.Dir, "load_mods.txt")); } catch { }
                 int port = (int)portBox.Value;
                 try { StartHost(name, false, menuGame); }
                 catch (Exception e) { menuPhase = "error"; menuText = T("Impossible d'héberger : ", "Cannot host: ") + e.Message; MenuStatus(); return; }
@@ -1226,6 +1369,66 @@ namespace MPFever
             else if (cmd == "invite")
             {
                 if (steamConnect != null) SteamCtl("invite", steamConnect);
+            }
+            else if (cmd == "sendmods")
+            {
+                // (the host) "sendmods <player>" with option 1: offer the player its missing mods; 0: say no
+                string who;
+                lock (modAsks) who = modAsks.Keys.FirstOrDefault(k => k == arg) ?? modAsks.Keys.FirstOrDefault(k => BaseName(k) == arg);
+                if (who == null) return;
+                string ids; lock (modAsks) { ids = modAsks[who]; modAsks.Remove(who); modAskDone[who] = option == "1" ? "offered:" + ids : "refused"; }
+                var peer = relay?.Find(who);
+                if (peer == null) return;
+                if (option == "1")
+                {
+                    double mb = ids.Split(',').Sum(x => double.TryParse(Mods.SizeMb(x), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0);
+                    relay.Send(peer, Msg.Make("modoffer", hostName, "{[\"ids\"]=" + LuaLit.Quote(ids) + ",[\"mb\"]=" + mb.ToString("0.0", CultureInfo.InvariantCulture) + "}"));
+                    modSendText = F("Mods proposés à {0} : il doit accepter.", "Mods offered to {0}: they must accept.", BaseName(who));
+                }
+                else
+                {
+                    relay.Send(peer, Msg.Make("modoffer", hostName, "{[\"no\"]=true}"));
+                    modSendText = "";
+                }
+                MenuStatus();
+            }
+            else if (cmd == "takemods")
+            {
+                // (a player) "takemods" with option 1: take the host's offer; 0: refuse it
+                bool yes = option == "1";
+                foreach (var cl in clients.ToList()) { try { cl.Send(Msg.Make("modaccept", name, "{[\"yes\"]=" + (yes ? "true" : "false") + "}")); } catch { } }
+                modRecvText = yes ? T("Réception des mods de l'hôte...", "Receiving the host's mods...") : "";
+                if (!yes) modAskState = "refused";
+                modOffer = "";
+                MenuStatus();
+            }
+            else if (cmd == "modpersonal" || cmd == "modmine")
+            {
+                // personal mods (see Mods): "modpersonal <id> 1|0" takes a mod for personal by hand (or no longer), "modmine
+                // <id> 1|0" turns one of this player's personal mods on or off
+                var parts = (arg ?? "").Split(' ');
+                if (parts.Length < 2 || parts[0].Trim() == "") return;
+                string id = parts[0].Trim();
+                bool on = parts[1].Trim() == "1";
+                if (cmd == "modpersonal") { if (on) Mods.Forced.Add(id); else Mods.Forced.Remove(id); }
+                else if (on) { Mods.Off.Remove(id); }
+                else { Mods.Off.Add(id); Mods.Forced.Remove(id); }
+                SavePersonalMods();
+                mineAt = DateTime.MinValue;
+                Log.W(F("Mod {0} : {1}", "Mod {0}: {1}", id, cmd == "modpersonal" ? (on ? T("pris pour personnel (il peut désynchroniser la partie)", "taken for personal (it may desynchronise the game)") : T("de nouveau partagé", "shared again"))
+                    : (on ? T("mod personnel activé", "personal mod on") : T("mod personnel désactivé", "personal mod off"))));
+                if (lobbyOpen)
+                {
+                    // the host's own: its list as the players see it changes
+                    lobbyMods = Mods.Describe(ReadHostMods());
+                    BroadcastLobby();
+                }
+                else if (lobbyMods != "")
+                {
+                    var hm = lobbyMods; lobbyMods = ""; modCheck = null;
+                    SetHostMods(hm, clients.FirstOrDefault(), name);
+                }
+                MenuStatus();
             }
             else if (cmd == "report")
             {
@@ -1488,6 +1691,40 @@ namespace MPFever
                         }
                         continue;
                     }
+                    if (scenario == "soak")
+                    {
+                        // (after other scenarios) the games only run, MPFEVER_SOAK_SPEED / MPFEVER_SOAK_SECONDS
+                        if (role == "host")
+                        {
+                            int.TryParse(Environment.GetEnvironmentVariable("MPFEVER_SOAK_SPEED") ?? "1", out int ssp);
+                            int.TryParse(Environment.GetEnvironmentVariable("MPFEVER_SOAK_SECONDS") ?? "120", out int ssecs);
+                            SetSpeed(Math.Max(1, ssp), "autotest");
+                            AutoLine("soak " + ssecs + " s at x" + Math.Max(1, ssp));
+                            Thread.Sleep(Math.Max(10, ssecs) * 1000);
+                            AutoLine("soak over: " + syncText + " (desyncs " + desyncs + ")");
+                        }
+                        continue;
+                    }
+                    if (scenario == "resyncbuild")
+                    {
+                        // a build made by the client while a resynchronisation is under way (issue #81): its game refuses it
+                        // (nothing kept anywhere), and the games stay alike after the resynchronisation
+                        if (role == "host")
+                        {
+                            resyncing = true; AutoLine("resynchronisation requested (the client builds during it)");
+                            var rt = new Thread(() => Resync("autotest")) { IsBackground = true, Name = "Resync" };
+                            rt.Start();
+                            WaitUntil(() => resyncDropping, 60);
+                            Thread.Sleep(3000);
+                            lock (autoDone) autoDone.Remove("client");
+                            HostSend(Msg.Make("newroad", hostName, "{[\"role\"]=\"client\",[\"offset\"]=11}"));
+                            bool cd = WaitUntil(() => { lock (autoDone) return autoDone.ContainsKey("client"); }, 120);
+                            lock (autoDone) AutoLine("client build during the resynchronisation: " + (cd ? autoDone["client"] : "TIMEOUT"));
+                            rt.Join(TimeSpan.FromMinutes(10));
+                            Thread.Sleep(8000);
+                        }
+                        continue;
+                    }
                     if (scenario == "resync")
                     {
                         // every game reloads the host's savegame (as when a player joins): the companies must come back as they were
@@ -1700,6 +1937,18 @@ namespace MPFever
                 client.Received += m =>
                 {
                     if (m.Kind == "resync_file") { OnResyncFile(game, m); return; }
+                    if (m.Kind == "modfile") { OnModFile(m); return; }
+                    if (m.Kind == "modoffer")
+                    {
+                        // the host offers its mods no Mod Hub has: the player decides (the menu shows the offer)
+                        var mo = LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>();
+                        string ids = mo.TryGetValue("ids", out var iv) && iv is string iss ? iss : "";
+                        string mb = mo.TryGetValue("mb", out var mv) ? Convert.ToString(mv, CultureInfo.InvariantCulture) : "";
+                        if (mo.TryGetValue("no", out var nov) && nov is bool nob && nob) { modOffer = ""; modAskState = "refused"; }
+                        else { modOffer = ids + "|" + mb; modAskState = ""; Log.Warn(F("L'hôte propose de vous envoyer ses mods : {0} ({1} Mo). Acceptez ou refusez dans la page Multijoueur.", "The host offers to send you its mods: {0} ({1} MB). Accept or refuse on the Multiplayer page.", ids, mb)); }
+                        MenuStatus();
+                        return;
+                    }
                     if (m.Kind == "lobby")
                     {
                         // the host's lobby: who is there, until the host starts the game (or closes the lobby)
@@ -2097,7 +2346,10 @@ namespace MPFever
                        ",[\"cmode\"]=\"" + companyMode + "\"" +
                        (companyMode == "separate" ? ",[\"cstart\"]=" + StartMoney() : "") +
                        // a dedicated server plays no company: the savegame's company goes to its owner (owner=, else nobody)
-                       (companyMode == "separate" && server != null ? ",[\"owner\"]=" + LuaLit.Quote(OwnerKey()) : "") + "}";
+                       (companyMode == "separate" && server != null ? ",[\"owner\"]=" + LuaLit.Quote(OwnerKey()) : "") +
+                       // a resynchronisation is under way: every game refuses its player's builds until it ends (issue #81: a player
+                       // whose game had already loaded the host's built a station there, which the others never received)
+                       (resyncDropping ? ",[\"resync\"]=true" : "") + "}";
         }
 
         void BroadcastSession() => HostSend(Msg.Make("session", hostName ?? "Host", SessionPayload()));
@@ -2231,9 +2483,37 @@ namespace MPFever
                         var h = LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>();
                         var differs = h.TryGetValue("differs", out var dv) && dv is string ds ? ds : "";
                         lock (modIssues) { if (differs != "") modIssues[BaseName(from.Name)] = differs; else modIssues.Remove(BaseName(from.Name)); }
+                        var nohub = h.TryGetValue("nohub", out var nv) && nv is string ns ? ns : "";
+                        lock (modAsks)
+                        {
+                            // (only mods of this savegame installed here: nothing else is ever sent)
+                            var ids = nohub.Split(',').Select(x => x.Trim()).Where(x => x != "" && Mods.Dir(x) != null && Mods.Parse(lobbyMods).Any(e => e.Id.Equals(x, StringComparison.OrdinalIgnoreCase))).ToList();
+                            if (ids.Count > 0 && !modAskDone.ContainsKey(from.Name))
+                            {
+                                modAsks[from.Name] = string.Join(",", ids);
+                                Log.Warn(F("{0} n'a pas {1} mod(s) qu'aucun Mod Hub n'a : {2}. Vous pouvez les lui envoyer depuis la page Multijoueur.", "{0} lacks {1} mod(s) no Mod Hub has: {2}. You can send them from the Multiplayer page.", BaseName(from.Name), ids.Count, string.Join(", ", ids)));
+                            }
+                            else if (ids.Count == 0) modAsks.Remove(from.Name);
+                        }
                         if (differs != "") Log.Warn(F("{0} n'a pas la même version que vous de ces mods : {1}. Il ne pourra pas charger la partie tant qu'il ne les a pas mis à jour.", "{0} does not have your version of these mods: {1}. They cannot load the game until they update them.", BaseName(from.Name), differs));
                         BroadcastLobby();
                         MenuStatus();
+                    }
+                    break;
+
+                case "modaccept":
+                    {
+                        // the player takes the mods the host offered: sent to it alone
+                        if (from == null) break;
+                        string ids; lock (modAsks) { modAskDone.TryGetValue(from.Name, out ids); }
+                        var h = LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>();
+                        bool yes = h.TryGetValue("yes", out var yv) && yv is bool yb && yb;
+                        if (!yes) { Log.W(F("{0} ne prend pas les mods proposés.", "{0} does not take the mods offered.", BaseName(from.Name))); modSendText = F("{0} ne prend pas les mods.", "{0} does not take the mods.", BaseName(from.Name)); MenuStatus(); break; }
+                        if (ids == null || !ids.StartsWith("offered:")) break;
+                        var list = ids.Substring(8).Split(',').Where(x => x != "").ToList();
+                        lock (modAsks) modAskDone[from.Name] = "sent";
+                        var peer = from;
+                        new Thread(() => SendMods(peer, list)) { IsBackground = true, Name = "Send mods" }.Start();
                     }
                     break;
 
@@ -2430,6 +2710,9 @@ namespace MPFever
                         Log.Warn(text);
                         HostChat("msg", "MPFever", text);
                     }
+                    // a player's build refused by its own game during a resynchronisation (see SessionPayload)
+                    if (m.Payload.Contains("resyncbuild"))
+                        HostChat("msg", "MPFever", F("Construction de {0} pendant la resynchronisation : annulée, refaites-la dans un instant.", "{0}'s build during the resynchronisation: cancelled, please build it again in a moment.", BaseName(m.From)));
                     break;
 
                 default:
@@ -2439,7 +2722,7 @@ namespace MPFever
                         if (from != null) hostGame?.ToGame(m);
                         relay.Broadcast(m, from);
                     }
-                    if (m.Kind != "chat") Log.W($"{m.From} : {m.Kind} {m.Payload}");
+                    if (m.Kind != "chat" && m.Kind != "preview") Log.W($"{m.From} : {m.Kind} {m.Payload}");
                     break;
             }
         }
@@ -2600,6 +2883,7 @@ namespace MPFever
                 // 2. the host saves
                 saveDone = null;
                 resyncDropping = true;
+                BroadcastSession();
                 hostGame.ToGame(Msg.Make("resync_save", hostName, "{[\"id\"]=" + id + ",[\"name\"]=" + LuaLit.Quote(ResyncSaveName) + "}"));
                 if (!WaitUntil(() => saveDone != null, 180)) { Log.Err(T("Resynchronisation abandonnée : l'hôte n'a pas sauvegardé.", "Resynchronisation cancelled: the host did not save.")); return; }
                 if (!(saveDone.TryGetValue("ok", out var okv) && okv is bool ok && ok)) { Log.Err(T("Resynchronisation abandonnée : sauvegarde refusée.", "Resynchronisation cancelled: save refused.")); return; }
@@ -2630,6 +2914,7 @@ namespace MPFever
                 bool back = WaitUntil(() => { lock (resyncWaiting) return resyncWaiting.Count == 0; }, 600);
                 if (!back) { lock (resyncWaiting) Log.Warn(T("Resynchronisation : sans nouvelles de ", "Resynchronisation: no news from ") + string.Join(", ", resyncWaiting) + T(" (on reprend quand même).", " (resuming anyway).")); }
                 resyncDropping = false;
+                BroadcastSession();
                 // 4. all games run the same savegame: check, then resume
                 Thread.Sleep(3000);
                 postResyncHashN = hashN + 1;
@@ -2643,9 +2928,11 @@ namespace MPFever
                 lastResync = Now;
                 diffStreak = 0;
                 lock (partStreak) partStreak.Clear();
+                bool wasDropping = resyncDropping;
                 resyncDropping = false;
                 resyncSending = false;
                 resyncing = false;
+                if (wasDropping) BroadcastSession();
                 SetSpeed(prevSpeed, T("fin de resynchronisation", "end of resynchronisation"));
             }
         }
@@ -2698,6 +2985,14 @@ namespace MPFever
                 string name = ResyncSaveName + " " + new string(game.Name.Where(char.IsLetterOrDigit).ToArray());
                 foreach (var d in GameInstall.SaveDirs()) File.WriteAllBytes(Path.Combine(d, name + ".sav"), bytes);
                 Log.W(F("[{0}] partie de l'hôte reçue ({1:0.0} Mo) : chargement...", "[{0}] host game received ({1:0.0} MB): loading...", game.Name, bytes.Length / 1048576.0));
+                // the mods of this load: the host's personal ones left out, this player's own added (read by mpfever_auto.lua)
+                try
+                {
+                    var plan = Mods.LoadPlan(lobbyMods);
+                    File.WriteAllText(Path.Combine(game.Dir, "load_mods.txt"), plan);
+                    if (plan != "") Log.W(F("[{0}] mods personnels : {1}", "[{0}] personal mods: {1}", game.Name, plan.Trim().Replace("\n", ", ").Replace("\t", " ")));
+                }
+                catch (Exception e) { Log.W("load_mods: " + e.Message); }
                 // the host's numbers start again at 1 when its MPFever restarts, while this MPFever and its game remember
                 // the loads they did (menu_loaded.txt, resync_claims.txt) and skipped the host's game as already loaded:
                 // each game received has a number of its own (issue #29)

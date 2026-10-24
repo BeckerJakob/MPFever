@@ -35,7 +35,7 @@ Each player plays in their own copy of the game. MPFever replays every player's 
 | **Transport Fever 3 on Steam, Windows** | MPFever is tested on the Steam version only. Other stores (Epic...) are not supported yet. |
 | **The same game version on every PC** | Two different game builds don't simulate the world the same way. Supported: **40423** (current) and **40420**. Make sure Steam has updated the game on every PC. |
 | **The same MPFever version on every PC** | MPFever updates itself; every player just needs a recent version (0.3.15 or later). |
-| **The same mods, in the same version** | MPFever checks it in the lobby and tells you what to fix. |
+| **The same mods, in the same version** | MPFever checks it in the lobby, installs the missing ones from the game's Mod Hub and tells you what to fix. Mods that only change your interface may differ. |
 
 ## Install and play
 
@@ -71,6 +71,7 @@ Players can also join a game already running, and a lost connection reconnects b
 - Terrain edits, trees and the bulldozer.
 - Vehicles, lines, game speed and pause.
 - Demolishing what you just built gives the money back, as in a solo game.
+- What another player's tool shows before their click (a road, a track, a station) shows on the ground in your game, in their colour. The host can turn it off.
 
 ### In-game tools
 
@@ -105,7 +106,11 @@ See [SERVER](docs/SERVER.txt).
 
 ## Mods
 
-**Every player needs the same mods, in the same version.** When you join, the lobby lists what to fix: mods missing on your PC, in another version than the host's, or known to break a session. The host's world isn't loaded until it's fixed.
+**Every player needs the same mods, in the same version**, except the personal ones (below). When you join, the lobby lists what to fix: mods missing on your PC, in another version than the host's, or known to break a session. The host's world isn't loaded until it's fixed.
+
+- **Missing mods install by themselves:** the game's own Mod Hub (mod.io, Steam Workshop) subscribes you to them and downloads them. Sign in to the Mod Hub first (Mods button of the main menu). It can be turned off in ⚙ Settings.
+- **The host's local mods** (on no Mod Hub): the host is asked whether to send them from their PC, with their size, and you choose whether to take them. Only accept from a host you trust: a mod holds code that runs in your game.
+- **Personal mods:** a mod that only changes your interface (windows, overlays, icons, styles) can be yours alone. The lobby shows which mods are personal; yours are added to the host's world on your PC only. You can also play without a missing mod by taking it for personal, at the risk of a desync if it does more than the interface.
 
 | Kind of mod | Works? |
 |---|---|
@@ -120,7 +125,6 @@ The mods tested so far are listed in [MODS](docs/MODS.md).
 
 ## Known limitations
 
-- **A bus stop placed on a bridge** reshapes the ground a little on the other games. The towns drift apart, and MPFever reloads the world after a few checks.
 - **One company per player:** a company can't go bankrupt yet, and the fees of shared stations don't show in the finances.
 - **Steam and Windows only.**
 - **Small drifts of vehicles and passengers** can happen. They are repaired by a reload if they last.
@@ -141,7 +145,7 @@ What's planned: [ROADMAP](docs/ROADMAP.txt). What changed: [CHANGELOG](docs/CHAN
 
 Open an [issue](https://github.com/dkdknight/MPFever/issues) with your logs. **Without logs, a desync or a crash can rarely be found.** With them, most bugs are fixed in the next version.
 
-1. **Click « Report a problem »:** in the MPFever window of the game, or in the launcher. MPFever zips every log, shows the zip and opens an issue already filled in. After a crash, it offers it by itself.
+1. **Click « Report a problem »:** in the MPFever window of the game, or in the launcher. MPFever zips every log, shows the zip and opens an issue already filled in. After a crash, it offers it by itself. Your Windows account and PC names, Steam account numbers and public IP address are taken out of the logs.
 2. **Say what you did just before, and when** (your clock): built a station, bulldozed a road... Say who was the host.
 3. **Ask every player to send theirs**, the host's above all.
 4. **The savegame helps a lot.** With it, we can replay the problem here. It's usually over 25 MB: share it through Google Drive, Dropbox or WeTransfer. After a resync, add `MPFever resync.sav` too.
