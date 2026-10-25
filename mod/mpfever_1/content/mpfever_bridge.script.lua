@@ -14463,9 +14463,21 @@ local function guiUpdate(userParams, state, guiState)
 			local now = gameTime()
 			-- (the engine may take seconds for many steps, in batches: a request is given up only when the clock stopped moving,
 			-- else a second one would add its steps to what is left of the first and pass the stop point)
-			if G.stepTarget and (now >= G.stepTarget or (G.frames - G.stepSince > 120 and G.frames - (G.clockMovedAt or 0) > 120)) then G.stepTarget = nil end
+			-- (a request is given up while the clock stands still only once the engine is proven idle SINCE it: two handshakes after
+			-- it with the same updateCount, see G.stillWatch; without such a proof, after 30 s. The interface sees no handshake while
+			-- the simulation is busy: friends' sessions of 2026-10-25 asked for the same 3 steps 3 and 5 times while the engine stood
+			-- in a 10 s step, ran 11 and 15 steps, and the builds held there landed 4 to 8 steps late: reloads)
+			if G.stepTarget and now < G.stepTarget and G.frames - G.stepSince > 120 and G.frames - (G.clockMovedAt or 0) > 120 then
+				local S = G.stillS
+				local idle = S and S.usable and S.proven and (S.provenAt or -1) > G.stepSince
+				if idle or os.clock() - (G.stepSinceClock or 0) > 30 then
+					log("STEPS to " .. G.stepTarget .. " given up at t=" .. now .. " (" .. (idle and "the engine is idle since the request" or "30 s without the engine's answer") .. ") [frame " .. G.frames .. "]")
+					G.stepTarget = nil
+				end
+			end
+			if G.stepTarget and now >= G.stepTarget then G.stepTarget = nil end
 			if sp == 0 and G.wantSteps and G.wantSteps > 0 and not G.stepTarget and G.simStill() then
-				G.stepTarget, G.stepSince = now + G.wantSteps * STEP, G.frames
+				G.stepTarget, G.stepSince, G.stepSinceClock = now + G.wantSteps * STEP, G.frames, os.clock()
 				-- (also while another game's build is awaited here: see "REPLAY SEND")
 				if os.getenv("MPFEVER_STEPLOG") or #(G.nativeQueue or {}) > 0 or #(G.natWait or {}) > 0 then log("STEPS " .. G.wantSteps .. " from t=" .. now .. " to " .. G.stepTarget .. " (hold " .. tostring(G.holdAt) .. ", barrier " .. tostring(G.lastBarrier) .. ", pause " .. tostring(G.session.pauseAt) .. ") [frame " .. G.frames .. "]"
 					.. (G.stillS and (" [still: old rule " .. (G.stillOldRule() and "yes" or "no") .. ", new rule " .. ((G.stillS.usable and G.stillS.proven) and "yes" or (G.stillS.usable and "no" or "n/a")) .. ", " .. ((G.fastStill and G.stillS.usable) and "the earlier of the two decides" or "the old rule decides") .. "]") or "")) end

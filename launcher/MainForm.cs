@@ -65,7 +65,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.5.5";
+        public const string Version = "0.5.6";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;

@@ -1,6 +1,14 @@
 MPFever - Changelog
 ===================
 
+0.5.6 - builds no longer land late after the engine stalls
+  - FIX (desyncs: 4 reloads in the friends' sessions of 2026-10-25): a game stopping at another player's build asks the engine
+    for the exact steps left. While the simulation stood in a long step (10 to 13 s on a large map: a lane modifier or industry
+    extensions, the engine recomputing routes), the interface saw no handshake, took the request for lost after 2 s and asked
+    again: 3 steps asked 5 times ran 15 steps, and the builds held there landed 4 to 8 steps late (towns, terrain, a reload).
+    A request is now given up only once the engine is proven idle since it (two handshakes with the same step count), else after
+    30 s; a request given up is logged ("STEPS ... given up"). In those sessions no other request (about 190) was ever repeated.
+
 0.5.5 - no reload for the build ids check
   - FIX: even read at a fixed game time, at a speed above 1 the games read a build's new ids at different steps (one after the
     next build had replaced the segment): a session of 2026-10-25 reloaded for nothing at 22:32 (every action's result was the
