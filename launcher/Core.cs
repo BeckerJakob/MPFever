@@ -528,7 +528,7 @@ namespace MPFever
         /// Windows account named "Thöny" (the temporary folder is in the account's folder) no file of the session could be
         /// read or written by the mod, and the game had no multiplayer page (issue #59). Such a temporary folder is used by
         /// its short name (C:\Users\MAXEMI~1\...), or else replaced by an ASCII folder shared by the PC's accounts.</summary>
-        static string SessionRoot()
+        public static string SessionRoot()
         {
             var temp = Path.Combine(Path.GetTempPath(), "mpfever");
             if (IsAscii(temp)) return temp;

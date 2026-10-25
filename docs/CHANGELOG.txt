@@ -1,6 +1,14 @@
 MPFever - Changelog
 ===================
 
+0.5.2 - (in progress) crash at the load of an older savegame
+  - FIX: a savegame made in a session could keep an action of that session past its time; it was applied as the world
+    loaded, and a vehicle it sold crashed the game at every load (« it != components.end() » in UI::CSelector, issue #84).
+    Such actions are no longer applied (every game drops the same ones). MPFEVER_KEEPSTALE=1: as before.
+  - TESTS: build.bat runs every check that needs no game before it makes the archives (testsun_all.py), and GitHub runs
+    them for every push and pull request; a compiler warning stops the build. The mod's description no longer says
+    experimental.
+
 0.5.1 - a new MPFever window, open rules between companies, builds in a pause, trees, stops, signals; the same mathematics on every Windows
   - NEW (window): MPFever's icon in the game's bottom bar, left of Earnings: a disc in the session's colour (grey: no
     session yet, green: in sync, yellow: a resynchronisation under way, a slight drift, or a player loading or joining,

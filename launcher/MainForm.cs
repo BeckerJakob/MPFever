@@ -65,7 +65,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.5.1";
+        public const string Version = "0.5.2";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -222,6 +222,7 @@ namespace MPFever
         readonly bool autotest;
         readonly List<string> autoReport = new List<string>();
         readonly Dictionary<string, string> autoDone = new Dictionary<string, string>();
+        volatile bool recplayStart;
 
         public MainForm(bool autotest = false)
         {
@@ -1768,9 +1769,19 @@ namespace MPFever
                     RunDeterminism();
                     return;
                 }
+                // (recplay: the session stays paused at the savegame's time, the replay sets the speed)
+                recplayStart = Environment.GetEnvironmentVariable("MPFEVER_SCENARIO") == "recplay";
                 StartSession();
                 Thread.Sleep(8000);
                 var scenarios = (Environment.GetEnvironmentVariable("MPFEVER_SCENARIO") ?? "newroad,upgrade").Split(',');
+                if (scenarios[0] == "recplay")
+                {
+                    RunRecPlay();
+                    RequestHash();
+                    Thread.Sleep(12000);
+                    AutoLine("sync: " + syncText + " (desyncs " + desyncs + ", refused " + actRefused + ")");
+                    return;
+                }
                 if (scenarios[0] == "soak")
                 {
                     // endurance: the games only run; the regular checkpoints show what drifts
@@ -2558,6 +2569,7 @@ namespace MPFever
                 Thread.Sleep(1500);
                 // a dedicated server starts at its own speed, or stays paused while nobody is connected
                 if (server != null && ServerStartsPaused()) return;
+                if (recplayStart) return;
                 SetSpeed(server != null ? server.StartSpeed : 1, T("démarrage", "start"));
             }) { IsBackground = true }.Start();
         }
@@ -3527,6 +3539,103 @@ namespace MPFever
                 game.ToGame(Msg.Make("resync_load", m.From, "{[\"id\"]=" + LuaLit.Quote(seq) + ",[\"name\"]=" + LuaLit.Quote(name) + "}"));
             }
             catch (Exception e) { Log.Warn(F("[{0}] partie de l'hôte : {1}", "[{0}] host game: {1}", game.Name, e.Message)); }
+        }
+
+        /// <summary>Autotest "recplay" (MPFEVER_SCENARIO=recplay, MPFEVER_RECPLAY=events file, made by tools\recplay.py from a
+        /// session's logs): replays a real session's actions on the two games of the test, as another player's actions (both
+        /// games replay them, as a player who received them did), at their own game times. One event per line, TAB separated:
+        /// msg kind from payload (sent to every game), waitact uid seconds (until every game applied it), pauseat t (the games
+        /// stop exactly at t), speed n, run seconds, rununtil t, save role name (that game saves, as its autosave would), hash,
+        /// log text.</summary>
+        void RunRecPlay()
+        {
+            var path = Environment.GetEnvironmentVariable("MPFEVER_RECPLAY") ?? Path.Combine(GameLink.SessionRoot(), "recplay.txt");
+            var lines = File.ReadAllLines(path);
+            AutoLine("recplay: " + lines.Length + " event(s) from " + path);
+            // (every game's mod.log, read again from where it was read last: the acts it applied)
+            var seen = new Dictionary<string, long>();
+            var logText = new Dictionary<string, System.Text.StringBuilder>();
+            Func<string, bool> appliedEverywhere = uid =>
+            {
+                List<GameLink> gl; lock (games) gl = games.Where(g => g.Role != "menu").ToList();
+                foreach (var g in gl)
+                {
+                    var f = Path.Combine(g.Dir, "mod.log");
+                    if (!logText.TryGetValue(g.Dir, out var sb)) logText[g.Dir] = sb = new System.Text.StringBuilder();
+                    try
+                    {
+                        using (var fs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                        {
+                            seen.TryGetValue(g.Dir, out long off);
+                            if (fs.Length > off) { fs.Seek(off, SeekOrigin.Begin); var buf = new byte[fs.Length - off]; int n = fs.Read(buf, 0, buf.Length); sb.Append(System.Text.Encoding.UTF8.GetString(buf, 0, n)); seen[g.Dir] = off + n; }
+                        }
+                    }
+                    catch { return false; }
+                    bool done = false;
+                    foreach (var l in sb.ToString().Split('\n'))
+                        if (l.Contains(uid + " ") || l.Contains(uid + ":"))
+                            if (l.Contains("-> OK") || l.Contains(" BUILT") || l.Contains("failed") || l.Contains("FAILED") || l.Contains("REFUSED") || l.Contains("refused")
+                                || l.Contains("already") || l.Contains("-> ") || l.Contains("not built") || l.Contains("applied")) { done = true; break; }
+                    if (!done) return false;
+                }
+                return true;
+            };
+            foreach (var raw in lines)
+            {
+                if (ClosedGames() != "") { AutoLine("recplay: a game closed: " + ClosedGames()); break; }
+                var p = raw.Split('\t');
+                if (p.Length == 0 || p[0] == "" || p[0].StartsWith("#")) continue;
+                switch (p[0])
+                {
+                    case "msg":
+                        HostSend(Msg.Make(p[1], p[2], p[3]));
+                        break;
+                    case "waitact":
+                        {
+                            double secs = p.Length > 2 ? double.Parse(p[2], CultureInfo.InvariantCulture) : 60;
+                            if (!WaitUntil(() => appliedEverywhere(p[1]), secs)) AutoLine("recplay: " + p[1] + " NOT applied everywhere in " + secs + " s");
+                            Thread.Sleep(500);
+                            break;
+                        }
+                    case "pauseat":
+                        {
+                            long at = long.Parse(p[1], CultureInfo.InvariantCulture);
+                            lock (sessionGate) pauseAt = at;
+                            BroadcastSession();
+                            bool ok = WaitUntil(() => { lock (clocks) return clocks.Count >= 2 && clocks.Values.All(c => c.T == at); }, 180);
+                            AutoLine("recplay: paused at " + at + (ok ? "" : " NOT REACHED (" + string.Join(",", clocks.Values.Select(c => c.T)) + ")"));
+                            break;
+                        }
+                    case "speed":
+                        lock (sessionGate) { speed = Math.Max(1, Math.Min(4, int.Parse(p[1]))); pauseAt = null; }
+                        BroadcastSession();
+                        break;
+                    case "run":
+                        Thread.Sleep((int)(double.Parse(p[1], CultureInfo.InvariantCulture) * 1000));
+                        break;
+                    case "rununtil":
+                        {
+                            long at = long.Parse(p[1], CultureInfo.InvariantCulture);
+                            if (!WaitUntil(() => MaxClock() >= at, 1800)) AutoLine("recplay: t=" + at + " not reached");
+                            break;
+                        }
+                    case "save":
+                        HostSend(Msg.Make("test_save", hostName, "{[\"role\"]=" + LuaLit.Quote(p[1]) + ",[\"name\"]=" + LuaLit.Quote(p.Length > 2 ? p[2] : "recplay " + p[1]) + "}"));
+                        Thread.Sleep(6000);
+                        break;
+                    case "hash":
+                        RequestHash();
+                        Thread.Sleep(12000);
+                        AutoLine("recplay: check: " + syncText);
+                        break;
+                    case "log":
+                        AutoLine("recplay: " + (p.Length > 1 ? p[1] : ""));
+                        break;
+                    default:
+                        AutoLine("recplay: unknown event " + p[0]);
+                        break;
+                }
+            }
         }
 
         void RunDeterminism()

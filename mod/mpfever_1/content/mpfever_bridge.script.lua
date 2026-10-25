@@ -1085,6 +1085,28 @@ local function simApplyDue(state)
 		if okG and ch then changed = true elseif not okG then log("ranks: " .. tostring(ch)) end
 	end
 	local q = st.q or {}
+	-- The queue is saved with the game. At the first step after a load, an action whose time has passed without being
+	-- applied (no other kind is left behind: a due action leaves the queue before it runs) belongs to the session the
+	-- savegame was made in: a vehicle sold by such an action as the world loaded crashed the game at every load (« it !=
+	-- components.end() » in UI::CSelector, issue #84, a 0.4.5 savegame). Every game loads the same file and drops the same
+	-- actions. Purchases waiting for their step (one per step, a.spread) are kept. MPFEVER_KEEPSTALE=1: as before
+	if not SIM.loadChecked then
+		SIM.loadChecked = true
+		if os.getenv("MPFEVER_KEEPSTALE") ~= "1" then
+			local kept, gone = {}, {}
+			for _, a in ipairs(q) do
+				if type(a.at) == "number" and a.at < now and not (a.fn == "makeVehicleBuyCmd" and a.spread) then
+					gone[#gone + 1] = tostring(a.uid) .. " " .. tostring(a.fn or a.kind) .. " for t=" .. a.at
+				else
+					kept[#kept + 1] = a
+				end
+			end
+			if #gone > 0 then
+				log("loaded: " .. #gone .. " action(s) of the savegame's session past their time, not applied (now t=" .. now .. "): " .. table.concat(gone, ", "))
+				st.q, q, changed = kept, kept, true
+			end
+		end
+	end
 	if #q > 0 then
 		table.sort(q, before)
 		-- the due actions leave the queue before any of them runs: a state saved while one runs (or an event handled
@@ -9556,6 +9578,13 @@ local function runReplayFile(p)
 	end
 	nextOne()
 	G.waits[#G.waits + 1] = { at = G.frames + 120 * (#lines + 1), fn = autoFinish }
+end
+
+-- (autotest recplay: one game saves, where its autosave did in the session replayed)
+H.test_save = function(from, p)
+	if p.role ~= C.ROLE and p.role ~= "both" then return end
+	log("test save '" .. tostring(p.name) .. "' at t=" .. tostring(gameTime()))
+	pcall(app.saveGame, tostring(p.name), function() log("test save '" .. tostring(p.name) .. "' done") end, false, true)
 end
 
 H.replayfile = function(from, p)
