@@ -10,20 +10,26 @@ typedef void* HINTERNET;
 typedef unsigned short WORD;
 
 static HMODULE g_real = 0;
+// The error of a failed load or lookup of the system's winhttp.dll, given back to the caller: without it the game's mod.io read
+// whatever error came before (E_UNEXPECTED in issue #83) and the failure could not be told apart. The native module logs it.
+static u32 g_realErr = 0;
+extern "C" void MpfProxyFailed(const char* what, u32 err);
 
 static void* Real(const char* name)
 {
     if (!g_real) {
         wchar_t path[300];
         u32 n = GetSystemDirectoryW(path, 260);
-        if (n == 0 || n >= 260) return 0;
+        if (n == 0 || n >= 260) { g_realErr = 3; MpfProxyFailed("GetSystemDirectory", g_realErr); return 0; }
         const wchar_t* tail = L"\\winhttp.dll";
         for (int k = 0; tail[k]; k++) path[n++] = tail[k];
         path[n] = 0;
         g_real = LoadLibraryW(path);
-        if (!g_real) return 0;
+        if (!g_real) { g_realErr = GetLastError(); if (!g_realErr) g_realErr = 126; MpfProxyFailed("LoadLibrary winhttp.dll", g_realErr); return 0; }
     }
-    return GetProcAddress(g_real, name);
+    void* f = GetProcAddress(g_real, name);
+    if (!f) { g_realErr = GetLastError(); if (!g_realErr) g_realErr = 127; MpfProxyFailed(name, g_realErr); }
+    return f;
 }
 
 #define RELAY(ret, fail, name, params, args)                                  \
@@ -32,7 +38,9 @@ static void* Real(const char* name)
         typedef ret (WINAPI* F) params;                                       \
         static F real_ = 0;                                                   \
         if (!real_) real_ = (F)Real(#name);                                   \
-        return real_ ? real_ args : fail;                                     \
+        if (real_) return real_ args;                                         \
+        SetLastError(g_realErr ? g_realErr : 127);                            \
+        return fail;                                                          \
     }
 
 RELAY(HINTERNET, 0, WinHttpOpen, (const wchar_t* a, DWORD b, const wchar_t* c, const wchar_t* d, DWORD e), (a, b, c, d, e))

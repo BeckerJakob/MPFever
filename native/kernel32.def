@@ -34,3 +34,5 @@ QueryPerformanceFrequency
 GetCurrentThreadId
 RaiseException
 DeleteFileA
+GetLastError
+SetLastError

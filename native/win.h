@@ -78,6 +78,8 @@ struct IMAGE_SECTION_HEADER_ { u8 Name[8]; u32 VirtualSize, VirtualAddress, Size
 extern "C" __declspec(dllimport) HMODULE WINAPI LoadLibraryW(const wchar_t*);
 extern "C" __declspec(dllimport) u32 WINAPI GetSystemDirectoryW(wchar_t*, u32);
 extern "C" __declspec(dllimport) void* WINAPI GetProcAddress(HMODULE, const char*);
+extern "C" __declspec(dllimport) u32 WINAPI GetLastError();
+extern "C" __declspec(dllimport) void WINAPI SetLastError(u32);
 extern "C" __declspec(dllimport) wchar_t* WINAPI GetCommandLineW();
 struct STARTUPINFOW_ { DWORD cb; u8 rest[100]; };
 struct PROCESS_INFORMATION_ { HANDLE hProcess, hThread; DWORD pid, tid; };

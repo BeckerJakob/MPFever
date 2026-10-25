@@ -181,6 +181,9 @@ end
 REQUIRE = '''ug_require = function(p)
   if p == "mpfever_common.lua" then if not COMMON then COMMON = load(COMMON_SRC)() end return COMMON end
   if p == "mpfever_refs.lua" then if not REFS then REFS = load(REFS_SRC)() end return REFS end
+  -- (the other modules of the mod, mpfever_co.lua since 0.4.4: read from the mod's folder)
+  local n = p:match("^mpfever_[%w_]+%.lua$") or p:match("^mpfever_1::/(mpfever_[%w_]+%.lua)$")
+  if n then MODS = MODS or {}; if not MODS[n] then MODS[n] = load(READ_MOD(n), n)() end return MODS[n] end
   error("no " .. p)
 end'''
 
@@ -202,6 +205,7 @@ class Game:
         self.L.execute("GAME.nextEntity = %d" % first_entity)
         self.L.globals().COMMON_SRC = common
         self.L.globals().REFS_SRC = refs
+        self.L.globals().READ_MOD = lambda n: open(os.path.join(CONTENT, n), encoding="utf-8").read()
         self.L.execute(REQUIRE)
         self.L.execute(open(os.path.join(CONTENT, "mpfever_bridge.script.lua"), encoding="utf-8").read())
         self.L.execute(BRIDGE_HARNESS)

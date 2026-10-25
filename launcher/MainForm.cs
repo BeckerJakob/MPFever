@@ -2298,7 +2298,7 @@ namespace MPFever
         /// every game: its own (chat.txt) and the clients' ("chatmsg").</summary>
         /// <summary>The game builds MPFever was made and checked for (an update of the game changes the engine's code: until
         /// MPFever follows, its fixes may not all work there).</summary>
-        static readonly string[] KnownBuilds = { "40408", "40420", "40423" };
+        static readonly string[] KnownBuilds = { "40408", "40420", "40423", "40425" };   // (40425: the places found by signature, checked 2026-10-24/25)
         readonly HashSet<string> buildsWarned = new HashSet<string>();
 
         /// <summary>A game ready on a build MPFever does not know (the game was updated): every player is told, once.</summary>

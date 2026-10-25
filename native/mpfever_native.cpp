@@ -51,6 +51,15 @@ static void LogLine(Buf& b)
     _InterlockedExchange(&g_logLock, 0);
 }
 
+// the winhttp relay could not reach the system's winhttp.dll (winhttp_proxy.cpp): the game's internet requests, its Mod Hub
+// among them, fail too (issue #83)
+extern "C" void MpfProxyFailed(const char* what, u32 err)
+{
+    static long shown = 0;
+    if (_InterlockedIncrement(&shown) > 8) return;
+    Buf b; b.str("winhttp relay: ").str(what).str(" failed, error ").dec(err).str(" (the game's internet requests fail too)"); LogLine(b);
+}
+
 // ------------------------------------------------------------------ inline hooks
 
 struct Hook {
