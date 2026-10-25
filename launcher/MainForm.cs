@@ -65,7 +65,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.5.4";
+        public const string Version = "0.5.5";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -204,6 +204,10 @@ namespace MPFever
         readonly HashSet<string> ignoredParts = new HashSet<string>();
         // parts every game corrects by itself from the host's values (not a reason to reload)
         static readonly HashSet<string> CorrectedParts = new HashSet<string> { "money" };
+        // parts only logged, never a reason to reload: "buildIds" reads a build's new ids by place a little after the build, and at
+        // a speed above 1 the games read it at different steps (one after the next build had replaced the segment): the friends'
+        // session of 2026-10-25 22:32 reloaded for nothing (every action's result was the same on both games)
+        static readonly HashSet<string> DiagnosticParts = new HashSet<string> { "buildIds" };
         // game state that is never a local measure, even when it differs right after a reload (a company a game missed must be seen)
         static readonly HashSet<string> NeverLocalParts = new HashSet<string> { "companies", "money", "owners", "loans", "edges", "ages", "buildIds", "constructions", "lines" };
         // the simulation's own state (passengers boarding, vehicle positions, the towns and what follows them): it used to drift
@@ -3164,7 +3168,7 @@ namespace MPFever
                     if (nowDiff.Contains(k)) partStreak[k] = (partStreak.TryGetValue(k, out var s) ? s : 0) + 1;
                     else partStreak.Remove(k);
                 }
-                pending = partStreak.Keys.Where(k => !CorrectedParts.Contains(k) && !ignoredParts.Contains(k)).ToList();
+                pending = partStreak.Keys.Where(k => !CorrectedParts.Contains(k) && !DiagnosticParts.Contains(k) && !ignoredParts.Contains(k)).ToList();
             }
             CheckResync(pending, n);
             // (a difference not checked again at this checkpoint: the sync state stays as it was)
@@ -3177,7 +3181,7 @@ namespace MPFever
                 syncText = T("SYNCHRONE ✔", "IN SYNC ✔");
                 if (changed || n % 6 == 1) Log.Ok(F("Synchronisation n°{0} (temps {1}) : IDENTIQUE sur {2} jeux ({3} mesures)", "Sync check #{0} (time {1}): IDENTICAL on {2} games ({3} measures)", n, time, names.Count, keys.Count));
             }
-            else if (diffKeys.Where(d => !ignoredParts.Contains(d) && !CorrectedParts.Contains(d)).All(DriftParts.Contains))
+            else if (diffKeys.Where(d => !ignoredParts.Contains(d) && !CorrectedParts.Contains(d) && !DiagnosticParts.Contains(d)).All(DriftParts.Contains))
             {
                 // simulation drift (or money, corrected at once): no alarm, a line per minute
                 bool changed = syncState != 2;

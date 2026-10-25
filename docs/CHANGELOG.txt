@@ -1,6 +1,11 @@
 MPFever - Changelog
 ===================
 
+0.5.5 - no reload for the build ids check
+  - FIX: even read at a fixed game time, at a speed above 1 the games read a build's new ids at different steps (one after the
+    next build had replaced the segment): a session of 2026-10-25 reloaded for nothing at 22:32 (every action's result was the
+    same on both games). "buildIds" is now only logged, never a reason to reload.
+
 0.5.4 - train stations without the frame rate falling (issue #82)
   - FIX (desyncs, the most frequent cause in the friends' sessions of 2026-10-25): every new entity (a vehicle, a person, a
     town building, a segment) takes its id from the engine's queue of freed ids, first in, first out. A replay that freed or
