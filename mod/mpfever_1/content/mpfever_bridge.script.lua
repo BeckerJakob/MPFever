@@ -387,6 +387,7 @@ local function simHash(terrainSig, reg, n)
 		for _, p in ipairs(keep) do R.hashSkip[p] = nil end
 	end
 	local parts = R.contentHash(C.hashStr, C.dump)
+	parts.buildIds = tostring(R.idN or 0) .. "/" .. tostring(R.idSum or 0)
 	R.hashSkip = nil
 	-- diagnostic (MPFEVER_VDUMP set): every vehicle and every company's money at each checkpoint, to diff two games
 	if os.getenv("MPFEVER_VDUMP") then
@@ -1689,6 +1690,10 @@ local function update(userParams, state, dt)
 					end
 				end
 				log("build ids t=" .. ck.at .. ": segments " .. table.concat(si, ",") .. " nodes " .. table.concat(ni, ",") .. " (node configurations " .. cfg .. ")")
+				-- (and summed for the checks, part "buildIds": every game gives a build the same ids, or the games went apart
+				-- right there - an entity one game made and not the other, 2026-10-25 11:03 - long before it shows elsewhere)
+				R.idN = (R.idN or 0) + 1
+				R.idSum = ((R.idSum or 0) + C.hashStr(0, ck.at .. ":" .. table.concat(si, ",") .. "|" .. table.concat(ni, ","))) % 4294967296
 			else
 				keep[#keep + 1] = ck
 			end

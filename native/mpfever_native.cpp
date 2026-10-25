@@ -2965,17 +2965,34 @@ static void FixNeedsPath(SavedRegs* r)
 // compare those (parcel_util: the older segment keeps the parcel, then the lower commandIndex, subIndex and entity id), so the
 // same street had another age on every game and towns grew differently next to it. Seen in the savegames of the two games of
 // 2026-10-25, in the same pause: 275 of 1380 segments differed (the host's tool times against 0, commandIndex 2230 against 0,
-// and subIndex 33 against 12: a replay does not group the segments as the tool does). Every segment a command adds now gets the
-// step it is added at (updateCount, the same on every game) and commandIndex and subIndex 0: segments of one step are ordered
-// by their entity ids, which every game gives alike. cmp word [rdi+0x31c],0 (whether the engine stamps it) finds it stamped.
+// and subIndex 33 against 12: a replay does not group the segments as the tool does). Every segment added to the world's
+// engine (by a command, or by a town in the simulation step) now gets the step it is added at (updateCount, the same on every
+// game) and commandIndex and subIndex 0: segments of one step are ordered by their entity ids, which every game gives alike. cmp word [rdi+0x31c],0 (whether the engine stamps it) finds it stamped.
 static u32 g_getUpdRva = 0;                         // GameTime's updateCount getter, called with the state's time (state+0x28)
 static volatile long g_tickLogged = 0;
 static void FixTickEpoch(SavedRegs* r)
 {
     _InterlockedIncrement(&g_orderSorts[10]);
     u8* gs = ApplyingState();
+    // (the towns lay their streets in the simulation step itself, outside any command: on the simulation thread, the step's
+    // game state; their commandIndex was the frame's count of builds, which another game batching its steps otherwise has
+    // another of)
+    if (!gs && g_simTid && GetCurrentThreadId() == (DWORD)g_simTid) gs = (u8*)g_slot;
     u64 rec = r->rdi;
-    if (!gs || !g_getUpdRva || !Readable(gs + 0x18, 0x18) || r->rsi != *(u64*)(gs + 0x18) || !Writable((void*)(rec + 0x318), 8)) { _InterlockedIncrement(&g_orderRefused[10]); return; }
+    if (!gs || !g_getUpdRva || !Readable(gs + 0x18, 0x18) || r->rsi != *(u64*)(gs + 0x18) || !Writable((void*)(rec + 0x318), 8)) {
+        _InterlockedIncrement(&g_orderRefused[10]);
+        // (diagnostic: which segments are left to the engine's own stamping: outside a command, in which engine, on which thread)
+        static volatile long shown = 0;
+        if (shown < 12) {
+            _InterlockedIncrement(&shown);
+            void* world = g_slot && Readable((u8*)g_slot + 0x18, 8) ? *(void**)((u8*)g_slot + 0x18) : 0;
+            Buf b; b.str("tick epoch: segment ").dec(*(i32*)rec).str(" left to the engine (").str(gs ? "in a command, another engine" : "outside a command")
+                .str(r->rsi == (u64)world ? ", the world's engine" : ", not the world's engine").str(", thread ").dec((long)GetCurrentThreadId())
+                .str(GetCurrentThreadId() == (DWORD)g_simTid ? " (simulation)" : "").str(", it carries ").dec((long)*(u32*)(rec + 0x318)).str("/").dec((long)(short)*(u16*)(rec + 0x31c)).str(")");
+            LogLine(b);
+        }
+        return;
+    }
     u64 time = *(u64*)(gs + 0x28);
     if (!time || !Readable((void*)time, 0x18)) { _InterlockedIncrement(&g_orderRefused[10]); return; }
     u32 step = ((u32(*)(u64))(g_base + g_getUpdRva))(time);

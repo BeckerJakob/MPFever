@@ -205,7 +205,7 @@ namespace MPFever
         // parts every game corrects by itself from the host's values (not a reason to reload)
         static readonly HashSet<string> CorrectedParts = new HashSet<string> { "money" };
         // game state that is never a local measure, even when it differs right after a reload (a company a game missed must be seen)
-        static readonly HashSet<string> NeverLocalParts = new HashSet<string> { "companies", "money", "owners", "loans", "edges", "ages", "constructions", "lines" };
+        static readonly HashSet<string> NeverLocalParts = new HashSet<string> { "companies", "money", "owners", "loans", "edges", "ages", "buildIds", "constructions", "lines" };
         // the simulation's own state (passengers boarding, vehicle positions, the towns and what follows them): it used to drift
         // by itself (the game's Lua walked its tables in a different order on every PC, fixed in 0.3.4), so it was only reloaded
         // when it lasted. The games now stay identical: a difference there comes from an action applied differently and must be
@@ -3758,8 +3758,23 @@ namespace MPFever
                 switch (p[0])
                 {
                     case "msg":
-                        HostSend(Msg.Make(p[1], p[2], p[3]));
-                        break;
+                        {
+                            // (an action of a pause, or its announcement, stamped as the games stamp theirs: at the latest of
+                            // their times, the others catch up to it; the session's time may be behind a game that stopped a
+                            // batch later, which would apply it at once, at another time than the others)
+                            // (a running one: no sooner than a time every game can still reach, as FutureStamp gives the session's)
+                            string payload = p[3];
+                            var mt = System.Text.RegularExpressions.Regex.Match(payload, @"\[""at""\]=(\d+)");
+                            if (mt.Success && long.TryParse(mt.Groups[1].Value, out long was))
+                            {
+                                long want;
+                                if (payload.Contains("[\"paused\"]=true")) lock (clocks) want = clocks.Count == 0 ? 0 : clocks.Values.Max(c => c.T);
+                                else want = FutureStamp();
+                                if (want > was) payload = payload.Substring(0, mt.Groups[1].Index) + want + payload.Substring(mt.Groups[1].Index + mt.Groups[1].Length);
+                            }
+                            HostSend(Msg.Make(p[1], p[2], payload));
+                            break;
+                        }
                     case "waitact":
                         {
                             double secs = p.Length > 2 ? double.Parse(p[2], CultureInfo.InvariantCulture) : 60;
@@ -3773,32 +3788,26 @@ namespace MPFever
                             // (a time the games already passed: they stop at the next time every game can still reach)
                             // (as the session's own pauses: no closer than FutureStamp, the games run several steps between two
                             // of their clocks at x4; a game already past the time cannot come back: no waiting then)
-                            long ahead = FutureStamp();
-                            bool past = at < ahead;
-                            if (past) at = ahead;
-                            lock (sessionGate) pauseAt = at;
-                            BroadcastSession();
+                            // (already the pause the games run to, set when they were resumed: nothing to move)
+                            long? cur; lock (sessionGate) cur = pauseAt;
+                            bool past = false;
+                            if (cur != at)
+                            {
+                                long ahead = FutureStamp();
+                                past = at < ahead;
+                                if (past) at = ahead;
+                                lock (sessionGate) pauseAt = at;
+                                BroadcastSession();
+                            }
                             bool ok = WaitUntil(() => { lock (clocks) return clocks.Count >= 2 && (clocks.Values.All(c => c.T == at) || clocks.Values.Any(c => c.T > at)); }, 300);
                             lock (clocks) ok = ok && clocks.Values.All(c => c.T == at);
                             AutoLine("recplay: paused at " + at + (past ? " (asked " + p[1] + ", already passed)" : "") + (ok ? "" : " NOT REACHED (" + string.Join(",", clocks.Values.Select(c => c.T)) + ")"));
                             break;
                         }
                     case "speed":
-                        {
-                            // (the games run up to the next pause of the replay and stop there exactly, as in the session: asked
-                            // later, the pause could only be put after the time the games had reached, and the actions stamped
-                            // for it came in the past, applied at another time on every game)
-                            long? next = null;
-                            for (int k = li + 1; k < lines.Length && next == null; k++)
-                            {
-                                var q = lines[k].Split('\t');
-                                if (q[0] == "speed") break;
-                                if (q[0] == "pauseat" && q.Length > 1 && long.TryParse(q[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out long nt) && nt > MaxClock()) next = nt;
-                            }
-                            lock (sessionGate) { speed = Math.Max(1, Math.Min(4, int.Parse(p[1]))); pauseAt = next; }
-                            BroadcastSession();
-                            break;
-                        }
+                        lock (sessionGate) { speed = Math.Max(1, Math.Min(4, int.Parse(p[1]))); pauseAt = null; }
+                        BroadcastSession();
+                        break;
                     case "run":
                         Thread.Sleep((int)(double.Parse(p[1], CultureInfo.InvariantCulture) * 1000));
                         break;
