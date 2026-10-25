@@ -1,11 +1,11 @@
 MPFever - Changelog
 ===================
 
-0.5.2 - (in progress) crash at the load of an older savegame
+0.5.2 - a savegame that crashed at every load (issue #84)
   - FIX: a savegame made in a session could keep an action of that session past its time; it was applied as the world
     loaded, and a vehicle it sold crashed the game at every load (« it != components.end() » in UI::CSelector, issue #84).
     Such actions are no longer applied (every game drops the same ones). MPFEVER_KEEPSTALE=1: as before.
-  - TESTS: build.bat runs every check that needs no game before it makes the archives (testsun_all.py), and GitHub runs
+  - TESTS: build.bat runs every check that needs no game before it makes the archives (tests\run_all.py), and GitHub runs
     them for every push and pull request; a compiler warning stops the build. The mod's description no longer says
     experimental.
 
