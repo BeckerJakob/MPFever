@@ -966,6 +966,8 @@ local PLAYER_STATES = {
 	loading = function() return T("charge la partie de l'hôte…", "loading the host's game…"), "info" end,
 	joining = function() return T("se connecte…", "connecting…"), "info" end,
 	left = function() return T("a quitté la partie", "left the game"), "negative" end,
+	-- (its connection dropped: every game waits for it to come back, lag = the seconds since)
+	away = function(pl) return C.Tf("connexion perdue, la partie l'attend (%s s)", "connection lost, the game waits for them (%s s)", pl.lag), "warning" end,
 }
 
 -- a player's line: name, (you), host, its state; and the colour class (a dedicated server is not one of the players: it
@@ -1018,7 +1020,7 @@ U.barState = function(st)
 	local busy = nil
 	for _, pl in ipairs(st.players or {}) do
 		if pl.role ~= "server" and pl.state == "noresp" then return "red", (playerLine(pl, st.me)) end
-		if pl.role ~= "server" and not busy and (pl.state == "loading" or pl.state == "joining") then busy = pl end
+		if pl.role ~= "server" and not busy and (pl.state == "loading" or pl.state == "joining" or pl.state == "away") then busy = pl end
 	end
 	if st.sync == "resync" or st.sync == "drift" then return "yellow", sync end
 	if busy then return "yellow", (playerLine(busy, st.me)) end
@@ -2040,6 +2042,10 @@ U.chatBody = function(K, st, chat, ctx)
 			rows[#rows + 1] = K.muted(time .. "   " .. C.Tf("%s a rejoint la partie", "%s joined the game", m.name), W)
 		elseif m.kind == "left" then
 			rows[#rows + 1] = K.muted(time .. "   " .. C.Tf("%s a quitté la partie", "%s left the game", m.name), W)
+		elseif m.kind == "away" then
+			rows[#rows + 1] = K.muted(time .. "   " .. C.Tf("%s a perdu la connexion : la partie l'attend", "%s lost the connection: the game waits for them", m.name), W)
+		elseif m.kind == "back" then
+			rows[#rows + 1] = K.muted(time .. "   " .. C.Tf("%s est de retour : la partie continue", "%s is back: the game goes on", m.name), W)
 		elseif m.kind == "unsent" then
 			rows[#rows + 1] = K.row { K.muted(time, TIME_W),
 				K.text(T("Non envoyé (pas de connexion à l'hôte) : ", "Not sent (no connection to the host): ") .. m.text, nil, "error", W - TIME_W) }
@@ -2902,6 +2908,10 @@ local function installSession(react, builtin)
 			out[#out + 1] = muted(time .. "   " .. C.Tf("%s a rejoint la partie", "%s joined the game", m.name))
 		elseif m.kind == "left" then
 			out[#out + 1] = muted(time .. "   " .. C.Tf("%s a quitté la partie", "%s left the game", m.name))
+		elseif m.kind == "away" then
+			out[#out + 1] = muted(time .. "   " .. C.Tf("%s a perdu la connexion : la partie l'attend", "%s lost the connection: the game waits for them", m.name))
+		elseif m.kind == "back" then
+			out[#out + 1] = muted(time .. "   " .. C.Tf("%s est de retour : la partie continue", "%s is back: the game goes on", m.name))
 		elseif m.kind == "unsent" then
 			out[#out + 1] = row { muted(time .. "   "), text(T("Non envoyé (pas de connexion à l'hôte) : ", "Not sent (no connection to the host): ") .. m.text, nil, "error") }
 		else

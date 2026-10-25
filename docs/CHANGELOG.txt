@@ -2,6 +2,12 @@ MPFever - Changelog
 ===================
 
 0.5.3 - (in progress)
+  - FIX (issue #83): the Mod Hub broken, or the game closing when it opened, on some PCs, even after MPFever was removed
+    (its winhttp.dll stays in the game's folder). That file passed on only the 14 network functions the game itself uses;
+    Windows' own module that fetches what an HTTPS certificate check needs (revocation lists, missing certificates)
+    takes WinHTTP from the same file and failed (error 127), so mod.io's connections failed where such a fetch was
+    needed. Every function of Windows' WinHTTP is now passed on (reproduced and checked: a revocation list fetched
+    through cryptnet.dll failed with 0.5.2's file, works with this one).
   - FIX (desync): towns grew differently next to the streets and tracks the players built (« script:towns », then the
     streets, a reload). Every street and track segment has an age the towns' parcels compare (the older segment keeps the
     parcel): the street tool gave it its own frame count on the builder's game, the games that replay the build gave it

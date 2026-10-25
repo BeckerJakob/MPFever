@@ -830,6 +830,81 @@ namespace MPFever
         public void Dispose() { stop = true; }
     }
 
+    /// <summary>The session's messages between the host and one player, numbered at both ends, so that a player whose
+    /// connection dropped for a while (Wi-Fi, a router, a Steam relay) comes back into the same session: each end keeps what
+    /// it sent until the other says it has it ("~ack"), and a player back within the grace gets what it missed, in order,
+    /// instead of the host's game sent again and loaded by everybody. "join", "denied", "resumed" and the link's own
+    /// messages (kinds starting with "~") are not counted.</summary>
+    sealed class SessionLink
+    {
+        /// <summary>Above this, waiting for the other end, the link cannot be resumed: the player joins again as before.</summary>
+        public const long MaxOutBytes = 64L << 20;
+        public string Token;
+        long tx, rx, outBytes;
+        readonly Queue<KeyValuePair<long, Msg>> outbox = new Queue<KeyValuePair<long, Msg>>();
+        public volatile bool Broken;
+
+        public static bool IsControl(string kind) => kind == "join" || kind == "denied" || kind == "resumed" || (kind != null && kind.StartsWith("~", StringComparison.Ordinal));
+
+        public static string NewToken()
+        {
+            var b = new byte[16];
+            using (var r = System.Security.Cryptography.RandomNumberGenerator.Create()) r.GetBytes(b);
+            return BitConverter.ToString(b).Replace("-", "").ToLowerInvariant();
+        }
+
+        public long Rx => Interlocked.Read(ref rx);
+        public long Tx { get { lock (outbox) return tx; } }
+        public int Pending { get { lock (outbox) return outbox.Count; } }
+
+        /// <summary>A message given to the link (written now, or later after a cut): numbered and kept until acknowledged.</summary>
+        public void Sent(Msg m)
+        {
+            lock (outbox)
+            {
+                tx++;
+                outbox.Enqueue(new KeyValuePair<long, Msg>(tx, m));
+                outBytes += Size(m);
+                if (outBytes > MaxOutBytes) Broken = true;
+            }
+        }
+
+        public void Received() => Interlocked.Increment(ref rx);
+
+        /// <summary>The other end has every message up to n.</summary>
+        public void Ack(long n)
+        {
+            lock (outbox) while (outbox.Count > 0 && outbox.Peek().Key <= n) outBytes -= Size(outbox.Dequeue().Value);
+        }
+
+        /// <summary>The messages after n (the other end has those up to n), in order.</summary>
+        public List<Msg> After(long n) { lock (outbox) return outbox.Where(kv => kv.Key > n).Select(kv => kv.Value).ToList(); }
+
+        /// <summary>The link starts again from nothing (a player that joined again as a new one).</summary>
+        public void Reset(string token)
+        {
+            lock (outbox) { tx = 0; outbox.Clear(); outBytes = 0; }
+            Interlocked.Exchange(ref rx, 0);
+            Token = token;
+            Broken = false;
+        }
+
+        static long Size(Msg m) => (m.Payload?.Length ?? 0) + (m.Data?.Length ?? 0) + 64;
+        public static Msg AckMsg(long n) => Msg.Make("~ack", "-", "{[\"n\"]=" + n + "}");
+        public static long ReadN(Msg m, string key = "n") => LuaLit.Parse(m.Payload) is Dictionary<object, object> t && t.TryGetValue(key, out var v) && v is double d ? (long)d : -1;
+
+        /// <summary>How long a player whose connection dropped is waited for (MPFEVER_RESUMEGRACE, seconds; 0 or
+        /// MPFEVER_RESUME=0: not waited for, it joins again as before).</summary>
+        public static double Grace
+        {
+            get
+            {
+                if (Environment.GetEnvironmentVariable("MPFEVER_RESUME") == "0") return 0;
+                return double.TryParse(Environment.GetEnvironmentVariable("MPFEVER_RESUMEGRACE"), NumberStyles.Float, CultureInfo.InvariantCulture, out var g) ? Math.Max(0, g) : 60;
+            }
+        }
+    }
+
     sealed class Peer
     {
         public int Id;
@@ -840,6 +915,16 @@ namespace MPFever
         /// <summary>The player was let in (its "join" accepted): only then does it receive and send session messages.</summary>
         public volatile bool Admitted;
         public string Address;
+        /// <summary>The session's messages with this player (numbered from its admission), see SessionLink.</summary>
+        public SessionLink Link;
+        /// <summary>Its connection dropped and the host waits for it to come back (Relay.Away): what is sent to it is kept.</summary>
+        public volatile bool Away;
+        public DateTime AwaySince;
+        /// <summary>When it last sent anything; and whether it acknowledges (an older MPFever does not: no watchdog then).</summary>
+        public long LastRecvTicks;
+        public volatile bool Acks;
+        /// <summary>Its connection is closed on purpose (refused, kicked, replaced by a new join): it is not waited for.</summary>
+        public volatile bool NoWait;
     }
 
     /// <summary>Host side: accepts TCP clients and relays every message to everybody else.</summary>
@@ -852,6 +937,13 @@ namespace MPFever
 
         public event Action<Peer, Msg> Received;
         public event Action<Peer> Joined, Left;
+        /// <summary>A player's connection dropped and the host waits for it (MayWait said so): it stays a player, its clock
+        /// holds every game where it stopped, and what is sent to it is kept. Back within the grace: Resumed (seconds away,
+        /// messages it got again); else Left.</summary>
+        public event Action<Peer> Away;
+        public event Action<Peer, double, int> Resumed;
+        public Func<Peer, bool> MayWait;
+        public double Grace = 60;
 
         /// <summary>Decides whether a player who says "join" may come in (a dedicated server checks its password, its
         /// version and the number of players): null lets it in, otherwise the payload of the "denied" message it receives
@@ -893,7 +985,66 @@ namespace MPFever
                 listener.Start();
             }
             new Thread(AcceptLoop) { IsBackground = true, Name = "Relay accept" }.Start();
+            new Thread(LinkLoop) { IsBackground = true, Name = "Relay links" }.Start();
             Log.W(L.F("Hôte : écoute TCP sur le port {0}", "Host: listening on TCP port {0}", port));
+        }
+
+        /// <summary>Twice a second: every player is told what the host has received from it (at least every 2 s, which also
+        /// shows the link is alive); a player silent for 15 s is cut (Windows takes 20 to 45 s to notice a dead link); a
+        /// player away for longer than the grace leaves.</summary>
+        void LinkLoop()
+        {
+            var told = new Dictionary<Peer, KeyValuePair<long, DateTime>>();
+            while (!stop)
+            {
+                Thread.Sleep(500);
+                var now = DateTime.UtcNow;
+                Peer[] all;
+                lock (peers) all = peers.Where(q => q.Admitted && q.Link != null).ToArray();
+                foreach (var q in all)
+                {
+                    if (q.Away)
+                    {
+                        if ((now - q.AwaySince).TotalSeconds > Grace) Finalize(q, L.T("pas revenu à temps", "not back in time"));
+                        continue;
+                    }
+                    long rx = q.Link.Rx;
+                    if (!told.TryGetValue(q, out var t) || t.Key != rx || (now - t.Value).TotalSeconds >= 2)
+                    {
+                        told[q] = new KeyValuePair<long, DateTime>(rx, now);
+                        TrySend(q, SessionLink.AckMsg(rx));
+                    }
+                    if (q.Acks && (now.Ticks - Interlocked.Read(ref q.LastRecvTicks)) / TimeSpan.TicksPerSecond > 15)
+                    {
+                        Log.Warn(L.F("{0} : plus rien reçu depuis 15 s, connexion coupée", "{0}: nothing received for 15 s, connection cut", q.Name));
+                        try { q.Tcp?.Close(); } catch { }
+                    }
+                }
+                foreach (var q in told.Keys.Where(q => !all.Contains(q)).ToList()) told.Remove(q);
+            }
+        }
+
+        /// <summary>A player the host waited for leaves the session (the grace ran out, a resynchronisation starts, or it
+        /// joined again as a new player).</summary>
+        public void Finalize(Peer q, string why)
+        {
+            lock (peers) { if (!q.Away || !peers.Remove(q)) return; q.Away = false; }
+            Log.Warn(L.F("{0} : plus attendu ({1})", "{0}: no longer waited for ({1})", q.Name, why));
+            Left?.Invoke(q);
+        }
+
+        /// <summary>Every player the host waits for leaves (a resynchronisation replaces their world: they join again).</summary>
+        public void FinalizeAway(string why)
+        {
+            Peer[] away;
+            lock (peers) away = peers.Where(q => q.Away).ToArray();
+            foreach (var q in away) Finalize(q, why);
+        }
+
+        /// <summary>The players the host waits for, with the seconds since their connection dropped.</summary>
+        public Dictionary<string, double> AwayNames()
+        {
+            lock (peers) return peers.Where(q => q.Away && q.Name != null).ToDictionary(q => q.Name, q => (DateTime.UtcNow - q.AwaySince).TotalSeconds);
         }
 
         void AcceptLoop()
@@ -916,40 +1067,143 @@ namespace MPFever
             }
         }
 
-        void ReadLoop(Peer p)
+        void ReadLoop(Peer first)
         {
+            var p = first;           // the player this connection speaks for: another one once it resumes a player's link
+            var tcp = first.Tcp;     // this connection
             try
             {
-                var r = new NetReader(p.Tcp.GetStream());
+                var r = new NetReader(tcp.GetStream());
                 Msg m;
                 while ((m = r.Read()) != null)
                 {
+                    Interlocked.Exchange(ref p.LastRecvTicks, DateTime.UtcNow.Ticks);
+                    if (m.Kind == "~ack") { p.Acks = true; long n = SessionLink.ReadN(m); if (n >= 0) p.Link?.Ack(n); continue; }
+                    if (m.Kind.StartsWith("~", StringComparison.Ordinal)) continue;
                     if (m.Kind == "join")
                     {
                         if (p.Admitted) continue;
+                        var back = Claimed(p, m, out long claimRx);
+                        if (back != null)
+                        {
+                            p = back;
+                            Replay(p, claimRx);
+                            continue;
+                        }
                         p.Name = Sanitize(m.From) + "#" + p.Id;
                         string refused = null;
                         try { refused = Admit?.Invoke(p, m); }
                         catch (Exception e) { Log.W("admit: " + e.Message); }
                         if (refused != null) { Deny(p, refused); break; }
+                        // (a player the host waited for, back as a new one: it left)
+                        Peer[] waited;
+                        lock (peers) waited = peers.Where(q => q != p && q.Away && BaseOf(q.Name) == BaseOf(p.Name)).ToArray();
+                        foreach (var q in waited) Finalize(q, L.T("revenu comme un nouveau joueur", "back as a new player"));
+                        p.Link = new SessionLink { Token = SessionLink.NewToken() };
                         p.Admitted = true;
                         Joined?.Invoke(p);
                         continue;
                     }
                     if (!In(p)) continue;   // nothing counts before the player is let in
                     m.From = p.Name; // the relay decides who is speaking; the host decides who receives it
+                    p.Link?.Received();
                     Received?.Invoke(p, m);
                 }
             }
             catch (Exception e) { if (!stop && In(p)) Log.W($"{p.Name} : {e.Message}"); }
-            lock (peers) peers.Remove(p);
-            if (In(p)) Left?.Invoke(p);
+            Ended(p, tcp);
         }
+
+        /// <summary>A connection ended. Its player is waited for when MayWait says so (Away), otherwise it leaves (Left);
+        /// nothing when the player went on over a newer connection (it came back before this one was noticed dead).</summary>
+        void Ended(Peer p, TcpClient tcp)
+        {
+            try { tcp.Close(); } catch { }
+            bool wait = false, gone = false;
+            lock (peers)
+            {
+                if (p.Tcp != tcp) return;
+                if (!stop && !p.NoWait && p.Admitted && p.Link != null && !p.Link.Broken && Grace > 0 && MayWaitFor(p))
+                {
+                    if (!p.Away) p.AwaySince = DateTime.UtcNow;   // (still away: its connection back died while it was told what it missed)
+                    p.Away = true;
+                    wait = true;
+                }
+                else gone = peers.Remove(p);
+            }
+            if (wait) Away?.Invoke(p);
+            else if (gone && In(p)) Left?.Invoke(p);
+        }
+
+        bool MayWaitFor(Peer p)
+        {
+            try { return MayWait != null && MayWait(p); }
+            catch (Exception e) { Log.W("resume: " + e.Message); return false; }
+        }
+
+        /// <summary>A join that asks to go on with a link ("resume" = {tok, rx}): the player of that link takes this
+        /// connection (the old one, if it still looked alive, is closed), or null (a plain join: unknown or broken link,
+        /// gone after the grace, or more acknowledged than ever sent).</summary>
+        Peer Claimed(Peer conn, Msg join, out long rx)
+        {
+            rx = -1;
+            if (!(LuaLit.Parse(join.Payload) is Dictionary<object, object> t) || !t.TryGetValue("resume", out var rv) || !(rv is Dictionary<object, object> rc)) return null;
+            string tok = rc.TryGetValue("tok", out var tv) ? tv as string : null;
+            rx = rc.TryGetValue("rx", out var xv) && xv is double xd ? (long)xd : -1;
+            if (string.IsNullOrEmpty(tok) || rx < 0) return null;
+            Peer old;
+            lock (peers) old = peers.FirstOrDefault(q => q != conn && q.Admitted && q.Link != null && q.Link.Token == tok);
+            if (old == null || old.Link.Broken || rx > old.Link.Tx)
+            {
+                Log.Warn(L.F("{0} : reprise de la session impossible ({1}), il la rejoint comme un nouveau joueur", "{0}: the session cannot go on ({1}), it joins it as a new player",
+                    Sanitize(join.From), old == null ? L.T("inconnu ou parti", "unknown or gone") : old.Link.Broken ? L.T("trop de messages en attente", "too many messages waiting") : "rx"));
+                return null;
+            }
+            TcpClient prev;
+            lock (old.Gate)
+            {
+                lock (peers)
+                {
+                    peers.Remove(conn);
+                    prev = old.Tcp;
+                    old.Tcp = conn.Tcp;
+                }
+                old.Writer = conn.Writer;
+                old.Address = conn.Address;
+                old.Acks = conn.Acks;
+                Interlocked.Exchange(ref old.LastRecvTicks, DateTime.UtcNow.Ticks);
+            }
+            if (prev != null && prev != old.Tcp) { try { prev.Close(); } catch { } }   // (a connection that still looked alive: taken over)
+            return old;
+        }
+
+        /// <summary>Right after a claimed join: the player is told what the host received from it ("resumed", rx), gets every
+        /// message after the last it has, in order, and is a player of the session again.</summary>
+        void Replay(Peer p, long rx)
+        {
+            int n;
+            double away;
+            lock (p.Gate)
+            {
+                away = p.Away ? (DateTime.UtcNow - p.AwaySince).TotalSeconds : 0;
+                p.Link.Ack(rx);
+                var missed = p.Link.After(rx);
+                Msg.Make("resumed", "MPFever", "{[\"rx\"]=" + p.Link.Rx + "}").WriteTo(p.Writer);
+                foreach (var m in missed) m.WriteTo(p.Writer);
+                n = missed.Count;
+                p.Away = false;
+            }
+            Log.Ok(L.F("{0} est revenu après {1:0} s : la session continue ({2} message(s) envoyé(s) à nouveau)", "{0} is back after {1:0} s: the session goes on ({2} message(s) sent again)", p.Name, away, n));
+            Resumed?.Invoke(p, away, n);
+        }
+
+        static string BaseOf(string n) { if (n == null) return ""; int i = n.LastIndexOf('#'); return i < 0 ? n : n.Substring(0, i); }
 
         /// <summary>Tells a player why it may not stay ("denied", payload: { reason = "...", ... }), then closes its
         /// connection (its MPFever does not reconnect).</summary>
         public void Deny(Peer p, string payload)
         {
+            p.NoWait = true;
             Send(p, Msg.Make("denied", "MPFever", payload));
             try { p.Tcp.Client.Shutdown(SocketShutdown.Send); } catch { }
             Thread.Sleep(300);   // (closed at once, the message could be lost with the connection)
@@ -983,17 +1237,29 @@ namespace MPFever
                 if (o != p && Base(o.Name) == Base(p.Name))
                 {
                     Log.Warn(L.F("{0} : ancienne connexion fermée (reconnexion)", "{0}: old connection closed (reconnection)", o.Name));
-                    try { o.Tcp.Close(); } catch { }
+                    o.NoWait = true;
+                    try { o.Tcp?.Close(); } catch { }
                 }
         }
 
         public void Send(Peer p, Msg m) => TrySend(p, m);
 
-        /// <summary>Sends, and says whether it went (a closed connection: false).</summary>
+        /// <summary>Sends, and says whether it went (a closed connection: false). A session message goes into the player's
+        /// link first: to a player the host waits for, it is only kept there (it gets it when it comes back).</summary>
         public bool TrySend(Peer p, Msg m)
         {
-            try { lock (p.Gate) m.WriteTo(p.Writer); return true; }
-            catch (Exception e) { Log.Warn(L.F("envoi vers {0} : {1}", "sending to {0}: {1}", p.Name, e.Message)); return false; }
+            try
+            {
+                lock (p.Gate)
+                {
+                    bool counted = p.Link != null && !SessionLink.IsControl(m.Kind);
+                    if (counted) p.Link.Sent(m);
+                    if (p.Away) return counted;
+                    m.WriteTo(p.Writer);
+                }
+                return true;
+            }
+            catch (Exception e) { if (!p.Away) Log.Warn(L.F("envoi vers {0} : {1}", "sending to {0}: {1}", p.Name, e.Message)); return false; }
         }
 
         public void Broadcast(Msg m, Peer except = null)
@@ -1018,8 +1284,20 @@ namespace MPFever
         StreamWriter writer;
         readonly object gate = new object();
         volatile bool stop;
+        /// <summary>This player's session messages with the host, kept across its connections (see SessionLink).</summary>
+        public readonly SessionLink Link;
+        /// <summary>The join asked the host to go on with the link: the session's messages wait until it answers.</summary>
+        volatile bool claimPending;
+        long lastRecvTicks = DateTime.UtcNow.Ticks;
+        volatile bool hostAcks;
         public event Action<Msg> Received;
         public event Action Closed;
+        /// <summary>The host went on with this player's link after a cut ("resumed"): no welcome, no reload.</summary>
+        public event Action Resumed;
+        /// <summary>The host answered a claim with a plain welcome: the link starts again from nothing (what waited is lost).</summary>
+        public event Action ResumeRefused;
+
+        public Client(SessionLink link = null) { Link = link ?? new SessionLink(); }
         /// <summary>The host refused this player (wrong password, server full, other version, kicked): raised with the
         /// "denied" payload, before Closed.</summary>
         public event Action<Dictionary<object, object>> Denied;
@@ -1030,7 +1308,7 @@ namespace MPFever
         /// then names the other attempts first and ends with one short note on IPv6 (issue #31).
         /// The password is the one of a dedicated server (none: null); the join also tells this MPFever's version
         /// (a dedicated server only lets in its own).</summary>
-        public void Connect(string host, int port, string name, string password = null)
+        public void Connect(string host, int port, string name, string password = null, bool resume = false)
         {
             var targets = new List<IPEndPoint>();
             var errors = new List<string>();
@@ -1077,9 +1355,19 @@ namespace MPFever
                 throw new IOException(errors.Count > 0 ? string.Join("  |  ", errors) : L.T("adresse vide", "empty address"));
             }
             writer = new StreamWriter(tcp.GetStream(), new UTF8Encoding(false)) { NewLine = "\n", AutoFlush = true };
+            // (back after a cut, with the link of a session the host let this player into: the host goes on with it if it
+            // still waits for this player)
+            string claim = "";
+            if (resume && !string.IsNullOrEmpty(Link.Token) && !Link.Broken)
+            {
+                claim = ",[\"resume\"]={[\"tok\"]=" + LuaLit.Quote(Link.Token) + ",[\"rx\"]=" + Link.Rx + "}";
+                claimPending = true;
+            }
+            else Link.Reset(null);   // (a new player: the host counts from this join; what waited is dropped)
             Send(Msg.Make("join", name, "{[\"v\"]=" + LuaLit.Quote(MainForm.Version)
-                + (string.IsNullOrEmpty(password) ? "" : ",[\"pw\"]=" + LuaLit.Quote(password)) + "}"));
+                + (string.IsNullOrEmpty(password) ? "" : ",[\"pw\"]=" + LuaLit.Quote(password)) + claim + "}"));
             new Thread(ReadLoop) { IsBackground = true, Name = "Client read" }.Start();
+            new Thread(LinkLoop) { IsBackground = true, Name = "Client link" }.Start();
             Log.Ok(L.F("Client : connecté à {0}", "Client: connected to {0}", NetAddr.Show(used.Address.ToString(), used.Port)));
         }
 
@@ -1091,21 +1379,106 @@ namespace MPFever
                 Msg m;
                 while ((m = r.Read()) != null)
                 {
+                    Interlocked.Exchange(ref lastRecvTicks, DateTime.UtcNow.Ticks);
+                    if (m.Kind == "~ack") { hostAcks = true; long n = SessionLink.ReadN(m); if (n >= 0) Link.Ack(n); continue; }
+                    if (m.Kind.StartsWith("~", StringComparison.Ordinal)) continue;
                     if (m.Kind == "denied")
                     {
                         Denied?.Invoke(LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>());
                         continue;
                     }
+                    if (m.Kind == "resumed")
+                    {
+                        // the host has this player's messages up to rx: the others, and those kept while the link was cut, go now
+                        long rx = SessionLink.ReadN(m, "rx");
+                        int n;
+                        lock (gate)
+                        {
+                            Link.Ack(rx);
+                            var again = Link.After(rx);
+                            foreach (var x in again) x.WriteTo(writer);
+                            n = again.Count;
+                            claimPending = false;
+                        }
+                        Log.Ok(L.F("Client : la session continue ({0} message(s) envoyé(s) à nouveau)", "Client: the session goes on ({0} message(s) sent again)", n));
+                        Resumed?.Invoke();
+                        continue;
+                    }
+                    if (m.Kind == "welcome")
+                    {
+                        // a welcome names the link (after a claim the host could not take, it starts again from nothing: the
+                        // messages kept for the host were never sent on this connection)
+                        string tok = LuaLit.Parse(m.Payload) is Dictionary<object, object> w && w.TryGetValue("rtok", out var tv) ? tv as string : null;
+                        bool refused;
+                        lock (gate)
+                        {
+                            refused = claimPending;
+                            if (refused) Link.Reset(tok); else Link.Token = tok;
+                            claimPending = false;
+                        }
+                        if (refused) { Log.Warn(L.T("Client : l'hôte n'attendait plus ce joueur : il rejoint la session comme un nouveau joueur", "Client: the host no longer waited for this player: it joins the session as a new player")); ResumeRefused?.Invoke(); }
+                    }
+                    Link.Received();
                     Received?.Invoke(m);
                 }
             }
             catch (Exception e) { if (!stop) Log.W("client : " + e.Message); }
+            stop = true;
             Closed?.Invoke();
         }
 
+        static int connections;
+
+        /// <summary>Twice a second the host is told what this player has received (at least every 2 s: the link is alive);
+        /// a host silent for 15 s is cut. MPFEVER_TEST_CUT=s (tests): every connection is cut s seconds after it was made, the
+        /// first one after MPFEVER_TEST_CUT_FIRST seconds (once the session runs).</summary>
+        void LinkLoop()
+        {
+            long told = -1;
+            var toldAt = DateTime.MinValue;
+            var start = DateTime.UtcNow;
+            double.TryParse(Environment.GetEnvironmentVariable("MPFEVER_TEST_CUT"), NumberStyles.Float, CultureInfo.InvariantCulture, out double cut);
+            if (cut > 0 && Interlocked.Increment(ref connections) == 1
+                && double.TryParse(Environment.GetEnvironmentVariable("MPFEVER_TEST_CUT_FIRST"), NumberStyles.Float, CultureInfo.InvariantCulture, out double first))
+                cut = Math.Max(cut, first);
+            while (!stop)
+            {
+                Thread.Sleep(500);
+                var now = DateTime.UtcNow;
+                long rx = Link.Rx;
+                if (rx != told || (now - toldAt).TotalSeconds >= 2)
+                {
+                    told = rx; toldAt = now;
+                    try { lock (gate) SessionLink.AckMsg(rx).WriteTo(writer); } catch { }
+                }
+                if (hostAcks && (now.Ticks - Interlocked.Read(ref lastRecvTicks)) / TimeSpan.TicksPerSecond > 15)
+                {
+                    Log.Warn(L.T("Client : plus rien reçu de l'hôte depuis 15 s, connexion coupée", "Client: nothing received from the host for 15 s, connection cut"));
+                    try { tcp?.Close(); } catch { }
+                }
+                if (cut > 0 && (now - start).TotalSeconds >= cut)
+                {
+                    Log.Warn(L.F("Client : connexion coupée pour le test (MPFEVER_TEST_CUT={0})", "Client: connection cut for the test (MPFEVER_TEST_CUT={0})", cut));
+                    try { tcp?.Client?.Close(); } catch { }
+                    start = DateTime.MaxValue;
+                }
+            }
+        }
+
+        /// <summary>Sends a message to the host. A session message goes into the link first, and waits there while the host
+        /// has not answered a claim (it goes after its "resumed", or is dropped by its plain welcome).</summary>
         public void Send(Msg m)
         {
-            try { lock (gate) m.WriteTo(writer); }
+            try
+            {
+                lock (gate)
+                {
+                    bool counted = !SessionLink.IsControl(m.Kind);
+                    if (counted) Link.Sent(m);
+                    if (counted && claimPending) return;
+                    m.WriteTo(writer);
+                }
+            }
             catch (Exception e) { Log.Warn(L.T("envoi vers l'hôte : ", "sending to the host: ") + e.Message); }
         }
 

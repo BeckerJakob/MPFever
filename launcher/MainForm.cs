@@ -1979,7 +1979,8 @@ namespace MPFever
                 Log.Ok(F("{0} a rejoint la session", "{0} joined the session", p.Name));
                 lock (leftAt) leftAt.Remove(BaseName(p.Name));
                 relay.DropOlder(p);
-                relay.Send(p, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(p.Name) + ",[\"role\"]=\"client\",[\"v\"]=" + LuaLit.Quote(Version) + ",[\"run\"]=" + LuaLit.Quote(myRun) + ",[\"opts\"]=" + LuaLit.Quote(Options.SessionPayload()) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods) + "}"));
+                relay.Send(p, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(p.Name) + ",[\"role\"]=\"client\",[\"v\"]=" + LuaLit.Quote(Version) + ",[\"run\"]=" + LuaLit.Quote(myRun) + ",[\"opts\"]=" + LuaLit.Quote(Options.SessionPayload()) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods)
+                    + ",[\"rtok\"]=" + LuaLit.Quote(p.Link?.Token ?? "") + "}"));
                 Msg[] history; lock (chatLog) history = chatLog.ToArray();
                 foreach (var c in history) relay.Send(p, c);   // the chat so far (a reconnecting player skips what it has)
                 HostChat("join", BaseName(p.Name), "");
@@ -2001,6 +2002,23 @@ namespace MPFever
                 lock (resyncWaiting) if (lobbyStarting) resyncWaiting.Remove(p.Name);
                 if (lobbyOpen) { BroadcastLobby(); MenuStatus(); }
                 if (server != null) ServerPlayerLeft(p);
+            };
+            // a player whose connection dropped during the game is waited for (SessionLink.Grace, 60 s): every game stops where
+            // its clock stopped (the games' barrier keeps its last clock), and back in time it gets what it missed and the
+            // session goes on, with no reload. Not in the lobby, nor during a resynchronisation (its world is replaced anyway).
+            relay.Grace = SessionLink.Grace;
+            relay.MayWait = p => started && !resyncing && !lobbyStarting;
+            relay.Away += p =>
+            {
+                Log.Warn(F("{0} a perdu la connexion : la partie l'attend ({1:0} s au plus)", "{0} lost the connection: the game waits for them ({1:0} s at most)", p.Name, relay?.Grace ?? 0));
+                lock (clocks) if (clocks.TryGetValue(p.Name, out var c)) { c.T = (long)Estimate(c); c.At = Now; c.Sp = 0; }
+                HostChat("away", BaseName(p.Name), "");
+                if (lobbyOpen) { BroadcastLobby(); MenuStatus(); }
+            };
+            relay.Resumed += (p, away, n) =>
+            {
+                HostChat("back", BaseName(p.Name), "");
+                BroadcastSession();
             };
             relay.Received += (p, m) => OnHostMessage(m, p);
             int listenPort = server != null ? server.Port : (int)portBox.Value;
@@ -2040,6 +2058,10 @@ namespace MPFever
             var game = existing ?? new GameLink(name, "client");
             if (!games.Contains(game)) games.Add(game);
             Client current = null;
+            // this player's session messages with the host, across its connections: after a cut, the host goes on with them
+            // if it still waits for this player (SessionLink)
+            var link = new SessionLink();
+            bool CanResume() => SessionLink.Grace > 0 && !string.IsNullOrEmpty(link.Token) && !link.Broken && game.InGame;
             clientCancelled = false;
             leftSession = null;   // (a report describes this session now)
             // a reconnect thread of an earlier session must not wake up in this one (issue #13)
@@ -2083,7 +2105,9 @@ namespace MPFever
             game.FromGame += clientFromGame = (g, m) =>
             {
                 if (m.Kind == "hello") { g.InGame = true; if (menuMode) { menuPhase = "ingame"; menuText = T("En partie.", "In game."); MenuStatus(); } }
-                current?.Send(m);
+                var to = current;
+                if (to != null) to.Send(m);
+                else if (CanResume()) link.Sent(m);   // (cut: kept for the host, sent when the session goes on)
             };
             Action<Client> wire = null;
             wire = client =>
@@ -2101,6 +2125,16 @@ namespace MPFever
                     if (menuMode) { menuPhase = "error"; menuText = text; MenuStatus(); }
                 };
                 bool haveSent = false;   // resync_have: once per connection, at its first welcome
+                client.Resumed += () =>
+                {
+                    Log.Ok(F("[{0}] reconnecté à l'hôte : la session continue", "[{0}] reconnected to the host: the session goes on", name));
+                    ClientStatus("ok", 0);
+                    if (menuMode) { menuPhase = "ingame"; menuText = T("Reconnecté : la partie continue.", "Reconnected: the game goes on."); MenuStatus(); }
+                };
+                client.ResumeRefused += () =>
+                {
+                    if (menuMode) { menuPhase = "connected"; menuText = T("Reconnecté. L'hôte renvoie sa partie...", "Reconnected. The host sends its game again..."); MenuStatus(); }
+                };
                 client.Received += m =>
                 {
                     if (m.Kind == "resync_file" || m.Kind == "resync_bin") { OnResyncFile(game, m); return; }
@@ -2226,32 +2260,37 @@ namespace MPFever
                     ClientStatus(deniedText != null ? "denied" : "lost", 0);
                     game.ToGame(Msg.Make("session", "MPFever", "{[\"started\"]=false,[\"speed\"]=0}"));
                     // (nor when the session was left: a connection closed by AddUnlessLeft once the game had closed, say)
-                    if (!menuMode || clientCancelled || gen != sessionGen || SessionLeft()) return;
+                    // (outside the main menu's sessions - the launcher's own window, the tests -: only to go on with the link)
+                    bool resumable = CanResume();
+                    if (clientCancelled || gen != sessionGen || SessionLeft() || (!menuMode && !resumable)) return;
                     // (a host game half received is kept: back with the same host, only the rest is asked for; see "welcome")
-                    // the connection dropped: try again for 5 minutes; back with the host, this game receives its
-                    // game again like any player who joins
+                    // the connection dropped: try again for 5 minutes; back with the host, the session goes on if the host still
+                    // waits for this player (soon: after 1 s, 2 s, then every 5 s), else this game receives its game again like
+                    // any player who joins
                     Interlocked.Increment(ref clientJoins);
                     new Thread(() =>
                     {
                         try
                         {
-                            var end = DateTime.UtcNow.AddMinutes(5);
+                            var end = DateTime.UtcNow.AddMinutes(menuMode ? 5 : (SessionLink.Grace + 10) / 60);
                             for (int attempt = 1; DateTime.UtcNow < end && !clientCancelled && gen == sessionGen; attempt++)
                             {
+                                bool claim = CanResume();
+                                if (!menuMode && !claim) return;
                                 menuPhase = "connecting";
                                 menuText = F("Connexion à l'hôte perdue : reconnexion (essai {0})...", "Connection to the host lost: reconnecting (attempt {0})...", attempt);
                                 MenuStatus();
                                 ClientStatus("lost", attempt);
-                                Thread.Sleep(5000);
+                                Thread.Sleep(claim && attempt <= 2 ? attempt * 1000 : 5000);
                                 if (clientCancelled || gen != sessionGen) return;
-                                var c = new Client();
+                                var c = new Client(link);
                                 try
                                 {
                                     wire(c);
-                                    c.Connect(host, port, name, password);
+                                    c.Connect(host, port, name, password, claim);
                                     if (!AddUnlessLeft(c)) return;
                                     Log.Ok(F("[{0}] reconnecté à l'hôte", "[{0}] reconnected to the host", name));
-                                    menuPhase = "connected"; menuText = T("Reconnecté. L'hôte renvoie sa partie...", "Reconnected. The host sends its game again..."); MenuStatus();
+                                    if (!claim) { menuPhase = "connected"; menuText = T("Reconnecté. L'hôte renvoie sa partie...", "Reconnected. The host sends its game again..."); MenuStatus(); }
                                     return;
                                 }
                                 catch (Exception e) { Log.Warn(T("Reconnexion : ", "Reconnecting: ") + e.Message); }
@@ -2262,7 +2301,7 @@ namespace MPFever
                     }) { IsBackground = true, Name = "Reconnect" }.Start();
                 };
             };
-            var first = new Client();
+            var first = new Client(link);
             wire(first);
             bool added;
             Interlocked.Increment(ref clientJoins);
@@ -2349,6 +2388,7 @@ namespace MPFever
 
             string[] ready; lock (players) ready = players.ToArray();
             var connected = relay?.PeerNames() ?? new string[0];
+            var away = relay?.AwayNames() ?? new Dictionary<string, double>();
             HashSet<string> waiting; lock (resyncWaiting) waiting = new HashSet<string>(resyncWaiting);
             Dictionary<string, PlayerClock> cl; lock (clocks) cl = new Dictionary<string, PlayerClock>(clocks);
             double lead = cl.Count == 0 ? 0 : cl.Values.Max(Estimate);
@@ -2371,6 +2411,8 @@ namespace MPFever
                     else if (st && lag > 10) state = "slow";
                 }
                 if (resyncing && waiting.Contains(n)) state = "loading";
+                // (its connection dropped, the host waits for it: the seconds since)
+                if (away.TryGetValue(n, out double awayS)) { state = "away"; lag = (long)awayS; }
                 P(n, state, lag);
             }
             foreach (var n in connected.Where(n => !ready.Contains(n)).OrderBy(n => n, StringComparer.OrdinalIgnoreCase)) P(n, "joining", 0);
@@ -3118,6 +3160,8 @@ namespace MPFever
             try
             {
                 Log.W(F("=== Resynchronisation n°{0} sur la partie de l'hôte (écart : {1}) ===", "=== Resynchronisation #{0} on the host's game (difference: {1}) ===", id, reason));
+                // (the players the host waits for leave: their world is replaced, they join again and get the host's game)
+                relay?.FinalizeAway(T("resynchronisation", "resynchronisation"));
                 // 1. every game stops at the same time
                 Pause(T("resynchronisation", "resynchronisation"));
                 long at; lock (sessionGate) at = pauseAt ?? 0;

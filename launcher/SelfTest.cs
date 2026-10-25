@@ -47,12 +47,92 @@ namespace MPFever
             bool ok = hostIn.Contains("act_req" + (char)9 + "Client#1") && hostIn.Contains("det_hash\tClient#1\t") && clientIn.Contains("welcome\tHost") && clientIn.Contains("hello\tHost") && parsed == "{parts={time=123,txt=a\"b},round=0}";
             client.Dispose(); relay.Dispose();
             Log.W("transport: " + (ok ? "ok" : "FAILED"));
+            ok &= RunResume();
             ok &= RunServer();
             ok &= RunUpdater();
             ok &= RunPortMap();
             ok &= RunRedact();
             Log.W(ok ? "SELFTEST OK" : "SELFTEST FAILED");
             return ok ? 0 : 1;
+        }
+
+        /// <summary>A player's connection cut while both sides keep sending (the host to a player it waits for, the player into
+        /// its link while it has no connection): back with its link, every message arrives once and in order on both sides,
+        /// with no new welcome; a claim the host does not know gets a plain welcome; a player not back within the grace leaves.</summary>
+        static bool RunResume()
+        {
+            int port = 28192;
+            var relay = new Relay { Grace = 4, MayWait = _ => true };
+            var fromClient = new List<int>();
+            int welcomes = 0, aways = 0, resumes = 0, lefts = 0;
+            Peer peer = null;
+            relay.Joined += p => { peer = p; relay.Send(p, Msg.Make("welcome", "Host", "{[\"you\"]=\"" + p.Name + "\",[\"rtok\"]=\"" + p.Link.Token + "\"}")); };
+            relay.Received += (p, m) => { if (m.Kind == "t") lock (fromClient) fromClient.Add((int)SessionLink.ReadN(m, "i")); };
+            relay.Away += p => Interlocked.Increment(ref aways);
+            relay.Resumed += (p, s, n) => Interlocked.Increment(ref resumes);
+            relay.Left += p => Interlocked.Increment(ref lefts);
+            relay.Start(port);
+            var link = new SessionLink();
+            var fromHost = new List<int>();
+            Client current = null;
+            Client Wire(Client c)
+            {
+                c.Received += m =>
+                {
+                    if (m.Kind == "welcome") Interlocked.Increment(ref welcomes);
+                    if (m.Kind == "t") lock (fromHost) fromHost.Add((int)SessionLink.ReadN(m, "i"));
+                };
+                return c;
+            }
+            int hostN = 0, clientN = 0;
+            void Exchange(int n)
+            {
+                for (int k = 0; k < n; k++)
+                {
+                    if (peer != null) relay.Send(peer, Msg.Make("t", "Host", "{[\"i\"]=" + (++hostN) + "}"));
+                    var m = Msg.Make("t", "Client", "{[\"i\"]=" + (++clientN) + "}");
+                    var to = current;
+                    if (to != null) to.Send(m); else link.Sent(m);
+                }
+            }
+            bool Wait(Func<bool> f) { for (int i = 0; i < 100 && !f(); i++) Thread.Sleep(50); return f(); }
+            bool InOrder(List<int> l, int n) { lock (l) return l.Count == n && l.Select((v, i) => v == i + 1).All(x => x); }
+            bool ok = true;
+            try
+            {
+                current = Wire(new Client(link));
+                current.Connect("127.0.0.1", port, "Client");
+                ok &= Wait(() => welcomes == 1 && link.Token != null);
+                Exchange(300);
+                // a cut with messages on their way, both sides going on while it lasts
+                var old = current; current = null; old.Dispose();
+                ok &= Wait(() => aways == 1);
+                Exchange(200);
+                current = Wire(new Client(link));
+                current.Connect("127.0.0.1", port, "Client", null, true);
+                ok &= Wait(() => resumes == 1);
+                Exchange(100);
+                ok &= Wait(() => InOrder(fromClient, clientN) && InOrder(fromHost, hostN));
+                Log.W("resume: " + fromHost.Count + "/" + hostN + " from the host, " + fromClient.Count + "/" + clientN + " from the player in order, welcomes " + welcomes + ", away " + aways + ", resumed " + resumes + ", left " + lefts);
+                ok &= welcomes == 1 && lefts == 0 && InOrder(fromClient, clientN) && InOrder(fromHost, hostN);
+                // an unknown claim: a plain welcome (the player is a new one), and the player waited for under that name leaves
+                link.Token = "0123456789abcdef0123456789abcdef";
+                var old2 = current; current = null; old2.Dispose();
+                ok &= Wait(() => aways == 2);
+                current = Wire(new Client(link));
+                current.Connect("127.0.0.1", port, "Client", null, true);
+                ok &= Wait(() => welcomes == 2 && lefts == 1);
+                // a player not back within the grace leaves
+                var old3 = current; current = null; old3.Dispose();
+                ok &= Wait(() => aways == 3);
+                ok &= Wait(() => lefts == 2);
+                Log.W("resume: a claim the host does not know gets a welcome (" + welcomes + "), the player away " + aways + " time(s), left " + lefts + " time(s)");
+            }
+            catch (Exception e) { Log.Err("resume: " + e.Message); ok = false; }
+            try { current?.Dispose(); } catch { }
+            relay.Dispose();
+            Log.W("resume: " + (ok ? "ok" : "FAILED"));
+            return ok;
         }
 
         /// <summary>Automatic update: which release of GitHub's list is taken (newest published one with a zip, the players' or
