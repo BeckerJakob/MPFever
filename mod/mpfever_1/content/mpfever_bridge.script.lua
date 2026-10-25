@@ -371,7 +371,7 @@ end
 
 local hashShown = false
 K.hashCostsShown = 0
-local function simHash(terrainSig, reg, n, buildIds)
+local function simHash(terrainSig, reg, n, buildIds, at)
 	local tStart = os.clock()
 	-- the expensive parts take turns (issue #32: the whole check held the simulation step about 0.3 s every 10 s): every
 	-- checkpoint hashes the cheap parts and one group, chosen by the checkpoint's number, the same on every game. The
@@ -387,7 +387,17 @@ local function simHash(terrainSig, reg, n, buildIds)
 		for _, p in ipairs(keep) do R.hashSkip[p] = nil end
 	end
 	local parts = R.contentHash(C.hashStr, C.dump)
-	parts.buildIds = type(buildIds) == "table" and (tostring(buildIds.n) .. "/" .. tostring(buildIds.sum)) or "0/0"
+	-- (the builds of 50 steps ago and before: every game has checked those, a few steps after the build, but not at the same
+	-- step - the checks follow the script's update calls)
+	local bn, bs = 0, 0
+	if type(buildIds) == "table" then
+		bn, bs = tonumber(buildIds.n0) or 0, tonumber(buildIds.s0) or 0
+		local upto = (tonumber(at) or 0) - 50 * STEP
+		for _, e in ipairs(type(buildIds.list) == "table" and buildIds.list or {}) do
+			if (tonumber(e.at) or 0) <= upto then bn = bn + 1; bs = (bs + (tonumber(e.h) or 0)) % 4294967296 end
+		end
+	end
+	parts.buildIds = bn .. "/" .. bs
 	R.hashSkip = nil
 	-- diagnostic (MPFEVER_VDUMP set): every vehicle and every company's money at each checkpoint, to diff two games
 	if os.getenv("MPFEVER_VDUMP") then
@@ -1153,7 +1163,7 @@ local function simApplyDue(state)
 				if a.kind == "hash" then
 					local c0 = os.clock()
 					local okA, auth = pcall(authValues, st.co)
-					st.hash = { n = a.n, parts = simHash(terrainSigAt(st, now), st.co, a.n, st.buildIds), cost = os.clock() - c0, auth = okA and auth or nil }
+					st.hash = { n = a.n, parts = simHash(terrainSigAt(st, now), st.co, a.n, st.buildIds, now), cost = os.clock() - c0, auth = okA and auth or nil }
 					st.authOwn = st.authOwn or {}
 					st.authOwn[#st.authOwn + 1] = { n = a.n, auth = okA and auth or nil }
 					while #st.authOwn > 10 do table.remove(st.authOwn, 1) end
@@ -1695,9 +1705,17 @@ local function update(userParams, state, dt)
 				-- the simulation's state: the script runs in more than one Lua state, and the interface's checks read it too)
 				local okI, errI = pcall(function()
 					local st = state:get() or {}
-					local b = type(st.buildIds) == "table" and st.buildIds or { n = 0, sum = 0 }
-					b.n = (tonumber(b.n) or 0) + 1
-					b.sum = ((tonumber(b.sum) or 0) + C.hashStr(0, ck.at .. ":" .. table.concat(si, ",") .. "|" .. table.concat(ni, ","))) % 4294967296
+					local b = type(st.buildIds) == "table" and st.buildIds or {}
+					b.n0, b.s0 = tonumber(b.n0) or 0, tonumber(b.s0) or 0
+					local list = type(b.list) == "table" and b.list or {}
+					list[#list + 1] = { at = ck.at, h = C.hashStr(0, ck.at .. ":" .. table.concat(si, ",") .. "|" .. table.concat(ni, ",")) }
+					-- (the old ones folded into one sum: the checks count them all the same)
+					local keep, old = {}, gameTime() - 600 * STEP
+					for _, e in ipairs(list) do
+						if (tonumber(e.at) or 0) <= old then b.n0 = b.n0 + 1; b.s0 = (b.s0 + (tonumber(e.h) or 0)) % 4294967296 else keep[#keep + 1] = e end
+					end
+					b.list = keep
+					b.n, b.sum = nil, nil
 					st.buildIds = b
 					state:set(st)
 				end)
@@ -7027,7 +7045,7 @@ H.det_run = function(from, p)
 		local t = gameTime()
 		if t >= target then stable = stable + 1 else stable = 0 end
 		if stable >= 5 or G.frames > deadline then
-			local parts = simHash(nil, G.co, nil, G.simBuildIds)
+			local parts = simHash(nil, G.co, nil, G.simBuildIds, t)
 			parts.reached = (t >= target)
 			send("det_hash", { round = round, steps = steps, parts = parts })
 			-- (MPFEVER_CENSUS_FROM=n: no census before round n)
@@ -7337,7 +7355,7 @@ local function runPausedActions()
 				local okA, auth = pcall(authValues, G.co)
 				G.authOwn = G.authOwn or {}
 				G.authOwn[a.n] = okA and auth or nil
-				send("sync_hash", { n = a.n, parts = simHash(G.simTerrainSig, G.co, a.n, G.simBuildIds), cost = 0, auth = okA and auth or nil })
+				send("sync_hash", { n = a.n, parts = simHash(G.simTerrainSig, G.co, a.n, G.simBuildIds, now), cost = 0, auth = okA and auth or nil })
 			elseif a.fn == "mpfCoJoin" or coIsLoanEvent({ co = G.co }, a) then
 				toSim("co_apply", a)
 			else
