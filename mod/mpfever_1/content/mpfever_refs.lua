@@ -61,8 +61,9 @@ end
 
 local describe
 
--- a tree, a plant or a rock (placed with the brush): an entity of models without a construction, known by its first model and place
-local function assetPlace(e)
+-- (0.5.1, MPFEVER_ASSETREF=0) a tree, a plant or a rock (placed with the brush): an entity of models without a construction, known
+-- by its first model and place
+local function assetPlaceOld(e)
 	local mil = comp(e, "MODEL_INSTANCE_LIST")
 	if not mil then return nil end
 	local p, m = nil, nil
@@ -74,12 +75,132 @@ local function assetPlace(e)
 	return p, m
 end
 
+-- The name of a model, the same on every game (a model's number depends on the resources each game loaded), without the prefix
+-- some places of the game write: "::/assets/x.mdl", "/assets/x.mdl" and "assets/x.mdl" are the same model.
+local modelNames = {}
+local function normModel(name)
+	return (tostring(name or ""):gsub("^::/*", ""):gsub("^/+", ""))
+end
+local function modelName(id)
+	if id == nil then return nil end
+	if type(id) ~= "number" then return normModel(id) end
+	local n = modelNames[id]
+	if n == nil then
+		local ok, s = pcall(function() return api.res.modelRep.getName(id) end)
+		n = (ok and type(s) == "string" and s ~= "") and normModel(s) or ("#" .. tostring(id))
+		modelNames[id] = n
+	end
+	return n
+end
+R.normModel, R.modelName = normModel, modelName
+
+-- The fat models (a full matrix) and the thin ones (a position, an angle and a scale: the forests of a map are made of them) of
+-- a model list, as two lists with :size() and :at(i) from 1: the native vectors (the converted tables copy a whole forest at
+-- each read), else those tables.
+local function instanceLists(mil)
+	local function wrap(t) return { size = function() return #t end, at = function(_, i) return t[i] end } end
+	local fv, tv = nil, nil
+	pcall(function() local v = mil.fatInstances_native; if type(v:size()) == "number" then fv = v end end)
+	if not fv then pcall(function() fv = wrap(mil.fatInstances) end) end
+	pcall(function() local v = mil.thinInstances_native; if type(v:size()) == "number" then tv = v end end)
+	if not tv then pcall(function() tv = wrap(mil.thinInstances) end) end
+	return fv, tv
+end
+
+-- Every model of an asset entity (a group of trees, plants or rocks), the fat ones first: fn(modelId, position, instance, thin)
+-- for each, until fn returns true. A thin model has no matrix: its position is its pos. Returns the numbers of fat and thin models
+-- (without fn: only those numbers).
+local function eachInstance(e, fn)
+	local mil = comp(e, "MODEL_INSTANCE_LIST")
+	if not mil then return 0, 0 end
+	local fv, tv = instanceLists(mil)
+	local nf, nt = 0, 0
+	pcall(function() nf = fv:size() end)
+	pcall(function() nt = tv:size() end)
+	if fn then
+		pcall(function()
+			for i = 1, nf do
+				local inst = fv:at(i)
+				if fn(inst.modelId, matPos(inst.transf), inst, false) then return end
+			end
+			for i = 1, nt do
+				local inst = tv:at(i)
+				if fn(inst.modelId, pos3(inst.pos), inst, true) then return end
+			end
+		end)
+	end
+	return nf, nt
+end
+R.eachInstance = eachInstance
+function R.instanceCounts(e) return eachInstance(e, nil) end
+
+-- the centre of an entity's bounding box (nil without one)
+local function bboxCentre(e)
+	local bv = comp(e, "BOUNDING_VOLUME")
+	if not bv then return nil end
+	local p = nil
+	pcall(function()
+		local a, b = bv.bbox.min, bv.bbox.max
+		p = { x = (a.x + b.x) / 2, y = (a.y + b.y) / 2, z = (a.z + b.z) / 2 }
+	end)
+	return p
+end
+
+-- A group of trees, plants or rocks: models without a construction (the forests of a map and the brush's trees have an AssetGroup
+-- too; the trees the mod's construction rebuilt for another player may not, see H.assetdescribe)
+function R.isTreeGroup(e)
+	if type(e) ~= "number" or e < 0 or comp(e, "CONSTRUCTION") then return false end
+	return comp(e, "ASSET_GROUP") ~= nil or comp(e, "MODEL_INSTANCE_LIST") ~= nil
+end
+
+-- (diagnostic, the asset logs) what an entity is made of: whether it exists, its components among those of trees and
+-- constructions, and its numbers of fat and thin models
+function R.assetComponents(e)
+	local ex = nil
+	pcall(function() ex = api.engine.entityExists(e) end)
+	local have = {}
+	for _, n in ipairs({ "CONSTRUCTION", "ASSET_GROUP", "MODEL_INSTANCE_LIST", "BOUNDING_VOLUME", "PLAYER_OWNED", "TOWN_BUILDING" }) do
+		if comp(e, n) then have[#have + 1] = n end
+	end
+	local nf, nt = eachInstance(e, nil)
+	return "exists " .. tostring(ex) .. " {" .. table.concat(have, ",") .. "}, fat " .. nf .. ", thin " .. nt
+end
+
+-- A tree, a plant or a rock: an entity of models without a construction (a group of them), known by its first model and its place,
+-- and by its number of models. The forests of a map have thin models only, with no matrix: 0.5.1 read a matrix on them, got no
+-- place, and dropped the removal of such a group without a word (the bulldozer on one tree of a forest: the builder's game freed
+-- one entity more than the others, every later id differed, a resync minutes later). Without a readable model, the centre of its
+-- bounding box (bb). MPFEVER_ASSETREF=0: as before
+local function assetPlace(e)
+	local p, m = nil, nil
+	local nf, nt = eachInstance(e, function(id, q)
+		if q then p, m = q, modelName(id) return true end
+	end)
+	local bb = false
+	if not p then
+		p = bboxCentre(e)
+		bb = p ~= nil
+	end
+	return p, m, nf + nt, bb
+end
+
+-- (0.5.1) a removed entity without a construction, as 0.5.1 described it (nil for a forest of thin models): see H.assetdescribe
+function R.describeAssetOld(e)
+	if comp(e, "CONSTRUCTION") then return nil end
+	local p, m = assetPlaceOld(e)
+	if p then return { k = "asset", id = e, p = p, m = m } end
+	return nil
+end
+
 local function describeCon(e)
 	local c = comp(e, "CONSTRUCTION")
 	if not c then
-		local p, m = assetPlace(e)
-		if p then return { k = "asset", id = e, p = p, m = m } end
-		return nil
+		if os.getenv("MPFEVER_ASSETREF") == "0" then return R.describeAssetOld(e) end
+		-- (a group of trees is always described, even without a place: dropped, its removal was lost on the other games)
+		local ag = comp(e, "ASSET_GROUP") ~= nil
+		if not ag and not comp(e, "MODEL_INSTANCE_LIST") then return nil end
+		local p, m, n, bb = assetPlace(e)
+		return { k = "asset", id = e, p = p, m = m, n = n, ag = ag, bb = bb or nil }
 	end
 	return { k = "con", id = e, f = c.fileName, p = matPos(c.transf) }
 end
@@ -238,6 +359,62 @@ local function resolveCon(r)
 	return nil
 end
 
+-- The entities with this component around p (octree, radius in metres), by id.
+local function assetsNear(p, radius, compName)
+	local list, seen = {}, {}
+	if not p then return list end
+	pcall(function()
+		local found = api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(p.x, p.y), radius, CT(compName))
+		for i = 1, #found do
+			local e = found[i]
+			if type(e) == "number" and not seen[e] then seen[e] = true; list[#list + 1] = e end
+		end
+	end)
+	table.sort(list)
+	return list
+end
+R.assetsNear = assetsNear
+
+-- How far the described tree is from entity e (nil: e does not hold it). e must be models without a construction; the tree is any
+-- of its models (fat or thin) of the same model within 0.5 m: a group rebuilt by another game's replay has fat models where the
+-- builder's had thin ones, and its first model may be another tree. Described by its bounding box (no readable model): the centre
+-- of e's own, within 1 m. Described without a place: e itself, while it is still models without a construction.
+local function assetDistance(e, r)
+	if type(e) ~= "number" or e < 0 or comp(e, "CONSTRUCTION") then return nil end
+	if r.p == nil then return (comp(e, "MODEL_INSTANCE_LIST") or comp(e, "ASSET_GROUP")) and 0 or nil end
+	if r.bb then
+		local d = dist(bboxCentre(e), r.p)
+		return d < 1 and d or nil
+	end
+	local best = nil
+	eachInstance(e, function(id, q)
+		if q and (r.m == nil or modelName(id) == r.m) then
+			local d = dist(q, r.p)
+			if d < 0.5 and (best == nil or d < best) then best = d end
+			return d < 0.001
+		end
+	end)
+	return best
+end
+
+-- A group of trees: its own id when it still holds the described tree (the same id on every game for the savegame's groups and
+-- for what was built in step), else the group holding it within 50 m (octree: the groups of trees first, then any entity with
+-- models, as the trees of a replay may have no AssetGroup), the nearest, the lowest id on a tie. 0.5.1 scanned every entity with
+-- models of the map instead (over 100 000 on a large one, each forest copied as a table). MPFEVER_ASSETREF=0: as before
+local function resolveAsset(r)
+	if assetDistance(r.id, r) then return r.id end
+	if r.p == nil then return nil end
+	for _, compName in ipairs({ "ASSET_GROUP", "MODEL_INSTANCE_LIST" }) do
+		local best, bestD = nil, math.huge
+		for _, e in ipairs(assetsNear(r.p, 50, compName)) do
+			local d = assetDistance(e, r)
+			if d and d < bestD then best, bestD = e, d end
+		end
+		if best then return best end
+	end
+	return nil
+end
+
 -- A node or segment whose id does not match is looked up by position. Scanning the whole street graph for each one made a
 -- large station edit take seconds on the other games (issue #25): within one translation pass (R.translateIn, synchronous,
 -- so the graph cannot change) the nodes are put once into a grid of 1 m cells, and the segments are found through the
@@ -353,11 +530,12 @@ resolve = function(r, bind)
 	local k = r.k
 	if k == "con" then return resolveCon(r) end
 	if k == "asset" then
-		local p0, m0 = assetPlace(r.id)
+		if os.getenv("MPFEVER_ASSETREF") ~= "0" then return resolveAsset(r) end
+		local p0, m0 = assetPlaceOld(r.id)
 		if p0 and m0 == r.m and dist(p0, r.p) < 0.5 and not comp(r.id, "CONSTRUCTION") then return r.id end
 		local e, d = nearestWith("MODEL_INSTANCE_LIST", function(x)
 			if comp(x, "CONSTRUCTION") then return nil end
-			local p, m = assetPlace(x)
+			local p, m = assetPlaceOld(x)
 			if p and m == r.m then return dist(p, r.p) end
 			return nil
 		end)

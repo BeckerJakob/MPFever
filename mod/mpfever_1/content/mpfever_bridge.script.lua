@@ -1806,6 +1806,37 @@ local function streetExperiments(compact, proposal)
 	log("street experiments: " .. table.concat(out, " ; "))
 end
 
+-- A build that only takes groups of trees away: the bulldozer on every tree of a group, or on a group of one tree, adds nothing
+-- back (on some trees of a group it adds the others back in a construction without a file: the asset branch of
+-- captureNativeBuild). Nothing else in it: no street, no terrain, no construction removed.
+SIM.treeRemovalOnly = function(proposal)
+	local ok, yes = pcall(function()
+		local n = #proposal.toRemove
+		if n == 0 then return false end
+		local pr = nil
+		pcall(function() pr = proposal.parcelsToRemove end)
+		if pr ~= nil and #pr > 0 then return false end
+		local g = nil
+		pcall(function() g = proposal.terrain.baseHeightMod end)
+		if g and (g.width or 0) * (g.height or 0) > 0 then return false end
+		local sp = proposal.proposal
+		for _, k in ipairs({ "addedNodes", "removedNodes", "addedSegments", "removedSegments", "edgeObjectsToAdd", "edgeObjectsToRemove", "nodeConfigsToAdd", "nodeConfigsToRemove" }) do
+			local v = sp[k]
+			if v ~= nil and #v > 0 then return false end
+		end
+		for i = 1, n do
+			if not R.isTreeGroup(proposal.toRemove[i]) then return false end
+		end
+		return true
+	end)
+	return ok and yes == true
+end
+
+-- (diagnostic) a removed entity the capture could not describe: its components and its numbers of fat and thin models
+SIM.assetDiag = function(e, why)
+	log("ASSETS: removal " .. tostring(e) .. " " .. tostring(why) .. ": " .. R.assetComponents(e))
+end
+
 local function captureNativeBuild(state, param)
 	local st = state:get() or {}
 	R.CO = st.co
@@ -1932,13 +1963,20 @@ local function captureNativeBuild(state, param)
 	-- Trees, plants and rocks placed with the brush: constructions without a file, their models listed in the proposal. A script
 	-- cannot make that kind of construction: the other games build the same models (same places) with the mod's own construction
 	-- (mpfever_asset.con, see replayAssets).
+	-- The bulldozer on trees builds the same way: the group it took trees from is removed and its other trees are added back in one
+	-- construction without a file. On every tree of a group (or on a group of one tree) it only removes the group: that build took
+	-- the general path, where nothing removes a group of trees, and the other games kept it. It comes here too now, and so does a
+	-- build of the mod's own asset construction made by a script (the treeerase autotest): the same trees for the other games.
+	-- MPFEVER_ASSETCAPTURE=0: as before (constructions without a file only, at least one; removals described all in one go)
+	local assetCap = os.getenv("MPFEVER_ASSETCAPTURE") ~= "0"
 	local okA, assets = pcall(function()
 		local n = #proposal.toAdd
-		if n == 0 then return nil end
+		if n == 0 then return (assetCap and SIM.treeRemovalOnly(proposal)) and {} or nil end
 		local list = {}
 		for i = 1, n do
 			local ce = proposal.toAdd[i]
-			if tostring(ce.fileName) ~= "" then return nil end
+			local f = tostring(ce.fileName)
+			if f ~= "" and not (assetCap and R.isAssetFile(f)) then return nil end
 			local models = {}
 			local con = ce.construction
 			for s = 1, #con.subconstructions do
@@ -1952,6 +1990,8 @@ local function captureNativeBuild(state, param)
 					models[#models + 1] = { id = tostring(id), transf = t }
 				end
 			end
+			-- (the mod's construction with no model read here: the general path, the others would get a marker in its place)
+			if f ~= "" and #models == 0 then return nil end
 			list[#list + 1] = { transf = C.marshal(ce.transf), models = models, player = ce.playerEntity }
 		end
 		return list
@@ -1968,14 +2008,33 @@ local function captureNativeBuild(state, param)
 		end
 		if blank then state:set(st) return end
 	end
-	if okA and assets and #assets > 0 then
-		local removed = {}
-		pcall(function()
-			for i = 1, #proposal.toRemove do
-				local d = R.describe("con", proposal.toRemove[i])
-				if d then d.__ref = true; removed[#removed + 1] = d end
+	if okA and assets and (#assets > 0 or assetCap) then
+		local removed, lost = {}, 0
+		if assetCap then
+			-- (each removal on its own: one that cannot be described is logged with what it is made of, and shipped as lost, so that
+			-- the other games resync at once instead of keeping it, see replayAssets. 0.5.1 dropped it without a word)
+			local nrm = 0
+			pcall(function() nrm = #proposal.toRemove end)
+			for i = 1, nrm do
+				local e = nil
+				pcall(function() e = proposal.toRemove[i] end)
+				local okd, d = pcall(R.describe, "con", e)
+				if okd and type(d) == "table" then
+					d.__ref = true
+					removed[#removed + 1] = d
+				else
+					lost = lost + 1
+					pcall(SIM.assetDiag, e, okd and "not described" or ("describe failed: " .. tostring(d):sub(1, 120)))
+				end
 			end
-		end)
+		else
+			pcall(function()
+				for i = 1, #proposal.toRemove do
+					local d = R.describe("con", proposal.toRemove[i])
+					if d then d.__ref = true; removed[#removed + 1] = d end
+				end
+			end)
+		end
 		for _, as in ipairs(assets) do
 			if type(as.player) == "number" and as.player >= 0 then
 				local co = R.CO and CO.idOfEntity(R.CO, as.player) or nil
@@ -1991,11 +2050,16 @@ local function captureNativeBuild(state, param)
 		if st.assetBuilds <= 2 then
 			pcall(function() C.appendFile(C.DIR .. BS .. "raw_builds.txt", "==== assets t=" .. now .. NL .. C.dump(proposal):sub(1, 40000) .. NL) end)
 		end
-		if st.assetBuilds <= 10 then log("assets placed at t=" .. now .. ": " .. #assets .. " construction(s), " .. nm .. " model(s) (" .. tostring(assets[1].models[1] and assets[1].models[1].id) .. "...), " .. #removed .. " removed") end
+		-- (every one that removes something: the bulldozer on trees, whose removal must be the same on every game)
+		if st.assetBuilds <= 10 or #removed > 0 or lost > 0 then
+			local first = assets[1] and assets[1].models[1] and assets[1].models[1].id
+			log("assets placed at t=" .. now .. ": " .. #assets .. " construction(s), " .. nm .. " model(s) (" .. tostring(first) .. "...), " .. #removed .. " removed"
+				.. (assetCap and (", " .. lost .. " not described") or ""))
+		end
 		st.out = st.out or {}
 		st.outSeq = (st.outSeq or 0) + 1
 		st.out[#st.out + 1] = { n = st.outSeq, at = now, paused = (st.pauseAt ~= nil and now >= st.pauseAt) or nil,
-			fn = "assetBuild", args = { assets = assets, toRemove = removed }, captured = now }
+			fn = "assetBuild", args = { assets = assets, toRemove = removed, lost = lost > 0 and lost or nil }, captured = now }
 		if st.leadOut and #st.leadOut > 0 then table.remove(st.leadOut, 1) end   -- (BUILDLEAD: the released build, captured)
 		while #st.out > 50 do table.remove(st.out, 1) end
 		state:set(st)
@@ -5463,9 +5527,97 @@ local function assetConName()
 	end
 	return G.assetConName or K.ASSET_CON
 end
+
+-- How many of an asset build's models already stand on this game: the same model less than 5 cm away (across), in a group of
+-- trees or the mod's asset construction around them (one octree search around them all). Returns the number of models and the
+-- number found here.
+G.assetsStanding = function(assets)
+	local pts = {}
+	for _, as in ipairs(assets or {}) do
+		local t = as.transf
+		if type(t) == "table" and type(t[13]) == "number" then
+			for _, m in ipairs(as.models or {}) do
+				local mt = m.transf
+				if type(mt) == "table" and type(mt[13]) == "number" then
+					local x, y, z = mt[13], mt[14], mt[15]
+					pts[#pts + 1] = { m = R.normModel(m.id), x = t[1] * x + t[5] * y + t[9] * z + t[13], y = t[2] * x + t[6] * y + t[10] * z + t[14] }
+				end
+			end
+		end
+	end
+	if #pts == 0 then return 0, 0 end
+	local cx, cy = 0, 0
+	for _, q in ipairs(pts) do cx, cy = cx + q.x, cy + q.y end
+	cx, cy = cx / #pts, cy / #pts
+	local rad = 0
+	for _, q in ipairs(pts) do rad = math.max(rad, math.sqrt((q.x - cx) ^ 2 + (q.y - cy) ^ 2)) end
+	-- (the models around, in cells of 1 m)
+	local grid, seen = {}, {}
+	for _, compName in ipairs({ "ASSET_GROUP", "MODEL_INSTANCE_LIST" }) do
+		for _, e in ipairs(R.assetsNear({ x = cx, y = cy }, math.min(rad + 50, 2000), compName)) do
+			if not seen[e] then
+				seen[e] = true
+				local c = nil
+				pcall(function() c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) end)
+				if not c or R.isAssetFile(c.fileName) then
+					R.eachInstance(e, function(id, q)
+						if q then
+							local key = math.floor(q.x) .. ":" .. math.floor(q.y)
+							local cell = grid[key]
+							if not cell then cell = {}; grid[key] = cell end
+							cell[#cell + 1] = { m = R.modelName(id), x = q.x, y = q.y }
+						end
+					end)
+				end
+			end
+		end
+	end
+	local here = 0
+	for _, q in ipairs(pts) do
+		local found = false
+		local fx, fy = math.floor(q.x), math.floor(q.y)
+		for dx = -1, 1 do
+			for dy = -1, 1 do
+				for _, it in ipairs(grid[(fx + dx) .. ":" .. (fy + dy)] or {}) do
+					if it.m == q.m and (it.x - q.x) ^ 2 + (it.y - q.y) ^ 2 < 0.0025 then found = true end
+				end
+			end
+		end
+		if found then here = here + 1 end
+	end
+	return #pts, here
+end
+
 local function replayAssets(a)
 	local args = C.deser(C.ser(a.args or {}))
 	local miss = R.translateIn(args, G.bind)
+	local uid = tostring(a.uid)
+	local rm, unresolved = {}, 0
+	for _, e in ipairs(args.toRemove or {}) do
+		if type(e) == "number" and e >= 0 then rm[#rm + 1] = e else unresolved = unresolved + 1 end
+	end
+	-- A removal not found here, or one the builder could not describe (args.lost): the builder's game took away a group of trees
+	-- this game would keep, so every entity made afterwards got another id here and the games drifted apart minutes later (the
+	-- 22:30 resync of 0.5.1: "0 removed: BUILT"). The build is then reported as not reproduced, and the host's game is reloaded at
+	-- once. Unless this game already has it: a savegame loaded during a resynchronisation holds it when the host applied it before
+	-- saving; then none of its removals is here and every tree it adds already stands (a removal alone, with nothing to add and
+	-- nothing lost: its group is not here, the same). MPFEVER_ASSETSTRICT=0: as before (built without the removals not found, and
+	-- a refusal only logged)
+	local strict = os.getenv("MPFEVER_ASSETSTRICT") ~= "0"
+	local lost = tonumber(args.lost) or 0
+	if strict and (unresolved > 0 or lost > 0) then
+		local okS, nm, here = pcall(G.assetsStanding, args.assets)
+		if not okS then log("ASSET REPLAY " .. uid .. ": models here not counted: " .. shortErr(nm)); nm, here = -1, 0 end
+		local why = unresolved .. " removal(s) not found here, " .. lost .. " not described by the builder, " .. tostring(here) .. "/" .. tostring(nm) .. " model(s) already here"
+		if #rm == 0 and ((nm > 0 and here == nm) or (nm == 0 and lost == 0)) then
+			log("ASSET REPLAY " .. uid .. ": already built (loaded savegame): " .. why .. ": not built again")
+			return
+		end
+		log("ASSET REPLAY " .. uid .. ": asset removal not found (" .. why .. "): not reproduced")
+		replayFailed(a, "asset removal not found")
+		return
+	end
+	-- (the removals and the trees added back in ONE build, as on the builder's game: the ids the engine frees and gives are then the same)
 	local sp = api.type.SimpleProposal.new()
 	local cons = {}
 	for i, as in ipairs(args.assets or {}) do
@@ -5477,9 +5629,7 @@ local function replayAssets(a)
 		pcall(function() ce.name = "" end)
 		cons[#cons + 1] = ce
 	end
-	sp.constructionsToAdd = cons
-	local rm = {}
-	for _, e in ipairs(args.toRemove or {}) do if type(e) == "number" and e >= 0 then rm[#rm + 1] = e end end
+	if #cons > 0 then sp.constructionsToAdd = cons end
 	if #rm > 0 then sp.constructionsToRemove = rm end
 	local ctx = api.type.Context.new()
 	ctx.checkTerrainAlignment = false
@@ -5489,7 +5639,9 @@ local function replayAssets(a)
 	ctx.player = api.engine.util.getPlayer()
 	local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, ctx, true, false) end)
 	if not okc or not cmd then
-		log("ASSET REPLAY " .. tostring(a.uid) .. ": command " .. shortErr(cmd))
+		-- (a group of trees the factory does not take for removal: not reproduced. No native proposal with the removal alone: such
+		-- partial native proposals have hung the engine's factory)
+		log("ASSET REPLAY " .. uid .. ": command " .. shortErr(cmd) .. (#rm > 0 and (" (with " .. #rm .. " group(s) of trees to remove: " .. table.concat(rm, ",") .. ")") or ""))
 		replayFailed(a, "assets not rebuilt")
 		return
 	end
@@ -5498,8 +5650,40 @@ local function replayAssets(a)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 		G.assetReplays = (G.assetReplays or 0) + 1
-		if G.assetReplays <= 10 or not success then
-			log("ASSET REPLAY " .. tostring(a.uid) .. ": " .. #cons .. " construction(s), " .. #rm .. " removed" .. (#miss > 0 and (" (not found here: " .. #miss .. ")") or "") .. ": " .. (success and "BUILT" or ("refused " .. why)))
+		if G.assetReplays <= 10 or not success or #rm > 0 then
+			log("ASSET REPLAY " .. uid .. ": " .. #cons .. " construction(s), " .. #rm .. " removed" .. (#rm > 0 and (" (" .. table.concat(rm, ","):sub(1, 120) .. ")") or "")
+				.. (#miss > 0 and (" (not found here: " .. #miss .. ")") or "") .. ": " .. (success and "BUILT" or ("refused " .. why)))
+		end
+		-- A refused asset replay: the builder's game removed and made entities this one did not, so every later id differs here (0.5.1
+		-- took it for a difference of decoration only). MPFEVER_ASSETSTRICT=0: as before
+		if not success and strict then
+			replayFailed(a, #rm > 0 and "asset removal refused" or "assets refused")
+			return
+		end
+		if not success then return end
+		-- (what the engine made of the trees, for H.assetdescribe: an AssetGroup or not)
+		local made, isMade = {}, {}
+		pcall(function()
+			for i = 1, #res.resultEntities do
+				local e = res.resultEntities[i]
+				if type(e) ~= "number" then e = e[1] end
+				if type(e) == "number" then made[#made + 1] = e; isMade[e] = true end
+			end
+		end)
+		G.assetReplayed = G.assetReplayed or {}
+		for _, e in ipairs(made) do G.assetReplayed[#G.assetReplayed + 1] = e end
+		while #G.assetReplayed > 20 do table.remove(G.assetReplayed, 1) end
+		-- (the removed groups must be gone; an id the new trees took again counts as gone)
+		if #rm > 0 then
+			G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function()
+				local still, reused = {}, 0
+				for _, e in ipairs(rm) do
+					if isMade[e] then reused = reused + 1
+					elseif R.isTreeGroup(e) then still[#still + 1] = e end
+				end
+				log("ASSET REPLAY " .. uid .. ": removed tree group(s) gone here: " .. (#still == 0 and "yes" or ("NO, still " .. table.concat(still, ",")))
+					.. (reused > 0 and (" (" .. reused .. " id(s) taken again by the new trees)") or ""))
+			end }
 		end
 	end)
 end
@@ -9861,6 +10045,219 @@ H.assettest = function(from, p)
 		end)
 	end)
 	if not okM then say("mod construction: " .. shortErr(errM)) autoFinish() end
+end
+
+-- Tree groups described (MPFEVER_SCENARIO=assetdescribe, no build, any savegame, e.g. k98resync): the first 30 groups of trees
+-- (AssetGroup) within 400 m of a dead end of the street network (else of the camera), each with its numbers of fat and thin
+-- models, what 0.5.1 made of it (nil for a forest of thin models only: its removal was dropped, the 22:30 resync) and the new
+-- description, found again here by its id and by its place alone (the octree search another game makes when the id differs).
+-- Then what the engine made of the trees this game rebuilt for another player (after a treeerase, e.g.
+-- MPFEVER_SCENARIO=treeerase,assetdescribe): an AssetGroup as the builder's trees, or not.
+-- Check in mod.log ("AUTOTEST assetdescribe"): no "new nil", "by place" names the group itself, the same lines on both games.
+H.assetdescribe = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("AUTOTEST assetdescribe " .. t) AUTO.results[#AUTO.results + 1] = t end
+	local ok, err = pcall(function()
+		-- (the first of the street network's first 10 dead ends with trees around: the same place on every game of one savegame;
+		-- else the camera's place)
+		local c, list = nil, {}
+		local ends = deadEnds()
+		for k = 1, math.min(10, #ends) do
+			local q = nodePosition(ends[k])
+			if not c and q then
+				local l = R.assetsNear(q, 400, "ASSET_GROUP")
+				if #l > 0 then c, list = q, l end
+			end
+		end
+		if not c then
+			pcall(function()
+				local d = api.gui.camera.getCameraData()
+				local x, y = d.x, d.y
+				if x == nil then x, y = d[1], d[2] end
+				if type(x) == "number" and type(y) == "number" then c = { x = x, y = y, z = 0 } end
+			end)
+			c = c or { x = 0, y = 0, z = 0 }
+			list = R.assetsNear(c, 400, "ASSET_GROUP")
+		end
+		say(#list .. " tree group(s) within 400 m of " .. string.format("%.0f,%.0f", c.x, c.y))
+		local n, thinOnly, oldNil, newNil, byId, byPlace = math.min(30, #list), 0, 0, 0, 0, 0
+		for i = 1, n do
+			local g = list[i]
+			local nf, nt = R.instanceCounts(g)
+			if nf == 0 and nt > 0 then thinOnly = thinOnly + 1 end
+			local okO, old = pcall(R.describeAssetOld, g)
+			if not (okO and old) then oldNil = oldNil + 1 end
+			local okN, d = pcall(R.describe, "con", g)
+			local line = "group " .. g .. ": fat " .. nf .. ", thin " .. nt .. ", 0.5.1 " .. ((okO and old) and "ok" or "nil") .. ", new "
+			if okN and type(d) == "table" then
+				local okI, i1 = pcall(R.resolve, d)
+				local okP, i2 = pcall(R.resolve, { k = d.k, id = -1, p = d.p, m = d.m, bb = d.bb })
+				i1, i2 = okI and i1 or nil, okP and i2 or nil
+				if i1 == g then byId = byId + 1 end
+				if i2 == g then byPlace = byPlace + 1 end
+				local q = d.p
+				line = line .. tostring(d.k) .. " " .. (q and string.format("%.2f,%.2f,%.2f", q.x, q.y, q.z or 0) or "without a place") .. " " .. tostring(d.m)
+					.. " n " .. tostring(d.n) .. (d.ag and " ag" or "") .. (d.bb and " bbox" or "") .. ", by id " .. tostring(i1) .. ", by place " .. tostring(i2)
+			else
+				newNil = newNil + 1
+				line = line .. "nil" .. (okN and "" or (" (" .. shortErr(d) .. ")"))
+			end
+			say(line)
+		end
+		say(string.format("summary: %d group(s), %d of thin models only, 0.5.1 nil %d, new nil %d, found by id %d, by place %d", n, thinOnly, oldNil, newNil, byId, byPlace))
+		local rep = G.assetReplayed or {}
+		if #rep == 0 then say("no tree rebuilt here for another player yet (run treeerase before this scenario)") end
+		for _, e in ipairs(rep) do say("rebuilt trees " .. e .. ": " .. R.assetComponents(e)) end
+	end)
+	if not ok then say("error " .. shortErr(err)) end
+	autoFinish()
+end
+
+-- Tree erase scenario (MPFEVER_SCENARIO=treeerase,newroad with MPFEVER_PAUSED=1, as the friends' bulldozer click on one tree of a
+-- forest in a pause at 22:23): this game takes one tree out of a group of trees the way the bulldozer does, in ONE build: the group
+-- removed, its other trees built again in one construction (the mod's asset construction here: a script cannot make one without a
+-- file). The group is a small forest of thin models when there is one near the street network (the kind 0.5.1 could not describe).
+-- MPFEVER_TREEERASE=whole removes the whole group (the bulldozer on a group of one tree: nothing added, a build 0.5.1 replayed
+-- nowhere); =reforest sends the engine's own reforestation proposal (groups recycled into constructions without a file, as the tree
+-- brush does) when it has groups to recycle, else one tree as by default.
+-- Check: this game logs "assets placed ... N removed, 0 not described" and "AUTOTEST treeerase ...: BUILT", then the group gone
+-- ("here after the build: exists false", or its id taken again by the new trees); the other game "ASSET REPLAY ...: N removed (G):
+-- BUILT" and "removed tree group(s) gone here: yes"; nowhere "asset removal not found" nor a resync; the newroad after it prints the
+-- same "build ids" on both games. As 0.5.1 (MPFEVER_ASSETREF=0, MPFEVER_ASSETCAPTURE=0, MPFEVER_ASSETSTRICT=0): "0 removed" and the
+-- build ids shifted by one, expected.
+H.treeerase = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("AUTOTEST treeerase " .. t) AUTO.results[#AUTO.results + 1] = t end
+	local mode = os.getenv("MPFEVER_TREEERASE") or "onetree"
+	local ok, sent = pcall(function()
+		local P, what, g = nil, nil, nil
+		if mode == "reforest" then
+			for seed = 1, 5 do
+				if not P then
+					local okP, q = pcall(function() return api.engine.util.proposal.makeReforestationProposal(seed, 4, 10) end)
+					local nr, na = 0, 0
+					if okP and q then pcall(function() nr, na = #q.toRemove, #q.toAdd end) end
+					if nr > 0 then
+						P = q
+						what = "reforestation (seed " .. seed .. "): " .. nr .. " group(s) recycled, " .. na .. " construction(s)"
+						pcall(function()
+							for i = 1, math.min(nr, 5) do
+								local e = q.toRemove[i]
+								local d = R.describe("con", e)
+								say("recycled group " .. tostring(e) .. ": " .. R.assetComponents(e) .. ", described " .. (d and (tostring(d.k) .. (d.p and "" or " without a place")) or "nil"))
+							end
+						end)
+					end
+				end
+			end
+			if not P then say("reforestation: no group to recycle (no forest_mask, or no tile qualifies): one tree instead") end
+		end
+		if not P then
+			-- (a small forest of thin models first, then the smallest group of two trees or more, then any)
+			local ends = deadEnds()
+			local best, bestScore = nil, nil
+			for j = 0, math.min(5, #ends - 1) do
+				local q = nodePosition(ends[((p.offset or 0) * 13 + 5 + j * 7) % #ends + 1])
+				for _, e in ipairs(q and R.assetsNear(q, 300, "ASSET_GROUP") or {}) do
+					if R.isTreeGroup(e) then
+						local nf, nt = R.instanceCounts(e)
+						local n = nf + nt
+						local score = (nf == 0 and n >= 2 and n <= 200) and n or (n >= 2 and 1000 + n or 1000000)
+						if n > 0 and (bestScore == nil or score < bestScore or (score == bestScore and e < best)) then best, bestScore = e, score end
+					end
+				end
+			end
+			g = best
+			if not g then say("no group of trees within 300 m of the street network's dead ends") return false end
+			-- its trees, each with its matrix (a thin model has an angle and a scale instead)
+			local inst = {}
+			R.eachInstance(g, function(id, q, it, thin)
+				if not q then return end
+				local tf
+				if thin then
+					local a, s = 0, 1
+					pcall(function() a, s = it.rot or 0, it.scale or 1 end)
+					local c, si = math.cos(a) * s, math.sin(a) * s
+					tf = { c, si, 0, 0, -si, c, 0, 0, 0, 0, s, 0, q.x, q.y, q.z, 1 }
+				else
+					tf = {}
+					local m = it.transf
+					for k = 1, 16 do tf[k] = m[k] end
+				end
+				inst[#inst + 1] = { id = id, tf = tf }
+			end)
+			local d = R.describe("con", g)
+			local old = R.describeAssetOld(g)
+			say("group " .. g .. ": " .. R.assetComponents(g) .. ", " .. #inst .. " read; described " .. (d and (tostring(d.k) .. " " .. tostring(d.m) .. (d.p and "" or " without a place")) or "nil")
+				.. "; 0.5.1 described it " .. (old and "with a place" or "NOT (nil)"))
+			if d and d.p then AUTO.points[#AUTO.points + 1] = { x = d.p.x, y = d.p.y, z = d.p.z or 0 } end
+			-- (a model of the game is named with "::/" for the mod's construction, see mpfever_asset.script)
+			local function loadable(id)
+				local raw = ""
+				pcall(function() raw = tostring(api.res.modelRep.getName(id) or "") end)
+				if raw:find("::", 1, true) then return raw end
+				if raw:sub(1, 1) == "/" then return "::" .. raw end
+				return "::/" .. raw
+			end
+			local sp = api.type.SimpleProposal.new()
+			sp.constructionsToRemove = { g }
+			if mode ~= "whole" and #inst >= 2 then
+				-- (the first tree out, the others kept, relative to the first kept one)
+				local b = { x = inst[2].tf[13], y = inst[2].tf[14], z = inst[2].tf[15] }
+				local models = {}
+				for k = 2, #inst do
+					local t = {}
+					for q = 1, 16 do t[q] = inst[k].tf[q] end
+					t[13], t[14], t[15] = t[13] - b.x, t[14] - b.y, t[15] - b.z
+					models[#models + 1] = { id = loadable(inst[k].id), transf = t }
+				end
+				local V = api.type.Vec4f.new
+				local ce = api.type.SimpleProposal.ConstructionEntity.new()
+				ce.fileName = assetConName()
+				ce.params = { mpfModels = models, seed = 1 }
+				ce.transf = api.type.Mat4f.new(V(1, 0, 0, 0), V(0, 1, 0, 0), V(0, 0, 1, 0), V(b.x, b.y, b.z, 1))
+				ce.playerEntity = api.engine.util.getPlayer()
+				pcall(function() ce.name = "" end)
+				sp.constructionsToAdd = { ce }
+				what = "one tree taken out of group " .. g .. " (" .. #models .. " kept tree(s) built again)"
+			else
+				what = "group " .. g .. " removed whole (" .. #inst .. " tree(s))"
+			end
+			P = sp
+		end
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res, success)
+			local why = ""
+			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+			say(what .. ": " .. (success and "BUILT" or ("refused " .. why)))
+			local made = {}
+			pcall(function()
+				for i = 1, #res.resultEntities do
+					local e = res.resultEntities[i]
+					if type(e) ~= "number" then e = e[1] end
+					if type(e) == "number" then made[#made + 1] = e end
+				end
+			end)
+			G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function()
+				if g then
+					local reused = false
+					for _, e in ipairs(made) do if e == g then reused = true end end
+					say("group " .. g .. " here after the build: " .. R.assetComponents(g)
+						.. (reused and " (its id taken again by the new trees)" or (R.isTreeGroup(g) and " STILL HERE" or "")))
+				end
+				for i = 1, math.min(#made, 5) do say("made " .. made[i] .. ": " .. R.assetComponents(made[i])) end
+				G.waits[#G.waits + 1] = { at = G.frames + 60, fn = autoFinish }
+			end }
+		end)
+		return true
+	end)
+	if not ok then say("error " .. shortErr(sent)) end
+	if not (ok and sent) then autoFinish() end
 end
 
 -- Waypoint scenario (issue #27): a waypoint added after the first stop of a train line, on a track its train drives on,
