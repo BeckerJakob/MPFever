@@ -3180,6 +3180,8 @@ end
 H.act = function(from, p)
 	logMargin(p.native and "act(native)" or "act", p.at, p.origin, p.lead)
 	p.recvFrame = G.frames
+	-- (a player announced while the session is paused: its turn among the others' announcements, see G.joinTurn)
+	if p.fn == "mpfCoJoin" and p.paused and G.joinTurns then G.ptIssue(p.origin, G.joinTurnId(p)) end
 	if G.uiEdit(p) then
 		p.native, p.uiEdit = true, true
 		log("action " .. tostring(p.uid) .. ": the edit of a construction from a window, replayed by the engine's replacement on every game")
@@ -5611,7 +5613,7 @@ local function nativeHoldAt()
 	if (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0) or G.terrainBusy or G.coBusy or G.stopsAfterBusy then return now end
 	-- (a player joining waits until the others announced at the same time have arrived too, see runNativeReplays)
 	for _, a in ipairs(G.nativeQueue or {}) do
-		if a.fn == "mpfCoJoin" and a.at <= now and G.frames - (a.recvFrame or 0) < K.JOIN_GATHER then return now end
+		if a.fn == "mpfCoJoin" and a.at <= now and (G.frames - (a.recvFrame or 0) < K.JOIN_GATHER or G.joinTurn(a) == false) then return now end
 	end
 	for _, a in ipairs(G.nativeQueue or {}) do
 		if a.at > now then local t = approach(a.at) if m == nil or t < m then m = t end end
@@ -5663,6 +5665,27 @@ G.ptDone = function(seq)
 end
 H.nat_ticket = function(from, p)
 	if type(p.seq) == "number" then G.ptTicket(p.origin, p.id, p.seq) end
+end
+
+-- The players' announcements made in a pause (the start of a session, a resynchronisation's load) all have the same time. Each
+-- game applied them in its own order: the host its own at once, a player in the order of the names, and with two new players
+-- each game gave them other company numbers (a session of 2026-10-25: the host made a company 6 for the client that the client
+-- never made, its money and loans differed at every check). Every announcement made in a pause now takes a turn from the host,
+-- among the paused builds (G.pt), and every game applies them in that order; one whose turn has not come in 10 s goes as before.
+-- MPFEVER_JOINTURNS=0: as before.
+G.joinTurns = G.ptOn and os.getenv("MPFEVER_JOINTURNS") ~= "0"
+G.joinTurnId = function(a) return "co" .. tostring(a.oseq) end
+-- the turn of a paused announcement: its number, false while it has none yet (wait), nil when it needs none
+G.joinTurn = function(a)
+	if a.fn ~= "mpfCoJoin" or not a.paused or not G.joinTurns then return nil end
+	local seq = G.pt.of[G.ptKey(a.origin, G.joinTurnId(a))]
+	if seq then return seq end
+	if G.frames - (a.recvFrame or G.frames) > 600 then
+		if not a.turnLogged then log("companies: no turn from the host for the announcement " .. tostring(a.uid) .. " in 10 s: applied as before") end
+		a.turnLogged = true
+		return nil
+	end
+	return false
 end
 
 H.nat_pending = function(from, p)
@@ -6404,7 +6427,10 @@ local function runNativeReplays()
 	for _, a in ipairs(G.nativeQueue) do
 		-- (a paused build: in its turn, see G.pt)
 		local seq = a.paused and (a.pseq or (a.natId ~= nil and G.pt.of[G.ptKey(a.origin, a.natId)])) or nil
-		if a.at <= now and ((a.fn == "terrainEdit" and G.terrainBusy) or (a.fn == "mpfCoJoin" and (G.coBusy or G.frames - (a.recvFrame or 0) < K.JOIN_GATHER))
+		-- (a player's announcement in a pause: its turn from the host, see G.joinTurn)
+		local jt = G.joinTurn(a)
+		if jt then seq = jt end
+		if a.at <= now and ((a.fn == "terrainEdit" and G.terrainBusy) or (a.fn == "mpfCoJoin" and (G.coBusy or jt == false or G.frames - (a.recvFrame or 0) < K.JOIN_GATHER))
 			or (a.fn ~= "terrainEdit" and a.fn ~= "mpfCoJoin" and replayBusy())) then
 			keep[#keep + 1] = a      -- the previous one is still being handed to the engine
 		elseif a.at <= now and seq and not G.ptMayGo(seq) then
@@ -12337,11 +12363,14 @@ H.dstop = function(from, p)
 		for _, e in ipairs(R.allEdges()) do
 			local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
 			local okC, con = pcall(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForEdge(e) end)
-			if c and c.type == 0 and #c.objects == 0 and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET)
-				and tostring(c.roadTemplate):find("/town/", 1, true) and not (okC and type(con) == "number" and con >= 0) then
+			-- (MPFEVER_DSTOPBRIDGE=1: street segments of bridges instead, any length: the replay of a stop on a bridge, see
+			-- G.replayNativeStop)
+			local bridge = os.getenv("MPFEVER_DSTOPBRIDGE") == "1"
+			if c and c.type == (bridge and 1 or 0) and #c.objects == 0 and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET)
+				and (bridge or tostring(c.roadTemplate):find("/town/", 1, true)) and not (okC and type(con) == "number" and con >= 0) then
 				local a, b = nodePosition(c.node0), nodePosition(c.node1)
 				local len = a and b and math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) or 0
-				if len > 40 and len < 120 then
+				if (len > 40 and len < 120) or (bridge and len > 12) then
 					list[#list + 1] = e
 					local d0, d1 = G.autoEndsOff(c)
 					if d0 and (d0 > 0 or d1 > 0) then offList[#offList + 1] = e end
@@ -13139,6 +13168,7 @@ local function coGui(st)
 		send("act", a)
 		a.recvFrame = G.frames
 		G.nativeQueue[#G.nativeQueue + 1] = a
+		if paused and G.joinTurns then G.ptIssue(G.me, G.joinTurnId(a)) end
 		log("companies: announced as '" .. name .. "' (company mode " .. tostring(G.cmode) .. ")")
 	end
 	-- which company is this game's: its interface and tools act as that company from now on
