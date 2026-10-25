@@ -172,7 +172,11 @@ STATE = { get = function() return STATE_DATA end, set = function(self, v) STATE_
 GSTATE = { subscribeToAllEvents = function() end }
 SIM_EVENT = function(name, param) MOD.handleEvent(nil, STATE, "mpfever", "mpfever", name, param) end
 BUILD_EVENT = function(name, proposal, playerInitiated, result) MOD.handleEvent(nil, STATE, "", "apply_command", name, { proposal, {}, result, playerInitiated }) end
-function FRAME() MOD.guiUpdate(nil, STATE, GSTATE) end
+-- (the processor time the mod reads, os.clock: 1/60 s per frame of the interface, the same on a slow PC and a fast one; the
+-- real one made the exact steps wait for 0.45 s of it, which a fast PC did not spend in the whole test)
+CLOCK = 0
+os.clock = function() return CLOCK end
+function FRAME() CLOCK = CLOCK + 1 / 60; MOD.guiUpdate(nil, STATE, GSTATE) end
 function SIMSTEP()
   local q = GAME.guiQueue; GAME.guiQueue = {}
   GAME.engine = true
