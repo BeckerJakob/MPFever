@@ -125,10 +125,68 @@ local function freeColor(reg)
 	return (#reg.list % #CO.PALETTE) + 1
 end
 
+-- ------------------------------------------------------------------------------------- one Steam account, two players
+-- Two games of one PC share a Steam account (every test setup, the autotests included). Their players are then told apart by
+-- their names only: a Steam account is "shared" once two different names announced it at the same game time, which is what the
+-- announcements of a session's start and of a resynchronisation are (stamped at the session's paused time, the same on every
+-- game). The mark is kept with the registry for good. CO.match then never finds a company through that account (else a player
+-- who left a company took the company of the other game's player, still in it, and never asked for a new one), and CO.join never
+-- renames a member through it. MPFEVER_COSHAREDSID=0: as before (nothing marked, and marks already saved are ignored).
+-- (the list holds the accounts as strings: a number that long would lose its last digits as a key of a saved table)
+function CO.sharedSid(reg, sid)
+	if sid == nil or not reg or type(reg.sharedSid) ~= "table" or os.getenv("MPFEVER_COSHAREDSID") == "0" then return false end
+	local s = tostring(sid)
+	for _, x in ipairs(reg.sharedSid) do if tostring(x) == s then return true end end
+	return false
+end
+
+-- A player's announcement (key, Steam account, the act's game time), noted by the simulation before CO.join, on every game in
+-- the order it applies the joins: the marks are the same everywhere once the announcements of one time are all applied. Returns
+-- true when the account is marked shared now.
+function CO.noteAnnounce(reg, key, sid, at)
+	if not reg or os.getenv("MPFEVER_COSHAREDSID") == "0" then return false end
+	if type(key) ~= "string" or key == "" or sid == nil or type(at) ~= "number" then return false end
+	local s = tostring(sid)
+	-- (only the announcements of one game time are kept: the next time starts a new list)
+	if not (type(reg.announced) == "table" and reg.announced.at == at and type(reg.announced.list) == "table") then
+		reg.announced = { at = at, list = {} }
+	end
+	local list = reg.announced.list
+	local marked, known = false, false
+	for _, x in ipairs(list) do
+		if x.key == key then known = true
+		elseif x.sid == s and not CO.sharedSid(reg, s) then
+			reg.sharedSid = type(reg.sharedSid) == "table" and reg.sharedSid or {}
+			reg.sharedSid[#reg.sharedSid + 1] = s
+			marked = true
+		end
+	end
+	if not known then list[#list + 1] = { key = key, sid = s } end
+	return marked
+end
+
+-- A member written twice in one company: the later entries are dropped, the first one is kept (the chief names a key that is
+-- still there). The registries saved by 0.5.1 on one PC have them (the old rename of CO.join gave the other game's member this
+-- player's name). This runs in the simulation at every join, on every game: the same registry everywhere. Returns how many.
+function CO.dropDuplicates(reg)
+	local n = 0
+	for _, c in ipairs(reg and reg.list or {}) do
+		if type(c.members) == "table" then
+			local seen, keep = {}, {}
+			for _, m in ipairs(c.members) do
+				local k = tostring(m.key)
+				if seen[k] then n = n + 1 else seen[k] = true; keep[#keep + 1] = m end
+			end
+			if #keep < #c.members then c.members = keep end
+		end
+	end
+	return n
+end
+
 -- The company of a player, known by its Steam account (`sid`, nil when unknown) and by its name (`key`):
 --  1. the company of that name, unless it belongs to another Steam account;
 --  2. else (not for the host) the company of that Steam account other than the savegame's (the player changed its name), when there
---     is exactly one (two games of one PC share the account: a test setup);
+--     is exactly one, and when that account is not shared by two games of one PC (see CO.sharedSid);
 -- nil when the player has no company yet.
 function CO.match(reg, key, sid, isHost)
 	if not reg then return nil end
@@ -147,7 +205,7 @@ function CO.match(reg, key, sid, isHost)
 	-- the owner named by a dedicated server takes the savegame's company while nobody has it
 	local first = reg.list[1]
 	if first and not first.gone and #CO.members(first) == 0 and type(reg.owner) == "string" and reg.owner ~= "" and key == reg.owner then return first end
-	if sid then
+	if sid and not CO.sharedSid(reg, sid) then
 		local found, n = nil, 0
 		for _, c in ipairs(reg.list) do
 			if not c.gone and c.id ~= 1 then
@@ -162,14 +220,25 @@ function CO.match(reg, key, sid, isHost)
 end
 
 -- A player is placed: its company (kept from an earlier visit, see CO.match), the savegame's company when it is the host, or a new
--- one. Returns the company and whether it is new (its player entity must be created).
+-- one. Returns the company, whether it is new (its player entity must be created), the colour it took (the host's company, see
+-- below) and how many members found twice were dropped (CO.dropDuplicates).
+-- The company of a known player keeps its members as they are: only the player's Steam account is written in when it was unknown.
+-- A member takes the player's name only when the player was found through its Steam account (CO.match, step 2: the same player
+-- under a new name, the only member with that account). Before, every other member with the player's account took its name, even
+-- when the player was found under its own name: on one PC (two games, one Steam account) the host's announcement after a
+-- resynchronisation renamed the client's member of the host's company (joined or merged into) to the host's name, and the client
+-- then got a new company, its player entity created on one game only (another resynchronisation followed). The result also
+-- depended on the order the games applied the two announcements, which differs between the host and a client.
+-- MPFEVER_COSIDRENAME=1: as before (the old rename, and no duplicate dropped).
 function CO.join(reg, key, name, isHost, newName, sid, color)
+	local old = os.getenv("MPFEVER_COSIDRENAME") == "1"
+	local dropped = old and 0 or CO.dropDuplicates(reg)
 	local mine = CO.match(reg, key, sid, isHost)
 	-- (a dedicated server: nothing to claim)
-	if mine and key == "" then return mine, false end
+	if mine and key == "" then return mine, false, nil, dropped end
 	if mine then
-		-- (a new name for a known account: the company follows it)
-		if type(mine.members) == "table" then
+		if type(mine.members) == "table" and old then
+			-- (a new name for a known account: the company follows it)
 			for _, m in ipairs(mine.members) do
 				if m.key ~= key and sid and m.sid == sid then
 					if mine.chief == m.key then mine.chief = key end
@@ -178,11 +247,26 @@ function CO.join(reg, key, name, isHost, newName, sid, color)
 				end
 				if m.key == key and sid and not m.sid then m.sid = sid end
 			end
+		elseif type(mine.members) == "table" then
+			local own = nil
+			for _, m in ipairs(mine.members) do if m.key == key then own = m break end end
+			if own then
+				if sid and not own.sid then own.sid = sid end
+			elseif sid and not CO.sharedSid(reg, sid) then
+				-- (a new name for a known account: the company follows it, when exactly one member has that account)
+				local hit, n = nil, 0
+				for _, m in ipairs(mine.members) do if m.sid == sid then hit = hit or m; n = n + 1 end end
+				if n == 1 then
+					if mine.chief == hit.key then mine.chief = key end
+					if mine.key == hit.key then mine.key = key end
+					hit.key = key
+				end
+			end
 		else
 			if mine.key ~= key then mine.key = key end
 			if sid and not mine.sid then mine.sid = sid end
 		end
-		return mine, false, nil
+		return mine, false, nil, dropped
 	end
 	local first = reg.list[1]
 	-- the savegame's own company belongs to whoever hosts it, unless it is gone (bankrupt, merged), the host left it, or
@@ -198,7 +282,7 @@ function CO.join(reg, key, name, isHost, newName, sid, color)
 		if color and color ~= first.color and not first.colorPicked and CO.colorFree(reg, color, first.id) then
 			first.color = tonumber(color); first.colorPicked = true; recolor = first.color
 		end
-		return first, false, recolor
+		return first, false, recolor, dropped
 	end
 	-- (a name another account already has: the new company's key carries the account, so that both are told apart)
 	local k = key
@@ -206,7 +290,7 @@ function CO.join(reg, key, name, isHost, newName, sid, color)
 	local c = { id = #reg.list + 1, key = k, name = newName or name, color = CO.colorFree(reg, color) and tonumber(color) or freeColor(reg), sid = sid,
 		members = { { key = key, sid = sid } }, chief = key }
 	reg.list[#reg.list + 1] = c
-	return c, true
+	return c, true, nil, dropped
 end
 
 -- what the state check compares: the same on every game (entities left out)

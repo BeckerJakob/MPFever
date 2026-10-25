@@ -1034,8 +1034,19 @@ local function coApply(st, a)
 	end
 	-- (a dedicated server names the player who gets the savegame's company)
 	if type(p.owner) == "string" then st.co.owner = p.owner end
-	local c, isNew, recolor = CO.join(st.co, tostring(p.key), tostring(p.name), p.host == true, p.cname, p.sid, tonumber(p.color))
+	-- (two names announcing one Steam account at the same time: two games of one PC, see CO.noteAnnounce)
+	if CO.noteAnnounce(st.co, tostring(p.key), p.sid, tonumber(a.at)) then
+		log("companies: two players announced the same Steam account (two games of one PC): their companies follow their names only")
+	end
+	local c, isNew, recolor, dropped = CO.join(st.co, tostring(p.key), tostring(p.name), p.host == true, p.cname, p.sid, tonumber(p.color))
+	if (dropped or 0) > 0 then log("companies: " .. dropped .. " member(s) written twice in a company dropped (a registry saved by 0.5.1 on one PC)") end
 	log("companies: player '" .. tostring(p.key) .. "' plays company " .. c.id .. (isNew and " (new)" or " (known)") .. " colour " .. tostring(c.color))
+	-- The company this join gave, for the interface of this game, which waits for it (see pumpCompanies): its copy of the
+	-- registry is read once per frame, and the frame that sent the join still showed the registry from before it. Known by the
+	-- token of that send (a.coTok, this game's own), else by the act's number and time; the last 8 are kept.
+	st.co.joined = type(st.co.joined) == "table" and st.co.joined or {}
+	st.co.joined[#st.co.joined + 1] = { k = a.coTok or (tostring(a.uid) .. "@" .. tostring(a.at)), id = c.id }
+	while #st.co.joined > 8 do table.remove(st.co.joined, 1) end
 	if recolor then pcall(SIM.coRecolor, st, c, false) end
 	installSimPlayer(st)
 end
@@ -2226,7 +2237,9 @@ local function handleEvent(userParams, state, src, id, name, param)
 			st.bind = st.bind or {}
 			st.bind[param.key] = param.e
 		elseif name == "co_apply" then
-			pcall(coApply, st, param)
+			-- (an error is told: the interface waits for this join's company until its time runs out, see pumpCompanies)
+			local okc, errc = pcall(coApply, st, param)
+			if not okc then log("companies: co_apply " .. tostring(param and param.fn) .. " failed: " .. tostring(errc)) end
 		elseif name == "broke" then
 			-- test (scenario broke): the savegame's company spends nearly all its money
 			local M = loanMods()
@@ -5381,20 +5394,55 @@ local function coCreate(b, c)
 	end)
 end
 
+-- The join is sent to the simulation, then this game waits until its copy of the registry shows the company the join gave (the
+-- simulation records it under this send's token, see coApply) and works from that company's number. It never decides in the
+-- frame that sends: G.co is read once per frame, before the join is applied. A client that applied two joins on two frames in
+-- a row found the player in its old company there (the registry before the join), took it as known and never created the
+-- player entity of the new company the host created: their money and loans differed, another resynchronisation followed.
+-- MPFEVER_COJOINSTALE=1: as before (the company matched by name and account in G.co, in the frame that sends too).
 local function pumpCompanies()
 	local b = G.coBusy
 	if not b then return end
 	local age = G.frames - b.frame
-	local c = G.co and CO.match(G.co, b.a.args.key, b.a.args.sid, b.a.args.host == true)
+	if os.getenv("MPFEVER_COJOINSTALE") == "1" then
+		local c = G.co and CO.match(G.co, b.a.args.key, b.a.args.sid, b.a.args.host == true)
+		if b.phase == "apply" then
+			if not b.sent then b.sent = true; toSim("co_apply", b.a) end
+			if c then
+				if c.ent then G.coBusy = nil
+				else b.phase = "create"; b.frame = G.frames; coCreate(b, c) end
+			elseif age > 240 then
+				log("companies: the registry did not take the player in"); G.coBusy = nil
+			end
+		elseif b.phase == "create" then
+			if c and c.ent then G.coBusy = nil
+			elseif age > 600 then log("companies: the new company was not created"); G.coBusy = nil end
+		end
+		return
+	end
 	if b.phase == "apply" then
-		if not b.sent then b.sent = true; toSim("co_apply", b.a) end
+		if not b.sent then
+			b.sent = true
+			-- (the token of this send: unique on this game, across loads too, as an act's number and time may come again after
+			-- a resynchronisation at the same game time)
+			b.tok = tostring(G.me) .. ":" .. G.frames .. ":" .. math.floor(os.clock() * 1000)
+			local a2 = {}
+			for k, v in pairs(b.a) do a2[k] = v end
+			a2.coTok = b.tok
+			toSim("co_apply", a2)
+			return
+		end
+		local j = nil
+		for _, x in ipairs((G.co and G.co.joined) or {}) do if x.k == b.tok then j = x end end
+		local c = j and CO.find(G.co, j.id)
 		if c then
 			if c.ent then G.coBusy = nil
-			else b.phase = "create"; b.frame = G.frames; coCreate(b, c) end
+			else b.id = c.id; b.phase = "create"; b.frame = G.frames; coCreate(b, c) end
 		elseif age > 240 then
 			log("companies: the registry did not take the player in"); G.coBusy = nil
 		end
 	elseif b.phase == "create" then
+		local c = G.co and CO.find(G.co, b.id)
 		if c and c.ent then G.coBusy = nil
 		elseif age > 600 then log("companies: the new company was not created"); G.coBusy = nil end
 	end
@@ -6060,7 +6108,21 @@ local function runPausedActions()
 	-- pause had its assignment skipped on the other games, which then all reloaded (issue #36). (At most 600 frames.)
 	local creating = G.pausedCreating ~= nil and G.frames - G.pausedCreating.frame < 600
 	if not creating then G.pausedCreating = nil end
+	-- A checkpoint waits while a player's join is under way here (G.coBusy) or due and still gathering in the native queue: its
+	-- hash reads this game's copy of the registry, which shows the join only once the simulation applied it and the interface
+	-- read it back. The first check after a resynchronisation was taken on one game before its registry showed the two joins and
+	-- on the other after: a false "companies" difference. The actions after it wait with it (they would change what it reads).
+	-- MPFEVER_COHASHWAIT=0: as before.
+	local joining = false
+	if os.getenv("MPFEVER_COHASHWAIT") ~= "0" then
+		joining = G.coBusy ~= nil
+		for _, q in ipairs(G.nativeQueue) do if q.fn == "mpfCoJoin" and q.at <= now then joining = true end end
+	end
 	for _, a in ipairs(G.pendingPaused) do
+		if a.kind == "hash" and joining and a.at <= now and not creating then
+			creating = true
+			if G.coHashWaitLogged ~= a.n then G.coHashWaitLogged = a.n; log("checkpoint " .. tostring(a.n) .. " waits for a company join under way here") end
+		end
 		if a.at <= now and not creating then
 			if a.at < now then log("paused action " .. tostring(a.uid) .. " for t=" .. tostring(a.at) .. " applied at " .. now .. " (desync risk)") end
 			if a.kind == "hash" then
@@ -9316,6 +9378,18 @@ H.coeco = function(from, p)
 		end,
 		function() local au = G.co.auction; return au and au.bidder == G.myCo end)
 	step("auction over", function() end, function() return G.co.auction == nil end)
+	-- MPFEVER_COECO_UNTIL=join or merge: the client stops once it is a member of company 1 again, right after its join or after
+	-- its merger, so that a resynchronisation chained after it (MPFEVER_SCENARIO=coeco,resync,cocheck) reloads a company 1 with
+	-- two members. On one PC (two games, one Steam account) that reload once gave the client a new company (see CO.join).
+	local stopAfter = ({ join = "join company 1", merge = "merge into company 1" })[os.getenv("MPFEVER_COECO_UNTIL") or ""]
+	if stopAfter then
+		for k, s in ipairs(steps) do
+			if s.what == stopAfter then
+				for j = #steps, k + 1, -1 do table.remove(steps, j) end
+				break
+			end
+		end
+	end
 	local i, since = 0, 0
 	local function nextStep()
 		i = i + 1
@@ -9341,6 +9415,48 @@ H.coeco = function(from, p)
 		G.waits[#G.waits + 1] = { at = G.frames + 30, fn = poll }
 	end
 	nextStep()
+end
+
+-- Companies after a reload (MPFEVER_SCENARIO=coeco,resync,cocheck with MPFEVER_COECO_UNTIL=join or merge, companies mode, the host
+-- with MPFEVER_COAUTO=1): each game waits until its joins are done (at most 30 s), then notes the company it plays, each
+-- company's members and chief, and the registry's signature (what the checks compare). With MPFEVER_COECO_UNTIL set, the client
+-- must still play company 1, with the host, and no company may have a member written twice.
+H.cocheck = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function note(t) AUTO.results[#AUTO.results + 1] = t; log("AUTOTEST " .. t) end
+	local since = G.frames
+	local function poll()
+		local pending = G.coBusy ~= nil
+		for _, q in ipairs(G.nativeQueue) do if q.fn == "mpfCoJoin" then pending = true end end
+		if (pending or not (G.co and G.myCo)) and G.frames - since < 1800 then
+			G.waits[#G.waits + 1] = { at = G.frames + 30, fn = poll }
+			return
+		end
+		if not (G.co and G.myCo) then note("cocheck: not in the companies mode"); return autoFinish() end
+		note(C.ROLE .. " plays company " .. tostring(G.myCo) .. (pending and " (a join still under way after 30 s)" or ""))
+		local twice = 0
+		for _, c in ipairs(G.co.list) do
+			local m, seen = {}, {}
+			for _, x in ipairs(CO.members(c)) do
+				local k = tostring(x.key)
+				m[#m + 1] = k
+				if seen[k] then twice = twice + 1 end
+				seen[k] = true
+			end
+			note("company " .. c.id .. " " .. tostring(c.gone or "playing") .. " members " .. table.concat(m, ",") .. " chief " .. tostring(CO.chief(c)))
+		end
+		note("registry " .. CO.signature(G.co))
+		note("members written twice: " .. twice .. (twice > 0 and " (WRONG)" or ""))
+		local stopAfter = os.getenv("MPFEVER_COECO_UNTIL")
+		if C.ROLE ~= "host" and (stopAfter == "join" or stopAfter == "merge") then
+			note("client still in company 1 after the reload: " .. (G.myCo == 1 and "yes" or ("NO (company " .. tostring(G.myCo) .. ")")))
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 300, fn = autoFinish }
+	end
+	G.waits[#G.waits + 1] = { at = G.frames + 30, fn = poll }
 end
 
 -- Bankruptcy scenario (MPFEVER_SCENARIO=cobroke, companies mode, MPFEVER_BANKRUPT=3 for the host's rule): the client's company
@@ -11484,6 +11600,8 @@ local function coGui(st)
 	-- which company is this game's: its interface and tools act as that company from now on
 	local reg = st.co
 	if reg then
+		-- (a Steam account shared by two games of one PC finds no company by itself, here as in the simulation: a player who
+		-- left a company where the other game's player still is plays none, and asks for a new one; see CO.sharedSid)
 		local c = CO.match(reg, G.coMyKey(), G.coMySid(), C.ROLE == "host")
 		-- (no company any more: this player left its company, or its company went bankrupt; it acts as nobody's until its new
 		-- one is there, see G.coEco)
