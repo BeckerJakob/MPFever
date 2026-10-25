@@ -2708,6 +2708,10 @@ local function handleEvent(userParams, state, src, id, name, param)
 			-- state megabytes heavy, and the engine copies the whole state at every state:get())
 			local upto = tonumber(param.n) or 0
 			for _, o in ipairs(st.out or {}) do if o.n <= upto then o.args = nil end end
+		elseif name == "teststall" then
+			-- (tests: the simulation thread stands still, no handshake meanwhile; see MPFEVER_TESTSTALL)
+			local t0 = os.clock()
+			while os.clock() - t0 < (tonumber(param.s) or 0) do end
 		elseif name == "solo" then
 			-- (in the state: the simulation's script runs in more than one Lua state. Cleared at every load, see resumeAfterLoad)
 			st.solo = param.on ~= false or nil
@@ -14469,7 +14473,8 @@ local function guiUpdate(userParams, state, guiState)
 			-- in a 10 s step, ran 11 and 15 steps, and the builds held there landed 4 to 8 steps late: reloads)
 			if G.stepTarget and now < G.stepTarget and G.frames - G.stepSince > 120 and G.frames - (G.clockMovedAt or 0) > 120 then
 				local S = G.stillS
-				local idle = S and S.usable and S.proven and (S.provenAt or -1) > G.stepSince
+				-- (MPFEVER_OLDSTEPGIVEUP=1, tests: given up after the 120 frames, as before 0.5.6)
+				local idle = os.getenv("MPFEVER_OLDSTEPGIVEUP") == "1" or (S and S.usable and S.proven and (S.provenAt or -1) > G.stepSince)
 				if idle or os.clock() - (G.stepSinceClock or 0) > 30 then
 					log("STEPS to " .. G.stepTarget .. " given up at t=" .. now .. " (" .. (idle and "the engine is idle since the request" or "30 s without the engine's answer") .. ") [frame " .. G.frames .. "]")
 					G.stepTarget = nil
@@ -14482,6 +14487,14 @@ local function guiUpdate(userParams, state, guiState)
 				if os.getenv("MPFEVER_STEPLOG") or #(G.nativeQueue or {}) > 0 or #(G.natWait or {}) > 0 then log("STEPS " .. G.wantSteps .. " from t=" .. now .. " to " .. G.stepTarget .. " (hold " .. tostring(G.holdAt) .. ", barrier " .. tostring(G.lastBarrier) .. ", pause " .. tostring(G.session.pauseAt) .. ") [frame " .. G.frames .. "]"
 					.. (G.stillS and (" [still: old rule " .. (G.stillOldRule() and "yes" or "no") .. ", new rule " .. ((G.stillS.usable and G.stillS.proven) and "yes" or (G.stillS.usable and "no" or "n/a")) .. ", " .. ((G.fastStill and G.stillS.usable) and "the earlier of the two decides" or "the old rule decides") .. "]") or "")) end
 				O.sendCommand(O.steps(G.wantSteps))
+				-- (tests, MPFEVER_TESTSTALL=<seconds>: the simulation stands that long inside these steps, as the friends' engine did for
+				-- 10 to 13 s, while another game's build is awaited; at most 3 times)
+				local stall = tonumber(os.getenv("MPFEVER_TESTSTALL") or "")
+				if stall and stall > 0 and (#(G.nativeQueue or {}) > 0 or #(G.natWait or {}) > 0) and (G.testStalls or 0) < 3 then
+					G.testStalls = (G.testStalls or 0) + 1
+					log("TESTSTALL " .. G.testStalls .. ": the simulation stands " .. stall .. " s inside the steps to " .. G.stepTarget)
+					toSim("teststall", { s = stall })
+				end
 			end
 		end
 		-- stamp distance = barrier window + overshoot reserve + 1. The engine runs the simulation on its own thread,

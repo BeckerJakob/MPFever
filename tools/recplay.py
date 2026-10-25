@@ -10,6 +10,8 @@ action as another player's (as a player who received it did), from a savegame of
 --end: the last event replayed (default: the end of the log). --run: seconds the games run after the last event.
 --save role@time: that game saves at that point of the replay (its autosave in the session).
 --speed n: the session's speeds replaced by n (the simulation does not depend on the speed; x4 replays faster).
+--running: the session was running (not paused) at --start, as in a savegame the replay made itself with --save; it starts
+running at the session's speed (or --speed), else paused as a session starts.
 """
 import argparse
 import re
@@ -53,12 +55,24 @@ def main():
     ap.add_argument("--save", action="append", default=[])
     ap.add_argument("--run", type=int, default=300)
     ap.add_argument("--speed", type=int, default=0)
+    ap.add_argument("--running", action="store_true")
     a = ap.parse_args()
     acts = acts_of(a.out)
     nexti = {k: 0 for k in acts}
     saves = sorted((s.split("@", 1)[1], s.split("@", 1)[0]) for s in a.save)
     ev = ["# recplay from " + a.launcher + " start " + a.start + " end " + a.end]
     st = {"paused": True, "speed": 1}
+    if a.running:
+        # (the session's speed at the start: its last speed line before it)
+        for line in open(a.launcher, encoding="utf-8", errors="replace"):
+            if line[:8] > a.start:
+                break
+            m = SPEED.match(line.rstrip("\n"))
+            if m:
+                st["speed"] = int(m.group(2))
+        st["speed"] = a.speed or st["speed"]
+        st["paused"] = False
+        ev.append("speed\t" + str(st["speed"]))
     pending = {}     # nat_pending of a running game, by (origin, build number), sent with its act
     group = []       # the acts of a running game stamped with one time, sent together
 
