@@ -927,6 +927,8 @@ namespace MPFever
         public volatile bool NoWait;
         /// <summary>The connection the watchdog cut (once).</summary>
         public TcpClient CutTcp;
+        /// <summary>The player came through Steam (its game's module tunnels it to the Relay): its Steam id.</summary>
+        public string SteamId;
     }
 
     /// <summary>Host side: accepts TCP clients and relays every message to everybody else.</summary>
@@ -946,6 +948,9 @@ namespace MPFever
         public event Action<Peer, double, int> Resumed;
         public Func<Peer, bool> MayWait;
         public double Grace = 60;
+        /// <summary>The secret the host's game module writes in the first line of every Steam tunnel it opens to this Relay
+        /// (SteamNet): a connection that says "steamtun" is let in only from this PC with it. Null: no Steam tunnel.</summary>
+        public string SteamSecret;
 
         /// <summary>Decides whether a player who says "join" may come in (a dedicated server checks its password, its
         /// version and the number of players): null lets it in, otherwise the payload of the "denied" message it receives
@@ -1081,6 +1086,12 @@ namespace MPFever
                 while ((m = r.Read()) != null)
                 {
                     Interlocked.Exchange(ref p.LastRecvTicks, DateTime.UtcNow.Ticks);
+                    if (m.Kind == "steamtun")
+                    {
+                        // a player through Steam: the host's own game module, which carries it (first line only)
+                        if (p.Admitted || p.SteamId != null || !SteamTunnel(p, m)) break;
+                        continue;
+                    }
                     if (m.Kind == "~ack") { p.Acks = true; long n = SessionLink.ReadN(m); if (n >= 0) p.Link?.Ack(n); continue; }
                     if (m.Kind.StartsWith("~", StringComparison.Ordinal)) continue;
                     if (m.Kind == "join")
@@ -1115,6 +1126,30 @@ namespace MPFever
             }
             catch (Exception e) { if (!stop && In(p)) Log.W($"{p.Name} : {e.Message}"); }
             Ended(p, tcp);
+        }
+
+        /// <summary>The first line of a Steam tunnel: from this PC (the host's game module dials the Relay), with the session's
+        /// secret; then the connection is that Steam player's (its join comes next). Anything else is closed.</summary>
+        bool SteamTunnel(Peer p, Msg m)
+        {
+            var t = SteamNet.TunnelLine(m);
+            bool local = false;
+            try { var ep = p.Tcp.Client.RemoteEndPoint as IPEndPoint; local = ep != null && (IPAddress.IsLoopback(ep.Address) || (ep.Address.IsIPv4MappedToIPv6 && IPAddress.IsLoopback(ep.Address.MapToIPv4()))); } catch { }
+            string k = t != null && t.TryGetValue("k", out var kv) ? kv as string : null;
+            string kind = t != null && t.TryGetValue("kind", out var kd) ? kd as string : null;
+            string who = m.From ?? "";
+            bool idOk = SteamNet.IsSteamId("steam:" + who, out _) || (who.StartsWith("ip:", StringComparison.Ordinal) && SteamNet.TestIpPort > 0);
+            var secret = SteamSecret;
+            if (!local || secret == null || k == null || k.Length != secret.Length || !idOk || kind != "main"
+                || !k.Select((c, i) => c == secret[i]).Aggregate(true, (a, b) => a & b))
+            {
+                Log.Warn(L.F("Connexion Steam refusée ({0})", "Steam connection refused ({0})", !local ? "not local" : secret == null ? "no secret" : !idOk ? "id" : kind != "main" ? "kind " + kind : "secret"));
+                return false;
+            }
+            p.SteamId = who;
+            p.Address = "steam:" + who + " (" + SteamNet.RouteText(t) + ")";
+            Log.Dim(L.F("Connexion entrante par Steam de {0} ({1})", "Incoming connection through Steam from {0} ({1})", who, SteamNet.RouteText(t)));
+            return true;
         }
 
         /// <summary>A connection ended. Its player is waited for when MayWait says so (Away), otherwise it leaves (Left);
@@ -1313,49 +1348,54 @@ namespace MPFever
         /// (a dedicated server only lets in its own).</summary>
         public void Connect(string host, int port, string name, string password = null, bool resume = false)
         {
-            var targets = new List<IPEndPoint>();
+            // "steam:<id>" entries: through the host's Steam (the game's module, SteamNet), tried at the same time as the
+            // addresses; a direct connection is taken when there is one (no rate limit), unless Steam was 1.5 s faster
+            var specs = (host ?? "").Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).ToList();
+            var steamIds = specs.Where(x => SteamNet.IsSteamId(x, out _)).Select(x => x.Substring(6)).Distinct().ToList();
+            var plain = string.Join(",", specs.Where(x => !x.StartsWith("steam:", StringComparison.OrdinalIgnoreCase)));
+            if (Environment.GetEnvironmentVariable("MPFEVER_JOINSTEAM") == "1" && steamIds.Count > 0) plain = "";   // (tests: Steam only)
             var errors = new List<string>();
-            foreach (var t in NetAddr.Parse(host, port))
+            string used = null;
+            bool trySteam = steamIds.Count > 0 && SteamDir != null && SteamNet.Enabled;
+            if (steamIds.Count > 0 && !trySteam) errors.Add("Steam : " + (SteamNet.Enabled ? L.T("pas de jeu pour s'y connecter", "no game to connect through") : L.T("désactivé", "turned off")));
+            if (!trySteam)
             {
-                if (IPAddress.TryParse(t.Key, out var ip)) { targets.Add(new IPEndPoint(ip, t.Value)); continue; }
-                try { foreach (var a in Dns.GetHostAddresses(t.Key)) targets.Add(new IPEndPoint(a, t.Value)); }
-                catch (Exception e) { errors.Add(NetAddr.Show(t.Key, t.Value) + " : " + e.Message); }
+                tcp = ConnectTcp(plain, port, errors, out used);
+                if (tcp == null) throw new IOException(errors.Count > 0 ? string.Join("  |  ", errors) : L.T("adresse vide", "empty address"));
             }
-            targets = targets.Where(e => e.AddressFamily == AddressFamily.InterNetworkV6).Concat(targets.Where(e => e.AddressFamily != AddressFamily.InterNetworkV6)).ToList();
-            IPEndPoint used = null;
-            bool noIPv6 = false;   // an IPv6 address failed because this PC has no IPv6
-            foreach (var ep in targets)
+            else
             {
-                TcpClient c = null;
-                try
+                var tcpErrors = new List<string>();
+                string tcpUsed = null, steamUsed = null, steamErr = null;
+                var tcpTask = plain.Length == 0 ? null : System.Threading.Tasks.Task.Run(() => ConnectTcp(plain, port, tcpErrors, out tcpUsed));
+                var steamTask = System.Threading.Tasks.Task.Run(() =>
                 {
-                    c = new TcpClient(ep.AddressFamily) { NoDelay = true };   // fails at once on a PC without IPv6
-                    var task = c.ConnectAsync(ep.Address, ep.Port);
-                    if (!task.Wait(TimeSpan.FromSeconds(targets.Count > 1 ? 8 : 20))) throw new TimeoutException(L.T("pas de réponse", "no answer"));
-                    tcp = c;
-                    NetAddr.KeepAlive(c);
-                    used = ep;
-                    break;
-                }
-                catch (Exception e)
+                    try { return ConnectSteam(steamIds[0], out steamUsed); }
+                    catch (Exception e) { steamErr = e.Message; return null; }
+                });
+                DateTime? steamAt = null;
+                while (true)
                 {
-                    try { c?.Close(); } catch { }
-                    var inner = e is AggregateException ae && ae.InnerException != null ? ae.InnerException : e;
-                    // no route to IPv6 or IPv6 turned off: this PC has no IPv6, not an error of the host. Its long Windows
-                    // message per address came first and hid the reason of the IPv4 attempt ("host unreachable" stays an
-                    // error of the host)
-                    if (ep.AddressFamily == AddressFamily.InterNetworkV6 && inner is SocketException se
-                        && (se.SocketErrorCode == SocketError.NetworkUnreachable || se.SocketErrorCode == SocketError.AddressFamilyNotSupported))
-                        noIPv6 = true;
-                    else
-                        errors.Add(NetAddr.Show(ep.Address.ToString(), ep.Port) + " : " + inner.Message);
+                    bool tcpDone = tcpTask == null || tcpTask.IsCompleted, steamDone = steamTask.IsCompleted;
+                    var tcpRes = tcpTask != null && tcpTask.IsCompleted ? tcpTask.Result : null;
+                    var steamRes = steamDone ? steamTask.Result : null;
+                    if (steamRes != null && steamAt == null) steamAt = DateTime.UtcNow;
+                    if (tcpRes != null) { tcp = tcpRes; used = tcpUsed; break; }
+                    if (steamRes != null && (tcpDone || (DateTime.UtcNow - steamAt.Value).TotalSeconds >= 1.5)) { tcp = steamRes; used = steamUsed; break; }
+                    if (tcpDone && steamDone) break;
+                    Thread.Sleep(50);
                 }
-            }
-            if (tcp == null)
-            {
-                // after the other errors, and kept: for a host only reachable over IPv6 it is the reason
-                if (noIPv6) errors.Add(L.T("IPv6 : indisponible sur ce PC", "IPv6: not available on this PC"));
-                throw new IOException(errors.Count > 0 ? string.Join("  |  ", errors) : L.T("adresse vide", "empty address"));
+                // (the other way goes, when it connects later too)
+                var won = tcp;
+                steamTask.ContinueWith(t => { if (t.Result != null && t.Result != won) { SteamCancel(); NetAddr.Cut(t.Result); } });
+                if (tcpTask != null) tcpTask.ContinueWith(t => { if (t.Result != null && t.Result != won) NetAddr.Cut(t.Result); });
+                if (tcp == null)
+                {
+                    errors.AddRange(tcpErrors);
+                    errors.Add("Steam : " + (steamErr ?? "?"));
+                    throw new IOException(string.Join("  |  ", errors));
+                }
+                if (!(steamTask.IsCompleted && steamTask.Result == tcp)) steamReader = null;
             }
             writer = new StreamWriter(tcp.GetStream(), new UTF8Encoding(false)) { NewLine = "\n", AutoFlush = true };
             // (back after a cut, with the link of a session the host let this player into: the host goes on with it if it
@@ -1371,14 +1411,116 @@ namespace MPFever
                 + (string.IsNullOrEmpty(password) ? "" : ",[\"pw\"]=" + LuaLit.Quote(password)) + claim + "}"));
             new Thread(ReadLoop) { IsBackground = true, Name = "Client read" }.Start();
             new Thread(LinkLoop) { IsBackground = true, Name = "Client link" }.Start();
-            Log.Ok(L.F("Client : connecté à {0}", "Client: connected to {0}", NetAddr.Show(used.Address.ToString(), used.Port)));
+            Log.Ok(L.F("Client : connecté à {0}", "Client: connected to {0}", used));
+        }
+
+        /// <summary>The first address of the list that answers (IPv6 first), or null with the errors.</summary>
+        static TcpClient ConnectTcp(string host, int port, List<string> errors, out string usedText)
+        {
+            usedText = null;
+            var targets = new List<IPEndPoint>();
+            foreach (var t in NetAddr.Parse(host, port))
+            {
+                if (IPAddress.TryParse(t.Key, out var ip)) { targets.Add(new IPEndPoint(ip, t.Value)); continue; }
+                try { foreach (var a in Dns.GetHostAddresses(t.Key)) targets.Add(new IPEndPoint(a, t.Value)); }
+                catch (Exception e) { errors.Add(NetAddr.Show(t.Key, t.Value) + " : " + e.Message); }
+            }
+            targets = targets.Where(e => e.AddressFamily == AddressFamily.InterNetworkV6).Concat(targets.Where(e => e.AddressFamily != AddressFamily.InterNetworkV6)).ToList();
+            bool noIPv6 = false;   // an IPv6 address failed because this PC has no IPv6
+            foreach (var ep in targets)
+            {
+                TcpClient c = null;
+                try
+                {
+                    c = new TcpClient(ep.AddressFamily) { NoDelay = true };   // fails at once on a PC without IPv6
+                    var task = c.ConnectAsync(ep.Address, ep.Port);
+                    if (!task.Wait(TimeSpan.FromSeconds(targets.Count > 1 ? 8 : 20))) throw new TimeoutException(L.T("pas de réponse", "no answer"));
+                    NetAddr.KeepAlive(c);
+                    usedText = NetAddr.Show(ep.Address.ToString(), ep.Port);
+                    return c;
+                }
+                catch (Exception e)
+                {
+                    try { c?.Close(); } catch { }
+                    var inner = e is AggregateException ae && ae.InnerException != null ? ae.InnerException : e;
+                    // no route to IPv6 or IPv6 turned off: this PC has no IPv6, not an error of the host. Its long Windows
+                    // message per address came first and hid the reason of the IPv4 attempt ("host unreachable" stays an
+                    // error of the host)
+                    if (ep.AddressFamily == AddressFamily.InterNetworkV6 && inner is SocketException se
+                        && (se.SocketErrorCode == SocketError.NetworkUnreachable || se.SocketErrorCode == SocketError.AddressFamilyNotSupported))
+                        noIPv6 = true;
+                    else
+                        errors.Add(NetAddr.Show(ep.Address.ToString(), ep.Port) + " : " + inner.Message);
+                }
+            }
+            // (after the other errors, and kept: for a host only reachable over IPv6 it is the reason)
+            if (noIPv6) errors.Add(L.T("IPv6 : indisponible sur ce PC", "IPv6: not available on this PC"));
+            return null;
+        }
+
+        /// <summary>The game whose module carries this player's Steam connection (its session folder), or null.</summary>
+        public string SteamDir;
+        NetReader steamReader;
+        string steamCid;
+        static int steamCids;
+
+        /// <summary>A connection to the host's Steam id through this PC's game: its module connects over Steam (P2P or Steam's
+        /// relays) and dials a one-shot loopback listener here, whose first line carries the nonce given to it.</summary>
+        TcpClient ConnectSteam(string sid, out string usedText)
+        {
+            usedText = null;
+            if (!SteamNet.WaitReady(SteamDir, 120, out _, out string why)) throw new IOException(why);
+            int ipPort = SteamNet.TestIpPort;
+            if (ipPort > 0) SteamNet.Cmd(SteamDir, "ipmode connect 127.0.0.1:" + ipPort);
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            try
+            {
+                int local = ((IPEndPoint)listener.LocalEndpoint).Port;
+                string nonce = SessionLink.NewToken();
+                string cid = "c" + Process.GetCurrentProcess().Id + "-" + Interlocked.Increment(ref steamCids);
+                steamCid = cid;
+                SteamNet.Cmd(SteamDir, "connect " + cid + " " + sid + " " + SteamNet.MainPort + " " + local + " " + nonce + " main");
+                var accept = listener.AcceptTcpClientAsync();
+                var end = DateTime.UtcNow.AddSeconds(45);
+                while (!accept.Wait(250))
+                {
+                    var t = SteamNet.Tunnel(SteamDir, cid);
+                    if (t != null && t.TryGetValue("state", out var state) && state == "closed")
+                        throw new IOException(L.F("Steam a refusé ou perdu la connexion ({0} {1})", "Steam refused or lost the connection ({0} {1})",
+                            t.TryGetValue("code", out var code) ? code : "?", t.TryGetValue("why", out var w) ? w : ""));
+                    if (DateTime.UtcNow > end) { SteamNet.Cmd(SteamDir, "close " + cid); throw new TimeoutException(L.T("pas de réponse par Steam", "no answer through Steam")); }
+                }
+                var c = accept.Result;
+                c.NoDelay = true;
+                var reader = new NetReader(c.GetStream());
+                var first = reader.Read();
+                var f = SteamNet.TunnelLine(first);
+                if (f == null || first.From != cid || !(f.TryGetValue("n", out var n) && n as string == nonce))
+                {
+                    NetAddr.Cut(c);
+                    throw new IOException(L.T("tunnel Steam inattendu", "unexpected Steam tunnel"));
+                }
+                steamReader = reader;
+                usedText = "steam:" + sid + " (" + SteamNet.RouteText(f) + ")";
+                return c;
+            }
+            finally { try { listener.Stop(); } catch { } }
+        }
+
+        /// <summary>The Steam connection of this client, given up (another way won, or the client is closed).</summary>
+        void SteamCancel()
+        {
+            var cid = steamCid;
+            if (cid != null && SteamDir != null) try { SteamNet.Cmd(SteamDir, "close " + cid); } catch { }
         }
 
         void ReadLoop()
         {
             try
             {
-                var r = new NetReader(tcp.GetStream());
+                // (through Steam, the reader that took the tunnel's first line goes on: it may hold what came after it)
+                var r = steamReader ?? new NetReader(tcp.GetStream());
                 Msg m;
                 while ((m = r.Read()) != null)
                 {
@@ -1487,6 +1629,111 @@ namespace MPFever
         }
 
         public void Dispose() { stop = true; NetAddr.Cut(tcp); }
+    }
+
+    /// <summary>MPFever's connections over Steam, carried by the game's own Steam (the native module, mpf_steamnet.cpp): no port to
+    /// open on a router. The module tunnels each Steam connection to a loopback TCP connection it dials itself, whose first line is
+    /// "steamtun": on the host, to the Relay's port with the session's secret; on a player's PC, to a one-shot listener of its
+    /// Client with a nonce. Commands are appended to steamnet_cmd.txt in the game's session folder; the module rewrites
+    /// steamnet_status.txt every 500 ms. MPFEVER_STEAMNET=0: no Steam connection (the module stays off too).
+    /// MPFEVER_STEAMNET_IP=&lt;port&gt; (tests on one PC, where both games are one Steam account): the same tunnels over UDP on
+    /// 127.0.0.1:&lt;port&gt; (Steam's own sockets, "ipmode").</summary>
+    static class SteamNet
+    {
+        public const int MainPort = 28090;
+        static long seq;
+        public static bool Enabled => Environment.GetEnvironmentVariable("MPFEVER_STEAMNET") != "0";
+        public static int TestIpPort => int.TryParse(Environment.GetEnvironmentVariable("MPFEVER_STEAMNET_IP"), out int p) && p > 0 && p < 65535 ? p : 0;
+
+        public static void Cmd(string dir, string line)
+        {
+            var path = Path.Combine(dir, "steamnet_cmd.txt");
+            var text = Environment.TickCount + "-" + Interlocked.Increment(ref seq) + "\t" + line + "\r\n";
+            var b = new UTF8Encoding(false).GetBytes(text);
+            using (var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)) fs.Write(b, 0, b.Length);
+        }
+
+        /// <summary>The module's status lines (the file is complete once its line "end=1" is read), or null.</summary>
+        public static List<string> Status(string dir)
+        {
+            try
+            {
+                var path = Path.Combine(dir, "steamnet_status.txt");
+                if (!File.Exists(path) || (DateTime.UtcNow - File.GetLastWriteTimeUtc(path)).TotalSeconds > 5) return null;
+                string text;
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (var r = new StreamReader(fs, Encoding.UTF8)) text = r.ReadToEnd();
+                var lines = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).ToList();
+                int end = lines.IndexOf("end=1");
+                return end < 0 ? null : lines.Take(end).ToList();
+            }
+            catch { return null; }
+        }
+
+        /// <summary>The fields of a status line ("a=1 b=2 ... why=text to the end of the line").</summary>
+        public static Dictionary<string, string> Fields(string line)
+        {
+            var d = new Dictionary<string, string>();
+            int w = line.IndexOf(" why=", StringComparison.Ordinal);
+            if (w >= 0) { d["why"] = line.Substring(w + 5); line = line.Substring(0, w); }
+            else if (line.StartsWith("why=", StringComparison.Ordinal)) { d["why"] = line.Substring(4); line = ""; }
+            foreach (var kv in line.Split(' '))
+            {
+                int e = kv.IndexOf('=');
+                if (e > 0) d[kv.Substring(0, e)] = kv.Substring(e + 1);
+            }
+            return d;
+        }
+
+        /// <summary>This game's Steam networking: ready (its Steam id), or not (why), within the seconds given.</summary>
+        public static bool WaitReady(string dir, double seconds, out string sid, out string why)
+        {
+            sid = null; why = L.T("le jeu ne répond pas (Steam pas encore prêt dans le jeu)", "the game does not answer (Steam not ready in the game yet)");
+            var end = DateTime.UtcNow.AddSeconds(seconds);
+            while (true)
+            {
+                var st = Status(dir);
+                if (st != null && st.Count > 0)
+                {
+                    var f = Fields(st[0]);
+                    if (f.TryGetValue("ready", out var rd))
+                    {
+                        if (rd == "1" && f.TryGetValue("sid", out sid) && sid.Length > 0) return true;
+                        if (rd == "-1") { why = f.TryGetValue("why", out var w) ? w : "off"; return false; }
+                    }
+                }
+                if (DateTime.UtcNow >= end) return false;
+                Thread.Sleep(250);
+            }
+        }
+
+        /// <summary>A tunnel's status line (t=&lt;id&gt;), or null.</summary>
+        public static Dictionary<string, string> Tunnel(string dir, string id)
+        {
+            var st = Status(dir);
+            var line = st?.FirstOrDefault(l => l.StartsWith("t=" + id + " ", StringComparison.Ordinal));
+            return line == null ? null : Fields(line);
+        }
+
+        /// <summary>A Steam id as a player gives it: "steam:7656119..." (an individual account of the public universe).</summary>
+        public static bool IsSteamId(string s, out ulong sid)
+        {
+            sid = 0;
+            if (s == null || !s.StartsWith("steam:", StringComparison.OrdinalIgnoreCase)) return false;
+            if (!ulong.TryParse(s.Substring(6), NumberStyles.None, CultureInfo.InvariantCulture, out sid)) return false;
+            return ((sid >> 52) & 0xF) == 1 && (sid >> 56) == 1;
+        }
+
+        /// <summary>The "steamtun" first line of a tunnel: its fields, or null.</summary>
+        public static Dictionary<object, object> TunnelLine(Msg m) => m != null && m.Kind == "steamtun" ? LuaLit.Parse(m.Payload) as Dictionary<object, object> : null;
+
+        /// <summary>"relay, 35 ms" for a tunnel's first line.</summary>
+        public static string RouteText(Dictionary<object, object> t)
+        {
+            string route = t.TryGetValue("route", out var r) ? Convert.ToString(r, CultureInfo.InvariantCulture) : "?";
+            string ping = t.TryGetValue("ping", out var p) ? Convert.ToString(p, CultureInfo.InvariantCulture) : "?";
+            return route + ", " + ping + " ms";
+        }
     }
 
     /// <summary>Host addresses as players type them: "1.2.3.4:28090", "[2a02:8071::1]:28090", "2a02:8071::1" (IPv6 without

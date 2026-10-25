@@ -148,6 +148,8 @@ namespace MPFever
         readonly List<GameLink> games = new List<GameLink>();
         readonly List<Client> clients = new List<Client>();
         string hostName;
+        /// <summary>The host's Steam id once its game's module carries Steam connections to the Relay (SteamNet), else null.</summary>
+        volatile string hostSteamId;
         GameLink hostGame;
         bool running;
         Action<GameLink, Msg> hostFromGame, clientFromGame;   // the session's handlers on the game's messages (removed at its end)
@@ -1349,7 +1351,10 @@ namespace MPFever
                     if (known) shown.Add(pub + ":" + port);
                     shown.AddRange(v6.Select(a => NetAddr.Show(a, port)));
                     lobbyPublic = shown.Count > 0 ? string.Join(", ", shown) : "?";
-                    steamConnect = "+mpfever_connect " + pub + ":" + port + string.Concat(v6.Select(a => "," + NetAddr.Show(a, port)));
+                    // (through Steam first: no port to open; the host's Steam id is known once its game's module is ready)
+                    for (int w = 0; w < 40 && hostSteamId == null && SteamNet.Enabled; w++) Thread.Sleep(250);
+                    var viaSteam = hostSteamId != null ? "steam:" + hostSteamId + "," : "";
+                    steamConnect = "+mpfever_connect " + viaSteam + pub + ":" + port + string.Concat(v6.Select(a => "," + NetAddr.Show(a, port)));
                     SteamCtl("presence", steamConnect);
                     Log.Ok(T("Steam : invitations possibles (", "Steam: invitations enabled (") + steamConnect + ")");
                     MenuStatus();
@@ -1592,6 +1597,9 @@ namespace MPFever
             foreach (var cl in gone) try { cl.Dispose(); } catch { }
             var r = relay; relay = null;
             if (r != null) { try { r.Dispose(); } catch { } PortMap.Close(); }
+            // (the host's game no longer takes Steam connections for this session)
+            if (hostGame != null && hostSteamId != null) try { SteamNet.Cmd(hostGame.Dir, "unhost"); } catch { }
+            hostSteamId = null;
             if (hostGame != null && hostFromGame != null) hostGame.FromGame -= hostFromGame;
             if (menuGame != null && clientFromGame != null) menuGame.FromGame -= clientFromGame;
             hostFromGame = clientFromGame = null;
@@ -1980,7 +1988,7 @@ namespace MPFever
                 lock (leftAt) leftAt.Remove(BaseName(p.Name));
                 relay.DropOlder(p);
                 relay.Send(p, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(p.Name) + ",[\"role\"]=\"client\",[\"v\"]=" + LuaLit.Quote(Version) + ",[\"run\"]=" + LuaLit.Quote(myRun) + ",[\"opts\"]=" + LuaLit.Quote(Options.SessionPayload()) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods)
-                    + ",[\"rtok\"]=" + LuaLit.Quote(p.Link?.Token ?? "") + "}"));
+                    + ",[\"rtok\"]=" + LuaLit.Quote(p.Link?.Token ?? "") + (hostSteamId != null ? ",[\"sid\"]=" + LuaLit.Quote(hostSteamId) : "") + "}"));
                 Msg[] history; lock (chatLog) history = chatLog.ToArray();
                 foreach (var c in history) relay.Send(p, c);   // the chat so far (a reconnecting player skips what it has)
                 HostChat("join", BaseName(p.Name), "");
@@ -2049,6 +2057,31 @@ namespace MPFever
                 OnHostMessage(m, null);
             };
             if (launch) hostGame.Launch(gameDir);
+            // players can come through Steam (no port to open): once the host's game's module is ready, it listens on Steam and
+            // tunnels each connection to the Relay with this session's secret
+            if (SteamNet.Enabled)
+            {
+                var steamGame = hostGame; var steamRelay = relay;
+                new Thread(() =>
+                {
+                    if (!SteamNet.WaitReady(steamGame.Dir, 600, out string sid, out string why))
+                    {
+                        Log.W(T("Steam : les joueurs ne peuvent pas se connecter par Steam (", "Steam: players cannot connect through Steam (") + why + ")");
+                        return;
+                    }
+                    if (relay != steamRelay) return;
+                    var secret = SessionLink.NewToken();
+                    steamRelay.SteamSecret = secret;
+                    try
+                    {
+                        SteamNet.Cmd(steamGame.Dir, "host " + listenPort + " " + secret);
+                        if (SteamNet.TestIpPort > 0) SteamNet.Cmd(steamGame.Dir, "ipmode listen 127.0.0.1:" + SteamNet.TestIpPort);
+                    }
+                    catch (Exception e) { Log.W("steamnet: " + e.Message); return; }
+                    hostSteamId = sid;
+                    Log.Ok(F("Steam : les joueurs peuvent rejoindre par Steam, sans port à ouvrir (steam:{0})", "Steam: players can join through Steam, with no port to open (steam:{0})", sid));
+                }) { IsBackground = true, Name = "Steam host" }.Start();
+            }
             int gen = sessionGen;
             new Thread(() => HostLoop(gen)) { IsBackground = true, Name = "Host loop" }.Start();
         }
@@ -2058,6 +2091,8 @@ namespace MPFever
             var game = existing ?? new GameLink(name, "client");
             if (!games.Contains(game)) games.Add(game);
             Client current = null;
+            string hostSid = null;   // the host's Steam id, from its welcome
+            string Targets() => hostSid == null || host.IndexOf("steam:", StringComparison.OrdinalIgnoreCase) >= 0 ? host : host + ",steam:" + hostSid;
             // this player's session messages with the host, across its connections: after a cut, the host goes on with them
             // if it still waits for this player (SessionLink)
             var link = new SessionLink();
@@ -2233,6 +2268,7 @@ namespace MPFever
                             if (!haveSent) Log.W(F("Réglages de la partie choisis par l'hôte : {0}", "Game settings chosen by the host: {0}", Options.Changed()));
                         }
                         if (w.TryGetValue("mods", out var mv0) && mv0 is string ms0) SetHostMods(ms0, client, name);
+                        if (w.TryGetValue("sid", out var sv) && sv is string ss && SteamNet.IsSteamId("steam:" + ss, out _)) hostSid = ss;
                         var run = w.TryGetValue("run", out var rv) && rv is string rs ? rs : "";
                         string have = "{[\"id\"]=0}";
                         lock (resyncParts)
@@ -2287,11 +2323,11 @@ namespace MPFever
                                 ClientStatus("lost", attempt);
                                 Thread.Sleep(claim && attempt <= 2 ? attempt * 1000 : 5000);
                                 if (clientCancelled || gen != sessionGen) return;
-                                var c = new Client(link);
+                                var c = new Client(link) { SteamDir = game.Dir };
                                 try
                                 {
                                     wire(c);
-                                    c.Connect(host, port, name, password, claim);
+                                    c.Connect(Targets(), port, name, password, claim);
                                     if (!AddUnlessLeft(c)) return;
                                     Log.Ok(F("[{0}] reconnecté à l'hôte", "[{0}] reconnected to the host", name));
                                     if (!claim) { menuPhase = "connected"; menuText = T("Reconnecté. L'hôte renvoie sa partie...", "Reconnected. The host sends its game again..."); MenuStatus(); }
@@ -2305,9 +2341,12 @@ namespace MPFever
                     }) { IsBackground = true, Name = "Reconnect" }.Start();
                 };
             };
-            var first = new Client(link);
+            var first = new Client(link) { SteamDir = game.Dir };
             wire(first);
             bool added;
+            // (through Steam, the game's module carries the connection: the game first)
+            bool launched = launch && host.IndexOf("steam:", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (launched) game.Launch(gameDir);
             Interlocked.Increment(ref clientJoins);
             try
             {
@@ -2335,7 +2374,7 @@ namespace MPFever
                     }
                 }
             }) { IsBackground = true, Name = "Chat" }.Start();
-            if (launch) game.Launch(gameDir);
+            if (launch && !launched) game.Launch(gameDir);
         }
 
         void StartLocalTest()
@@ -2346,6 +2385,17 @@ namespace MPFever
             t.Tick += (s, e) =>
             {
                 t.Stop();
+                // (tests: MPFEVER_LOCALSTEAM=1, the second game joins through the host's Steam, see SteamNet)
+                if (Environment.GetEnvironmentVariable("MPFEVER_LOCALSTEAM") == "1")
+                {
+                    new Thread(() =>
+                    {
+                        WaitUntil(() => hostSteamId != null, 600);
+                        try { StartClient("Client", "steam:" + (hostSteamId ?? "0"), (int)portBox.Value, true); }
+                        catch (Exception ex) { Log.Warn(T("Client local : ", "Local client: ") + ex.Message); }
+                    }) { IsBackground = true, Name = "Local client through Steam" }.Start();
+                    return;
+                }
                 try { StartClient("Client", "127.0.0.1", (int)portBox.Value, true); }
                 catch (Exception ex) { Log.Warn(T("Client local : ", "Local client: ") + ex.Message); }
             };
@@ -3667,12 +3717,15 @@ namespace MPFever
                         {
                             long at = long.Parse(p[1], CultureInfo.InvariantCulture);
                             // (a time the games already passed: they stop at the next time every game can still reach)
+                            // (as the session's own pauses: no closer than FutureStamp, the games run several steps between two
+                            // of their clocks at x4; a game already past the time cannot come back: no waiting then)
                             long ahead = FutureStamp();
-                            bool past = MaxClock() + 2 * Step >= at;
-                            if (past) at = Math.Max(at, ahead);
+                            bool past = at < ahead;
+                            if (past) at = ahead;
                             lock (sessionGate) pauseAt = at;
                             BroadcastSession();
-                            bool ok = WaitUntil(() => { lock (clocks) return clocks.Count >= 2 && clocks.Values.All(c => c.T == at); }, 300);
+                            bool ok = WaitUntil(() => { lock (clocks) return clocks.Count >= 2 && (clocks.Values.All(c => c.T == at) || clocks.Values.Any(c => c.T > at)); }, 300);
+                            lock (clocks) ok = ok && clocks.Values.All(c => c.T == at);
                             AutoLine("recplay: paused at " + at + (past ? " (asked " + p[1] + ", already passed)" : "") + (ok ? "" : " NOT REACHED (" + string.Join(",", clocks.Values.Select(c => c.T)) + ")"));
                             break;
                         }
