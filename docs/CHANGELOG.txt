@@ -2,6 +2,13 @@ MPFever - Changelog
 ===================
 
 0.5.3 - (in progress)
+  - NEW: a player whose connection drops for a moment (Wi-Fi, a router) comes back into the same game: the host waits for
+    them up to 60 s (every game stops where that player's game stopped, the others see « lost the connection: the game
+    waits for them »), and back in time they get every message they missed, in order, and the game goes on, with no
+    reload of the host's game. The host and each player number their messages and keep them until the other end has
+    them. After 60 s, or if a resynchronisation starts meanwhile, the player joins again as before.
+    MPFEVER_RESUME=0: as before; MPFEVER_RESUMEGRACE=<seconds>: another wait. A link silent for 15 s is cut (Windows took
+    20 to 45 s to notice a dead connection).
   - FIX (issue #83): the Mod Hub broken, or the game closing when it opened, on some PCs, even after MPFever was removed
     (its winhttp.dll stays in the game's folder). That file passed on only the 14 network functions the game itself uses;
     Windows' own module that fetches what an HTTPS certificate check needs (revocation lists, missing certificates)

@@ -1632,7 +1632,31 @@ local function update(userParams, state, dt)
 	SIM.evTick = (SIM.evTick or 0) + 1
 	if SIM.evTick % 50 == 1 then pcall(DET.wrapModEvents) end
 	-- (how many engine events this script receives, every one of them: see subscribeToAllEvents below)
-	if SIM.evTick % 3000 == 0 then log(string.format("events received: %.1f per update", (SIM.evN or 0) / 3000)); SIM.evN = 0 end
+	-- (and how big the state the engine walks at every state:get() is, by its largest parts)
+	if SIM.evTick % 3000 == 0 then
+		local sizes = {}
+		pcall(function()
+			local function count(t, seen)
+				if seen[t] then return 0 end
+				seen[t] = true
+				local n = 0
+				for _, v in pairs(t) do n = n + 1; if type(v) == "table" then n = n + count(v, seen) end end
+				return n
+			end
+			local st, seen, total = state:get() or {}, {}, 0
+			for k, v in pairs(st) do
+				local n = type(v) == "table" and count(v, seen) + 1 or 1
+				total = total + n
+				sizes[#sizes + 1] = { k = tostring(k), n = n }
+			end
+			table.sort(sizes, function(a, b) return a.n > b.n end)
+			for i = #sizes, 5, -1 do sizes[i] = nil end
+			for i, s in ipairs(sizes) do sizes[i] = s.k .. " " .. s.n end
+			table.insert(sizes, 1, total .. " entries")
+		end)
+		log(string.format("events received: %.1f per update; state: %s", (SIM.evN or 0) / 3000, table.concat(sizes, ", ")))
+		SIM.evN = 0
+	end
 	if not SIM.subscribed then
 		SIM.subscribed = true
 		pcall(function() state:subscribeToAllEvents() end)

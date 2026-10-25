@@ -925,6 +925,8 @@ namespace MPFever
         public volatile bool Acks;
         /// <summary>Its connection is closed on purpose (refused, kicked, replaced by a new join): it is not waited for.</summary>
         public volatile bool NoWait;
+        /// <summary>The connection the watchdog cut (once).</summary>
+        public TcpClient CutTcp;
     }
 
     /// <summary>Host side: accepts TCP clients and relays every message to everybody else.</summary>
@@ -1014,10 +1016,11 @@ namespace MPFever
                         told[q] = new KeyValuePair<long, DateTime>(rx, now);
                         TrySend(q, SessionLink.AckMsg(rx));
                     }
-                    if (q.Acks && (now.Ticks - Interlocked.Read(ref q.LastRecvTicks)) / TimeSpan.TicksPerSecond > 15)
+                    if (q.Acks && (now.Ticks - Interlocked.Read(ref q.LastRecvTicks)) / TimeSpan.TicksPerSecond > 15 && q.Tcp != null && q.Tcp != q.CutTcp)
                     {
                         Log.Warn(L.F("{0} : plus rien reçu depuis 15 s, connexion coupée", "{0}: nothing received for 15 s, connection cut", q.Name));
-                        try { q.Tcp?.Close(); } catch { }
+                        q.CutTcp = q.Tcp;
+                        NetAddr.Cut(q.Tcp);
                     }
                 }
                 foreach (var q in told.Keys.Where(q => !all.Contains(q)).ToList()) told.Remove(q);
@@ -1173,7 +1176,7 @@ namespace MPFever
                 old.Acks = conn.Acks;
                 Interlocked.Exchange(ref old.LastRecvTicks, DateTime.UtcNow.Ticks);
             }
-            if (prev != null && prev != old.Tcp) { try { prev.Close(); } catch { } }   // (a connection that still looked alive: taken over)
+            if (prev != null && prev != old.Tcp) NetAddr.Cut(prev);   // (a connection that still looked alive: taken over)
             return old;
         }
 
@@ -1238,7 +1241,7 @@ namespace MPFever
                 {
                     Log.Warn(L.F("{0} : ancienne connexion fermée (reconnexion)", "{0}: old connection closed (reconnection)", o.Name));
                     o.NoWait = true;
-                    try { o.Tcp?.Close(); } catch { }
+                    NetAddr.Cut(o.Tcp);
                 }
         }
 
@@ -1273,7 +1276,7 @@ namespace MPFever
         {
             stop = true;
             try { listener?.Stop(); } catch { }
-            lock (peers) foreach (var p in peers) try { p.Tcp.Close(); } catch { }
+            lock (peers) foreach (var p in peers) NetAddr.Cut(p.Tcp);
         }
     }
 
@@ -1454,12 +1457,13 @@ namespace MPFever
                 if (hostAcks && (now.Ticks - Interlocked.Read(ref lastRecvTicks)) / TimeSpan.TicksPerSecond > 15)
                 {
                     Log.Warn(L.T("Client : plus rien reçu de l'hôte depuis 15 s, connexion coupée", "Client: nothing received from the host for 15 s, connection cut"));
-                    try { tcp?.Close(); } catch { }
+                    NetAddr.Cut(tcp);
+                    break;
                 }
                 if (cut > 0 && (now - start).TotalSeconds >= cut)
                 {
                     Log.Warn(L.F("Client : connexion coupée pour le test (MPFEVER_TEST_CUT={0})", "Client: connection cut for the test (MPFEVER_TEST_CUT={0})", cut));
-                    try { tcp?.Client?.Close(); } catch { }
+                    NetAddr.Cut(tcp);
                     start = DateTime.MaxValue;
                 }
             }
@@ -1482,13 +1486,24 @@ namespace MPFever
             catch (Exception e) { Log.Warn(L.T("envoi vers l'hôte : ", "sending to the host: ") + e.Message); }
         }
 
-        public void Dispose() { stop = true; try { tcp?.Close(); } catch { } }
+        public void Dispose() { stop = true; NetAddr.Cut(tcp); }
     }
 
     /// <summary>Host addresses as players type them: "1.2.3.4:28090", "[2a02:8071::1]:28090", "2a02:8071::1" (IPv6 without
     /// port), "name:28090", several separated by commas.</summary>
     static class NetAddr
     {
+        /// <summary>Closes a connection so that its own reading thread ends at once and the other end sees it closed: a
+        /// TcpClient only closed left its blocked read waiting (2 minutes, until Windows' keepalive gave up, in the test of
+        /// 2026-10-25), and the other end was not told.</summary>
+        public static void Cut(TcpClient c)
+        {
+            if (c == null) return;
+            try { c.Client?.Shutdown(SocketShutdown.Both); } catch { }
+            try { c.Client?.Close(); } catch { }
+            try { c.Close(); } catch { }
+        }
+
         /// <summary>TCP keepalive after 15 s of silence, every 3 s: a connection that died without a word (a router, a lost
         /// Wi-Fi) is noticed within about half a minute instead of hours. Issue #60: the host kept a player's dead connection
         /// until the player came back on a new one.</summary>

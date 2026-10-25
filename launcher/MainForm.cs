@@ -2262,6 +2262,10 @@ namespace MPFever
                     // (nor when the session was left: a connection closed by AddUnlessLeft once the game had closed, say)
                     // (outside the main menu's sessions - the launcher's own window, the tests -: only to go on with the link)
                     bool resumable = CanResume();
+                    if (!resumable && SessionLink.Grace > 0)
+                        Log.W(F("[{0}] la session ne peut pas continuer après cette coupure (lien {1}, {2}, jeu {3})", "[{0}] the session cannot go on after this cut (link {1}, {2}, game {3})", name,
+                            string.IsNullOrEmpty(link.Token) ? T("sans nom", "unnamed") : T("nommé", "named"), link.Broken ? T("trop de messages en attente", "too many messages waiting") : "ok",
+                            game.InGame ? T("en partie", "in game") : T("pas en partie", "not in game")));
                     if (clientCancelled || gen != sessionGen || SessionLeft() || (!menuMode && !resumable)) return;
                     // (a host game half received is kept: back with the same host, only the rest is asked for; see "welcome")
                     // the connection dropped: try again for 5 minutes; back with the host, the session goes on if the host still
