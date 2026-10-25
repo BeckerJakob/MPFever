@@ -1204,7 +1204,8 @@ end
 -- has long been loaded by the game itself
 local function defaultWindowApi()
 	local ok, wapi = pcall(function()
-		local g = ug_require("/gui/main/game.tl")
+		local okG, g = pcall(ug_require, "::/gui/main/game.tl")
+		if not (okG and type(g) == "table") then g = ug_require("/gui/main/game.tl") end
 		local wc = g.game_react_globals.getDefaultWindowContainer()
 		if wc == nil or wc:hasExpired() then return nil end
 		return wc:get():getApi()
@@ -1804,7 +1805,7 @@ end
 
 -- The window opens by itself at the start of a session and again after each load of a resynchronisation, on the tab it showed.
 -- It stays closed when the player closed it in this session, unticked « Open MPFever when a game starts » (Settings tab), in the
--- autotests (MPFEVER_SCENARIO set, unless MPFEVER_SHOWWIN=1) and in a dedicated server's own game. MPFEVER_SHOWWIN=1 opens it
+-- autotests (MPFEVER_SCENARIO or MPFEVER_SAVE set, unless MPFEVER_SHOWWIN=1) and in a dedicated server's own game. MPFEVER_SHOWWIN=1 opens it
 -- in any case, on the tab MPFEVER_SHOWTAB names (screenshots). MPFEVER_AUTOOPEN=0: it opens only when asked, as before.
 U.autoOpenTick = function()
 	if U.autoOpenDone or not (U.SessionWindow and U.status) then return end
@@ -1815,7 +1816,7 @@ U.autoOpenTick = function()
 	local why = nil
 	if os.getenv("MPFEVER_SHOWWIN") ~= "1" then
 		if os.getenv("MPFEVER_AUTOOPEN") == "0" then why = "MPFEVER_AUTOOPEN=0"
-		elseif os.getenv("MPFEVER_SCENARIO") then why = "autotest"
+		elseif os.getenv("MPFEVER_SCENARIO") or os.getenv("MPFEVER_SAVE") then why = "autotest"
 		elseif C.SERVER then why = "a dedicated server's game"
 		elseif p.open == "0" then why = "closed by the player in this session"
 		elseif p.open == nil and p.autoopen == "0" then why = "the player's choice in the Settings tab" end
@@ -2391,7 +2392,10 @@ U.TABS.rules = function(K, st, ctx)
 			or T("Une gare peut avoir son propre réglage, dans sa fenêtre : il passe avant celui-ci.", "A station may have its own setting, in its window: it comes before this one."), W)
 		rows[#rows + 1] = K.row { K.btn(T("Appliquer à toutes mes gares", "Apply to all my stations"),
 			T("Retire le réglage propre de chacune de vos gares : toutes suivent celui-ci.", "Removes each of your stations' own setting: they all follow this one."), function()
-				U.coSend("co_stop_rule", { rule = sp.rule or "open", fee = spFee, reset = true })
+				-- (the choice just made in the rows above, before eco.txt shows it: else the old rule went with the reset)
+				local pend = U.rulePending and U.rulePending.stops
+				if pend and os.clock() - (pend.at or 0) > 10 then pend = nil end
+				U.coSend("co_stop_rule", { rule = (pend and pend.rule) or sp.rule or "open", fee = (pend and pend.amount) or spFee, reset = true })
 				U.winChanged()
 			end, false, own > 0 or eco.stops[my] == nil) }
 		local dp = eco.depotco[my] or { rule = "open", toll = 0 }
@@ -3036,7 +3040,12 @@ local function installSession(react, builtin)
 		local wapi = nil
 		pcall(function() wapi = commonParams.windowContainer:get():getApi() end)
 		local ok
-		if tab == "chat" and not U.newWindow then ok = openChat(wapi) else ok = U.openWindow(tab, wapi) end
+		if tab == "chat" and not U.newWindow then ok = openChat(wapi)
+		else
+			-- (the Chat card shows the chat, also when the window was reduced to its small card)
+			if tab == "chat" and U.compact then pcall(U.setCompact, false) end
+			ok = U.openWindow(tab, wapi)
+		end
 		if ok then pcall(commonParams.onClose) else log("session window not opened from the pause menu") end
 	end
 
@@ -3725,7 +3734,11 @@ do
 		-- happens, an empty one when the bar's extension point cannot be had, or the game would draw its bar with a missing
 		-- recipe. (The bar's module by the very name the game loads it with: the same module, its extension point once.)
 		local okW, gbw = false, nil
-		if os.getenv("MPFEVER_BARFAIL") ~= "reg" then okW, gbw = pcall(ug_require, "/gui/game_bar/game_bar_widgets.tl") end
+		-- ("::/" names the game's own file: a bare "/..." was looked for in this mod, "module not found", and the icon never showed)
+		if os.getenv("MPFEVER_BARFAIL") ~= "reg" then
+			okW, gbw = pcall(ug_require, "::/gui/game_bar/game_bar_widgets.tl")
+			if not (okW and type(gbw) == "table") then okW, gbw = pcall(ug_require, "/gui/game_bar/game_bar_widgets.tl") end
+		end
 		if okW and type(gbw) == "table" and gbw.GameBarInfoDisplayExtension then
 			local okG, recipe = pcall(react.RegisterPluginRecipe, gbw.GameBarInfoDisplayExtension, "MPFeverBar", function(...) return U.barFn(...) end)
 			if okG then M.MPFeverBar = recipe else log("bar: icon not registered: " .. tostring(recipe)) end
