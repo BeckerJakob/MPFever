@@ -16,11 +16,13 @@ if not exist out mkdir out
 lib /nologo /def:kernel32.def /out:out\kernel32.lib /machine:x64 || exit /b 1
 cl /nologo /c /WX /O2 /GS- /Zl /EHs-c- /GR- /std:c++17 mpfever_native.cpp /Fo:out\mpfever_native.obj || exit /b 1
 cl /nologo /c /WX /O2 /GS- /Zl /EHs-c- /GR- /std:c++17 winhttp_proxy.cpp /Fo:out\winhttp_proxy.obj || exit /b 1
+rem Steam networking: MPFever's connections carried by Steam inside the game (see mpf_steamnet.cpp)
+cl /nologo /c /WX /O2 /GS- /Zl /EHs-c- /GR- /std:c++17 mpf_steamnet.cpp /Fo:out\mpf_steamnet.obj || exit /b 1
 rem the mathematics every game computes alike (see mpf_math.cpp)
 cl /nologo /c /WX /O2 /GS- /Zl /EHs-c- /GR- /std:c++17 mpf_math.cpp /Fo:out\mpf_math.obj || exit /b 1
 ml64 /nologo /c /Fo out\mpf_math_asm.obj mpf_math_asm.asm || exit /b 1
 rem __chkstk, which recent toolsets call and the CRT would give (the module links without it)
 ml64 /nologo /c /Fo out\chkstk.obj chkstk.asm || exit /b 1
 rem the module takes the name winhttp.dll: the game loads it by itself from its folder
-link /nologo /WX /DLL /NODEFAULTLIB /ENTRY:DllMain /DEF:winhttp.def /OUT:out\winhttp.dll out\mpfever_native.obj out\winhttp_proxy.obj out\mpf_math.obj out\mpf_math_asm.obj out\chkstk.obj out\kernel32.lib || exit /b 1
+link /nologo /WX /DLL /NODEFAULTLIB /ENTRY:DllMain /DEF:winhttp.def /OUT:out\winhttp.dll out\mpfever_native.obj out\winhttp_proxy.obj out\mpf_steamnet.obj out\mpf_math.obj out\mpf_math_asm.obj out\chkstk.obj out\kernel32.lib || exit /b 1
 echo BUILD OK

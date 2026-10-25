@@ -2037,6 +2037,18 @@ static DWORD WINAPI ScanThread(void* arg)
     return 0;
 }
 
+// Steam networking (mpf_steamnet.cpp): one lock for every Steam call of the module, SteamThread's too, and none once the game
+// closes Steam (its SteamAPI_Shutdown import is pointed at MpfSteamShutdownHook, which waits for the lock)
+extern "C" bool MpfSteamEnter();
+extern "C" void MpfSteamLeave();
+extern "C" bool MpfSteamNetStart(HMODULE sa, u64 sid, void* friends);
+extern "C" void MpfSteamShutdownHook();
+extern "C" void MpfSteamNetSetShutdown(void* original);
+static void* PatchImport(uptr base, const char* dll, const char* fn, void* repl);
+// (for mpf_steamnet.cpp, a translation unit of its own: native.log and the session folder)
+extern "C" void MpfLogText(const char* text, int n) { Buf b; for (int i = 0; i < n && b.n < 1000; i++) b.s[b.n++] = text[i]; LogLine(b); }
+extern "C" void MpfSessionPath(char* out, const char* name) { PathOf(out, name); }
+
 static DWORD WINAPI SteamThread(void*)
 {
     HMODULE sa = 0;
@@ -2053,21 +2065,23 @@ static DWORD WINAPI SteamThread(void*)
     auto clearRp = (ClearRichPresenceF)GetProcAddress(sa, "SteamAPI_ISteamFriends_ClearRichPresence");
     auto invite = (InviteConnectF)GetProcAddress(sa, "SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialogConnectString");
     auto reg = (RegisterCallbackF)GetProcAddress(sa, "SteamAPI_RegisterCallback");
-    if (reg) reg(&g_joinCb, 337);
+    if (reg && MpfSteamEnter()) { reg(&g_joinCb, 337); MpfSteamLeave(); }
     { Buf b; b.str("steam: invitations ready").str(reg ? "" : " (no join callback)"); LogLine(b); }
     // the player's Steam account (steam_id.txt): the mod knows a player by it, whatever name the player types
+    u64 sid = 0;
     {
         typedef u64 (*GetSteamIdF)(void* self);
         auto getUser = (SteamIfaceF)GetProcAddress(sa, "SteamAPI_SteamUser_v023");
         auto getId = (GetSteamIdF)GetProcAddress(sa, "SteamAPI_ISteamUser_GetSteamID");
-        void* user = getUser ? getUser() : 0;
-        u64 sid = (user && getId) ? getId(user) : 0;
+        if (MpfSteamEnter()) { void* user = getUser ? getUser() : 0; sid = (user && getId) ? getId(user) : 0; MpfSteamLeave(); }
         if (sid) {
             Buf b; b.dec(sid).str("\n");
             WriteSessionFile("steam_id.txt", b.s, b.n);
         }
         Buf l; l.str("steam: account ").str(sid ? "known" : "unknown"); LogLine(l);
     }
+    // MPFever's connections over Steam (mpf_steamnet.cpp), then the game's SteamAPI_Shutdown made to wait for them
+    if (MpfSteamNetStart(sa, sid, friends)) MpfSteamNetSetShutdown(PatchImport(g_base, "steam_api64.dll", "SteamAPI_Shutdown", (void*)&MpfSteamShutdownHook));
     char last[64] = {};
     static char buf[1024];
     for (;;) {
@@ -2094,9 +2108,11 @@ static DWORD WINAPI SteamThread(void*)
         char* arg = cmd[c] ? cmd + c + 1 : cmd + c;
         cmd[c] = 0;
         Buf l; l.str("steam: ").str(cmd).str(" ").str(arg); LogLine(l);
+        if (!MpfSteamEnter()) continue;   // (the game closes Steam)
         if (!memcmp(cmd, "presence", 9) && setRp) { setRp(friends, "connect", arg); setRp(friends, "status", "MPFever"); }
         else if (!memcmp(cmd, "invite", 7) && invite) invite(friends, arg);
         else if (!memcmp(cmd, "clear", 6) && clearRp) clearRp(friends);
+        MpfSteamLeave();
     }
 }
 

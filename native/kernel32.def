@@ -36,3 +36,9 @@ RaiseException
 DeleteFileA
 GetLastError
 SetLastError
+AcquireSRWLockExclusive
+ReleaseSRWLockExclusive
+TryAcquireSRWLockExclusive
+GetTickCount64
+SetEndOfFile
+GetCurrentProcessId
