@@ -1,7 +1,7 @@
 MPFever - Changelog
 ===================
 
-0.5.3 - (in progress)
+0.5.3 - towns stay in sync, a much faster simulation, joining through Steam with no port to open, short drops without a reload
   - NEW: join through Steam, with no port to open on the router: the host's game listens on Steam (Steam's own peer to
     peer connections and its relays), and an invitation or « Join game » in the Steam friends list gives the host's Steam
     account first, then its addresses as before. A player's MPFever tries both at the same time and keeps a direct
