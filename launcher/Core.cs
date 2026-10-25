@@ -580,6 +580,9 @@ namespace MPFever
             if (Options.Disabled) return;
             try { lock (writeGate) File.WriteAllText(Path.Combine(Dir, "settings.txt"), Options.ModFile(), Utf8); }
             catch (Exception e) { Log.W("settings.txt: " + e.Message); }
+            // (their names in this player's language, for the Settings tab of the in-game MPFever window)
+            try { lock (writeGate) File.WriteAllText(Path.Combine(Dir, "settings_info.txt"), Options.InfoFile(), Utf8); }
+            catch (Exception e) { Log.W("settings_info.txt: " + e.Message); }
         }
 
         /// <summary>The texts of the current language for the mod (lang.txt, read by its Lua code).</summary>

@@ -10108,6 +10108,40 @@ H.wait = function(from, p)
 	end }
 end
 
+-- Window scenario (MPFEVER_SCENARIO=wintabs, each game in its turn): MPFever's window shows each of its tabs in turn, Session,
+-- Chat, Company, Rules, Settings, MPFEVER_WINTABSECONDS each (10 by default), asked to the interface through ui_tab_req.txt
+-- (the interface opens the window on that tab, see U.pollTabReq); the interface says which tab it drew and whether the tab
+-- failed (ui_tab_shown.txt). For the screenshots of the test campaign ("AUTOTEST wintabs: <tab> drawn" in mod.log, the
+-- tab on screen from then until the next one is asked) and to check that no tab fails to draw. With one company for everybody
+-- the interface shows Session for Company and Rules (those tabs do not exist there): the results say so.
+H.wintabs = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local tabs = { "session", "chat", "company", "rules", "settings" }
+	local frames = math.max(3, tonumber(os.getenv("MPFEVER_WINTABSECONDS") or "") or 10) * 60
+	local function ask(i)
+		if i > #tabs then return autoFinish() end
+		local f = C.IO.open(C.DIR .. BS .. "ui_tab_req.txt", "wb")
+		if f then f:write(tabs[i] .. TAB .. i .. NL); f:close() end
+		log("AUTOTEST wintabs: " .. tabs[i] .. " asked")
+		G.waits[#G.waits + 1] = { at = G.frames + math.floor(frames / 3), fn = function()
+			local s = ""
+			local fr = C.IO.open(C.DIR .. BS .. "ui_tab_shown.txt", "rb")
+			if fr then s = fr:read("*a") or ""; fr:close() end
+			local seq, asked, shown, result, rows = s:match("^(%d+)" .. TAB .. "([^" .. TAB .. "]*)" .. TAB .. "([^" .. TAB .. "]*)" .. TAB .. "([^" .. TAB .. "]*)" .. TAB .. "(%d+)")
+			local line
+			if tonumber(seq) ~= i then line = "wintabs: " .. tabs[i] .. " NOT DRAWN (no answer from the interface)"
+			else line = "wintabs: " .. tabs[i] .. " drawn as " .. tostring(shown) .. ", " .. tostring(result) .. ", " .. tostring(rows) .. " rows" end
+			AUTO.results[#AUTO.results + 1] = line
+			log("AUTOTEST " .. line)
+			G.waits[#G.waits + 1] = { at = G.frames + frames - math.floor(frames / 3), fn = function() ask(i + 1) end }
+		end }
+	end
+	ask(1)
+end
+
 H.contract = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
 	local ok, err = pcall(runContract, p)

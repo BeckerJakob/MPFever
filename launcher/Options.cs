@@ -133,6 +133,22 @@ namespace MPFever
             return string.Join("\n", lines) + "\n";
         }
 
+        /// <summary>settings_info.txt for the in-game MPFever window (its Settings tab, read only): every setting of the mod with
+        /// its name in this player's language, its kind and whether it is on, one per line "KEY TAB name TAB session|own|expert
+        /// TAB 1|0" (a session setting as the host chose it, once received).</summary>
+        public static string InfoFile()
+        {
+            var lines = new List<string>();
+            foreach (var o in All.Where(x => !x.Launcher))
+            {
+                bool on = IsOn(o);
+                if (o.Session && HostSession != null && HostSession.TryGetValue(o.Key, out var hv)) on = hv == o.OnValue;
+                string name = (o.Name?.Invoke() ?? o.Key).Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ');
+                lines.Add(o.Key + "\t" + name + "\t" + (o.Expert ? "expert" : o.Session ? "session" : "own") + "\t" + (on ? "1" : "0"));
+            }
+            return string.Join("\n", lines) + "\n";
+        }
+
         /// <summary>For problem reports: the settings that are not at their default ("none" else).</summary>
         public static string Changed()
         {

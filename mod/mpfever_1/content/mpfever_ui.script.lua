@@ -243,7 +243,8 @@ U.pollEco = function()
 	f:close()
 	if txt == U.ecoTxt then return end
 	U.ecoTxt = txt
-	local e = { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {} }
+	-- (stops, depotco: each company's rule for its stops and stations, and for its depots, shown in the window's Rules tab)
+	local e = { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {}, stops = {}, depotco = {} }
 	local TAB = C.TAB
 	for line in txt:gmatch("[^" .. C.NL .. "]+") do
 		local f1 = {}
@@ -263,9 +264,12 @@ U.pollEco = function()
 			e.auction = { seq = tonumber(f1[2]), co = tonumber(f1[3]), idx = tonumber(f1[4]), n = tonumber(f1[5]), kind = f1[6], label = f1[7],
 				reserve = tonumber(f1[8]) or 0, best = tonumber(f1[9]) or 0, bidder = tonumber(f1[10]) or 0, left = tonumber(f1[11]) or 0, min = tonumber(f1[12]) or 0 }
 		elseif k == "depot" then e.depots[f1[2]] = { rule = f1[3], toll = tonumber(f1[4]) or 0, co = tonumber(f1[5]) }
+		elseif k == "stops" then e.stops[tonumber(f1[2])] = { rule = f1[3], fee = tonumber(f1[4]) or 0, own = tonumber(f1[5]) or 0 }
+		elseif k == "depotco" then e.depotco[tonumber(f1[2])] = { rule = f1[3], toll = tonumber(f1[4]) or 0 }
 		end
 	end
 	U.eco = e
+	U.ecoVersion = (U.ecoVersion or 0) + 1
 end
 
 -- The companies' rules for their stations and depots (0.5.2: the "stops", "depotco" and "gone" lines of eco.txt, see the bridge's
@@ -893,8 +897,9 @@ end
 
 -- ---------------------------------------------------------------- the session: players, their link, the sync state
 -- MPFever.exe writes mp_status.txt every second (the host's view, relayed to every player): "key=value" lines and one
--- "p=id TAB name TAB state TAB lag TAB role" line per player. It is shown in MPFever's own window, opened from a card that
--- MPFever puts in the game's pause menu (no button in the game's HUD).
+-- "p=id TAB name TAB state TAB lag TAB role" line per player. It is shown in MPFever's own window, opened from MPFever's icon
+-- in the game's bottom bar (coloured by the session's state, see U.barState) or from a card that MPFever puts in the game's
+-- pause menu.
 
 local function pollStatus()
 	local now = os.clock()
@@ -998,23 +1003,49 @@ local function linkLine(st)
 	return nil
 end
 
--- the host asks MPFever.exe to send Steam invitations (as the main menu's MPFever window does)
-local function requestInvite()
+-- The colour of MPFever's icon in the bottom bar, with its one-line state for the tooltip: grey while there is no session yet,
+-- red for a problem (link to the host lost or refused, MPFever.exe silent, games out of sync, a player not responding), yellow
+-- while a resynchronisation is under way, the games drift slightly, or a player loads the host's game or joins, green
+-- otherwise. A player a few steps behind ("slow") only shows in the tooltip: a guest's game is often a little behind, and the
+-- icon must not blink for it.
+U.barState = function(st)
+	local link = linkLine(st)
+	if not st then return "grey", link end
+	if st.conn == "lost" or st.conn == "gone" or st.conn == "denied" or statusStale(st) then return "red", link end
+	if st.started ~= "1" then return "grey", T("La partie n'a pas encore commencé.", "The game has not started yet.") end
+	local sync = syncLine(st)
+	if st.sync == "desync" then return "red", sync end
+	local busy = nil
+	for _, pl in ipairs(st.players or {}) do
+		if pl.role ~= "server" and pl.state == "noresp" then return "red", (playerLine(pl, st.me)) end
+		if pl.role ~= "server" and not busy and (pl.state == "loading" or pl.state == "joining") then busy = pl end
+	end
+	if st.sync == "resync" or st.sync == "drift" then return "yellow", sync end
+	if busy then return "yellow", (playerLine(busy, st.me)) end
+	return "green", sync
+end
+
+-- A request to MPFever.exe, as the main menu's MPFever window sends them (menu_req.txt: "id TAB command TAB argument TAB name
+-- TAB"; the launcher acts on a new id, see OnMenuRequest)
+U.menuRequest = function(cmd, arg)
 	U.reqSeq = (U.reqSeq or 0) + 1
 	local f = C.IO.open(C.DIR .. C.BS .. "menu_req.txt", "wb")
-	if not f then log("session: cannot write menu_req.txt") return end
-	f:write(tostring(os.time()) .. ".ui" .. U.reqSeq .. C.TAB .. "invite" .. C.TAB .. C.TAB .. (C.NAME or "") .. C.TAB .. C.NL)
+	if not f then log("session: cannot write menu_req.txt") return false end
+	f:write(tostring(os.time()) .. ".ui" .. U.reqSeq .. C.TAB .. cmd .. C.TAB .. tostring(arg or "") .. C.TAB .. (C.NAME or "") .. C.TAB .. C.NL)
 	f:close()
+	log("session: " .. cmd .. " " .. tostring(arg or "") .. " asked to MPFever.exe")
+	return true
+end
+
+-- the host asks MPFever.exe to send Steam invitations (as the main menu's MPFever window does)
+local function requestInvite()
+	U.menuRequest("invite")
 end
 
 -- "Report a problem": MPFever.exe puts the logs into a zip and opens a new GitHub issue (see Reporter.cs); it says where
 -- the zip is in report.txt, shown under the button
 local function requestReport()
-	U.reqSeq = (U.reqSeq or 0) + 1
-	local f = C.IO.open(C.DIR .. C.BS .. "menu_req.txt", "wb")
-	if not f then log("session: cannot write menu_req.txt") return end
-	f:write(tostring(os.time()) .. ".ui" .. U.reqSeq .. C.TAB .. "report" .. C.TAB .. C.TAB .. (C.NAME or "") .. C.TAB .. C.NL)
-	f:close()
+	if not U.menuRequest("report") then return end
 	U.reportAsked = os.time()
 	U.reportMsg = T("Rapport en préparation…", "Preparing the report…")
 	U.statusVersion = (U.statusVersion or 0) + 1
@@ -1182,8 +1213,58 @@ local function defaultWindowApi()
 	return nil
 end
 
+-- companies mode: the companies of the session, best first (money, then number), each { ent, id, name, bal, lines, veh, rank }
+-- (gone ones left out), and this player's company's money (nil when unknown)
+U.companyList = function(eco)
+	local list = {}
+	-- (a company's entity is read only once it has been known for a few seconds and still exists: the engine asserts, and the
+	-- game closes, when the interface reads the account of a player entity the simulation is still adding, or of one gone with
+	-- the previous game)
+	U.coSeenAt = U.coSeenAt or {}
+	local now = os.clock()
+	for ent, id in pairs(U.coMap or {}) do
+		if not eco.gone[id] then
+			U.coSeenAt[ent] = U.coSeenAt[ent] or now
+			local settled = now - U.coSeenAt[ent] >= 5
+			if settled then
+				local okE, ex = pcall(api.engine.entityExists, ent)
+				settled = okE and ex == true
+			end
+			local bal = nil
+			local nLines, nVeh = 0, 0
+			if settled then
+				pcall(function() bal = api.engine.util.finance.getPlayersBalance(ent) end)
+				pcall(function() nLines = #api.engine.system.lineSystem.getLinesForPlayer(ent) end)
+				pcall(function() nVeh = #api.engine.system.transportVehicleSystem.getVehiclesForPlayer(ent) end)
+			end
+			local rank = U.ranks and U.ranks[id] and U.ranks[id].level or nil
+			list[#list + 1] = { ent = ent, id = id, name = companyName(ent), bal = bal or 0, lines = nLines, veh = nVeh, rank = rank }
+		end
+	end
+	table.sort(list, function(a, b) if a.bal ~= b.bal then return a.bal > b.bal end return a.id < b.id end)
+	local myBal = nil
+	for _, c in ipairs(list) do if c.id == U.myCo then myBal = c.bal end end
+	return list, myBal
+end
+
+-- an empty view of eco.txt, before the bridge has written it
+U.ECO_EMPTY = function()
+	return { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {}, stops = {}, depotco = {} }
+end
+
+-- mpfever_co.lua (palette, colours), loaded once
+U.coLib = function()
+	if U.coModule == nil then
+		local ok, m = pcall(ug_require, "mpfever_co.lua")
+		if not ok then ok, m = pcall(ug_require, "mpfever_1::/mpfever_co.lua") end
+		U.coModule = (ok and type(m) == "table") and m or false
+	end
+	return U.coModule
+end
+
 -- companies mode: the companies of the session in the MPFever window, best first (money, rank, lines, vehicles), with a gift of
 -- money to another company (event "give", applied by every game at the same step: see the bridge's handleEvent)
+-- (the single-list window of MPFEVER_NEWWINDOW=0, as before the tabs; the tabbed window uses U.TABS.company and U.TABS.rules)
 U.companyRows = function(ui)
 	local list = {}
 	-- (a company's entity is read only once it has been known for a few seconds and still exists: the engine asserts, and the
@@ -1435,14 +1516,34 @@ U.companyRows = function(ui)
 	return out
 end
 
-local function installSession(react, builtin)
-	if U.sessionInstalled then return end
-	U.sessionInstalled = true
-	local V, H = builtin.type.Orientation.Vertical, builtin.type.Orientation.Horizontal
-	local function text(t, class, cls)
-		return builtin.TextView { meta = { class = (class or "font-scale-body") .. (cls and (", " .. cls) or "") }, text = t }
-	end
+-- ---------------------------------------------------------------- MPFever's window (tabs) and its icon in the bottom bar
+-- One window of fixed width with five tabs: Session (link, sync, speed, players), Chat, Company and Rules (one company per
+-- player only: nothing about companies shows when everybody plays one company), Settings. Nothing may go out of the window:
+-- every text gets a width (the game wraps it there), a sentence never shares a row with buttons, long lists are combo boxes or
+-- rows of six, and the long tabs scroll. It opens by itself at the start of a session and again after each load of a
+-- resynchronisation, on the tab it showed. MPFEVER_NEWWINDOW=0: the single-list window of before (no tabs).
 
+-- The drawing helpers, made once per interface from the game's builtin module (the bar's icon draws before the window exists)
+U.makeKit = function(builtin)
+	local K = { builtin = builtin }
+	K.V, K.H = builtin.type.Orientation.Vertical, builtin.type.Orientation.Horizontal
+	-- the window's measures: the content of the scroll area leaves room for its vertical bar; a card's padding is inside it
+	K.WIN_W, K.BODY_H, K.INNER_W, K.TEXT_W = 600, 440, 572, 556
+	K.CARD_W, K.CARD_TEXT_W = 548, 524
+	K.ICON_PLAYERS = "::/gui/statistics/icons/symbol_person_multiple.tga"
+	K.ICON_SYNC = "::/gui/menu/icons/symbol_arrows_refresh.tga"
+	K.ICON_PERSON = "::/gui/entity_window/icons/symbol_person.tga"
+	-- the game has no chat icon: MPFever brings its own (48 x 48 grey levels, like the game's icons)
+	K.ICON_CHAT = "mpfever_1::/mpfever_chat.tga"
+	K.ICON_MONEY = "::/gui/menu/icons/earnings.tga"
+	K.ICON_COLOR = "::/gui/entity_window/icons/symbol_paintbucket.tga"
+	K.ICON_TRACKS = "::/gui/game_bar/icons/infrastructure_tracks_30.tga"
+	K.ICON_STATIONS = "::/gui/entity_window/icons/building_stations.tga"
+	K.ICON_DEPOTS = "::/gui/entity_window/icons/building_depot_arrow.tga"
+	K.ICON_SETTINGS = "::/gui/menu/icons/settings.tga"
+	K.ICON_ALERT = "::/gui/menu/icons/alert.tga"
+	K.ICON_SPEED = "::/gui/game_bar/icons/playback_play.tga"
+	K.DISC = "::/gui/line_vehicle_mgmt/icons/line_surface.tga"
 	-- the game's own colours (default_colors.gres), with fallbacks when they cannot be read
 	local FALLBACK = {
 		Ok = { 0.42, 0.82, 0.45, 1 }, Warning = { 1, 0.76, 0.25, 1 }, Error = { 1, 0.38, 0.33, 1 }, Info = { 0.45, 0.72, 1, 1 },
@@ -1452,7 +1553,7 @@ local function installSession(react, builtin)
 	local CLASS_COLOR = { success = "Ok", warning = "Warning", error = "Error", info = "Info", negative = "Negative" }
 	-- (the .gres colours are plain tables { r, g, b, a }: a style wants a Vec4f; alpha replaces the colour's own)
 	local colorCache = {}
-	local function color(name, alpha)
+	function K.color(name, alpha)
 		local key = name .. "/" .. tostring(alpha)
 		if colorCache[key] ~= nil then return colorCache[key] or nil end
 		local okR, raw = pcall(function()
@@ -1468,42 +1569,1206 @@ local function installSession(react, builtin)
 		colorCache[key] = c or false
 		return c
 	end
-	local function classColor(cls) return color(CLASS_COLOR[cls or ""] or "NeutralLightest") end
-	-- an inline style (meta.styleSheet, as the game's own windows use it); nil when the API refuses
-	local function style(t)
-		local ok, st = pcall(function()
-			local st = api.gui.StyleSheet.new()
-			if t.color then st.color = t.color end
-			if t.bg then st.backgroundColor1 = t.bg end
-			if t.size then st.size = api.type.Vec2f.new(t.size[1], t.size[2]) end
-			if t.image then
+	function K.classColor(cls) return K.color(CLASS_COLOR[cls or ""] or "NeutralLightest") end
+	-- an inline style (meta.styleSheet, as the game's own windows use it): one property at a time, a value the interface refuses
+	-- only loses that property; nil when there is no style sheet at all
+	function K.style(t)
+		local okS, st = pcall(function() return api.gui.StyleSheet.new() end)
+		if not (okS and st) then return nil end
+		if t.color then pcall(function() st.color = t.color end) end
+		if t.bg then pcall(function() st.backgroundColor1 = t.bg end) end
+		if t.background then pcall(function() st.backgroundColor = api.type.Vec4f.new(t.background[1], t.background[2], t.background[3], t.background[4]) end) end
+		if t.size then pcall(function() st.size = api.type.Vec2f.new(t.size[1], t.size[2]) end) end
+		if t.padding then pcall(function() st.padding = api.type.Vec4f.new(t.padding[1], t.padding[2], t.padding[3], t.padding[4]) end) end
+		if t.image then
+			pcall(function()
 				local n = api.gui.NinePatch.new()
 				n.fileName = t.image
 				if t.nine then n.horizontal = t.nine; n.vertical = t.nine end
 				st.backgroundImage1 = n
+			end)
+		end
+		return st
+	end
+	-- a text; with a width (a whole number: the interface refuses another), the game wraps it there
+	function K.text(t, class, cls, width)
+		return builtin.TextView { meta = { class = (class or "font-scale-body") .. (cls and (", " .. cls) or "") }, text = tostring(t or ""),
+			width = width and math.floor(width) or nil }
+	end
+	-- (the window draws again every second: the style sheets used over and over are made once, one style sheet can serve many
+	-- nodes, as the map icons' colour squares do)
+	local styleCache = {}
+	local function cached(key, make)
+		local st = styleCache[key]
+		if st == nil then st = make() or false; styleCache[key] = st end
+		return st or nil
+	end
+	function K.muted(t, width)
+		return builtin.TextView { meta = { class = "font-scale-body", styleSheet = cached("muted", function() return K.style { color = K.color("NeutralLight") } end) },
+			text = tostring(t or ""), width = width and math.floor(width) or nil }
+	end
+	function K.colored(t, c, width, class)
+		return builtin.TextView { meta = { class = class or "font-scale-body", styleSheet = K.style { color = c } }, text = tostring(t or ""),
+			width = width and math.floor(width) or nil }
+	end
+	-- a small round dot: in a status colour (the game's line colour dot), or in one of the game's colours
+	function K.dot(cls, size)
+		size = size or 14
+		return builtin.Component { meta = { styleSheet = cached("dot/" .. tostring(cls) .. "/" .. size, function()
+			return K.style { size = { size, size }, image = K.DISC, bg = K.classColor(cls) }
+		end) } }
+	end
+	function K.disc(colorName, size)
+		size = size or 14
+		return builtin.Component { meta = { styleSheet = cached("disc/" .. tostring(colorName) .. "/" .. size, function()
+			return K.style { size = { size, size }, image = K.DISC, bg = K.color(colorName) }
+		end) } }
+	end
+	-- (some of the game's icons are large pictures: always a fixed size)
+	function K.icon(path, size)
+		return builtin.ImageView { path = path, meta = { styleSheet = K.style { size = { size, size } } } }
+	end
+	function K.row(children) return builtin.BoxLayout { orientation = K.H, children = children } end
+	function K.col(children) return builtin.BoxLayout { orientation = K.V, children = children } end
+	function K.gap(w, h)
+		return builtin.Component { meta = { styleSheet = cached("gap/" .. w .. "x" .. h, function() return K.style { size = { w, h } } end) } }
+	end
+	-- a section's title: an icon and the title, on a row of their own
+	function K.section(path, title)
+		return K.row { K.icon(path, 22), K.gap(8, 1), K.text(title, "font-scale-title-4", nil, K.TEXT_W - 30) }
+	end
+	-- a card: a light background around a company, a request... (its texts take K.CARD_TEXT_W)
+	function K.card(children)
+		return builtin.Component {
+			meta = { styleSheet = K.style { size = { K.CARD_W, -1 }, padding = { 6, 10, 6, 10 }, background = { 1, 1, 1, 0.06 } } },
+			layout = builtin.BoxLayout { orientation = K.V, children = children },
+		}
+	end
+	function K.btn(label, tip, fn, primary, enabled)
+		return builtin.Button { meta = { class = primary and "primary" or "secondary", tooltip = tip, enabled = enabled ~= false },
+			content = K.text(label), onClick = fn }
+	end
+	return K
+end
+
+-- ---------------------------------------------------------------- the window's preferences
+-- Per session (ui_prefs.txt in the session folder, kept across the loads of a resynchronisation): whether the window is open,
+-- its tab, reduced to the small card, pinned. Across launches (ui_prefs.txt in the folder above, as company_color.txt): whether
+-- the window opens by itself when a game starts.
+U.PREFS_KEYS = { "open", "tab", "compact", "pinned" }
+U.loadPrefs = function()
+	if U.prefs then return U.prefs end
+	local p = {}
+	local function read(path, keys)
+		local f = C.IO.open(path, "rb")
+		if not f then return end
+		local s = f:read("*a") or ""
+		f:close()
+		for line in s:gmatch("[^" .. C.NL .. "]+") do
+			local k, v = line:match("^(%w+)=(.-)" .. C.CR .. "?$")
+			if k and keys[k] then p[k] = v end
+		end
+	end
+	read(C.DIR .. C.BS .. "ui_prefs.txt", { open = true, tab = true, compact = true, pinned = true })
+	read(C.DIR .. C.BS .. ".." .. C.BS .. "ui_prefs.txt", { autoopen = true })
+	U.prefs = p
+	U.tab = U.tab or p.tab or "session"
+	U.compact = p.compact == "1"
+	return p
+end
+U.savePrefs = function()
+	local p = U.loadPrefs()
+	p.tab = U.tab or p.tab
+	p.compact = U.compact and "1" or "0"
+	local L = {}
+	for _, k in ipairs(U.PREFS_KEYS) do if p[k] ~= nil then L[#L + 1] = k .. "=" .. tostring(p[k]) end end
+	local f = C.IO.open(C.DIR .. C.BS .. "ui_prefs.txt", "wb")
+	if f then f:write(table.concat(L, C.NL) .. C.NL); f:close() end
+end
+U.saveAutoOpen = function(on)
+	local p = U.loadPrefs()
+	p.autoopen = on and "1" or "0"
+	local f = C.IO.open(C.DIR .. C.BS .. ".." .. C.BS .. "ui_prefs.txt", "wb")
+	if f then f:write("autoopen=" .. p.autoopen .. C.NL); f:close() end
+	log("window: opens by itself when a game starts: " .. p.autoopen)
+end
+
+-- ---------------------------------------------------------------- tabs, opening and closing
+U.TAB_IDS = { "session", "chat", "company", "rules", "settings" }
+-- (the French names, for MPFEVER_SHOWTAB)
+U.TAB_ALIAS = { entreprise = "company", regles = "rules", reglages = "settings", discussion = "chat" }
+U.tabName = function(tab)
+	tab = tostring(tab or "session"):lower()
+	return U.TAB_ALIAS[tab] or tab
+end
+-- the tabs of this session: Company and Rules with one company per player only
+U.tabsFor = function(st)
+	local separate = st and st.mode == "separate"
+	local t = {}
+	for _, id in ipairs(U.TAB_IDS) do
+		if separate or (id ~= "company" and id ~= "rules") then t[#t + 1] = id end
+	end
+	return t
+end
+-- the tab to show: the one asked, when this session has it, else Session
+U.validTab = function(tab, st)
+	tab = U.tabName(tab)
+	for _, id in ipairs(U.tabsFor(st)) do if id == tab then return tab end end
+	return "session"
+end
+U.tabLabel = function(id)
+	if id == "session" then return T("Session", "Session") end
+	if id == "chat" then
+		local n = U.chatUnread or 0
+		return T("Chat", "Chat") .. (n > 0 and ("  (" .. n .. ")") or "")
+	end
+	if id == "company" then return T("Entreprise", "Company") end
+	if id == "rules" then return T("Règles", "Rules") end
+	return T("Réglages", "Settings")
+end
+
+-- the window's own state changed (tab, card, a message under a button): its recipe draws again (see U.viewKey)
+U.winChanged = function()
+	U.winVersion = (U.winVersion or 0) + 1
+	if U.winKick then pcall(U.winKick) end
+end
+U.viewKey = function()
+	return tostring(U.tab) .. "|" .. tostring(U.winVersion or 0) .. "|" .. tostring(U.ecoVersion or 0) .. "|" .. tostring(U.chatUnread or 0)
+end
+
+-- the chat counts as read while the window shows its Chat tab (no notice then, see pollChat and the toast)
+U.refreshChat = function()
+	if not U.newWindow then return end
+	U.chatOpen = U.winOpen == true and not U.compact and U.validTab(U.tab, U.status) == "chat"
+	if U.chatOpen then
+		U.chatUnread = 0
+		if U.toastShown then
+			U.toastShown = false
+			local wapi = defaultWindowApi()
+			if wapi then pcall(function() wapi.removeAllWindows(U.ChatToast) end) end
+		end
+	end
+end
+
+U.setTab = function(tab)
+	U.loadPrefs()
+	U.tab = U.tabName(tab)
+	U.savePrefs()
+	U.refreshChat()
+	U.winChanged()
+end
+
+-- the small card of issue #68 (the sync, the players and the chat), kept for the session
+U.setCompact = function(on)
+	U.loadPrefs()
+	U.compact = on and true or false
+	U.savePrefs()
+	U.refreshChat()
+	U.winChanged()
+end
+
+-- MPFever's window, on a tab (nil: the one it showed last), in the game's window container (the pause menu's is the same one;
+-- wapi: the pause menu's, when the game's own cannot be had). Whether it is open.
+U.openWindow = function(tab, wapi)
+	U.loadPrefs()
+	if tab then U.setTab(tab) end
+	if U.winOpen then U.refreshChat() return true end
+	wapi = defaultWindowApi() or wapi
+	if not (wapi and U.SessionWindow) then return false end
+	local ok, err = pcall(function() wapi.addSingletonWindow(U.SessionWindow, { onClose = function() U.closeWindow(true) end }) end)
+	if not ok then log("window not opened: " .. tostring(err)) return false end
+	U.winOpen, U.winApi = true, wapi
+	U.prefs.open = "1"
+	U.savePrefs()
+	U.refreshChat()
+	U.winChanged()
+	return true
+end
+
+U.closeWindow = function(byPlayer)
+	local wapi = U.winApi or defaultWindowApi()
+	if wapi and U.SessionWindow then pcall(function() wapi.removeAllWindows(U.SessionWindow) end) end
+	U.winOpen = false
+	-- (closed by the player: it stays closed for the session, also after a resynchronisation's load; a window that went with
+	-- the game a resynchronisation reloads opens again after the load)
+	if byPlayer and not (U.status and U.status.sync == "resync") then
+		U.loadPrefs().open = "0"
+		U.savePrefs()
+	end
+	U.refreshChat()
+end
+
+U.toggleWindow = function()
+	if U.winOpen then U.closeWindow(true) else U.openWindow(nil) end
+end
+
+-- The window opens by itself at the start of a session and again after each load of a resynchronisation, on the tab it showed.
+-- It stays closed when the player closed it in this session, unticked « Open MPFever when a game starts » (Settings tab), in the
+-- autotests (MPFEVER_SCENARIO set, unless MPFEVER_SHOWWIN=1) and in a dedicated server's own game. MPFEVER_SHOWWIN=1 opens it
+-- in any case, on the tab MPFEVER_SHOWTAB names (screenshots). MPFEVER_AUTOOPEN=0: it opens only when asked, as before.
+U.autoOpenTick = function()
+	if U.autoOpenDone or not (U.SessionWindow and U.status) then return end
+	local now = os.clock()
+	if U.autoOpenAt and now - U.autoOpenAt < 1 then return end
+	U.autoOpenAt = now
+	local p = U.loadPrefs()
+	local why = nil
+	if os.getenv("MPFEVER_SHOWWIN") ~= "1" then
+		if os.getenv("MPFEVER_AUTOOPEN") == "0" then why = "MPFEVER_AUTOOPEN=0"
+		elseif os.getenv("MPFEVER_SCENARIO") then why = "autotest"
+		elseif C.SERVER then why = "a dedicated server's game"
+		elseif p.open == "0" then why = "closed by the player in this session"
+		elseif p.open == nil and p.autoopen == "0" then why = "the player's choice in the Settings tab" end
+	end
+	if why then
+		U.autoOpenDone = true
+		log("window: not opened by itself (" .. why .. ")")
+		return
+	end
+	if os.getenv("MPFEVER_SHOWWIN") == "1" and U.compact then U.compact = false end
+	if U.openWindow(os.getenv("MPFEVER_SHOWTAB") or p.tab or "session") then
+		U.autoOpenDone = true
+		log("window: opened by itself on the " .. U.validTab(U.tab, U.status) .. " tab")
+	end
+end
+
+-- (autotests, the window scenario: MPFEVER_SCENARIO=wintabs) a tab asked by the bridge (ui_tab_req.txt: "tab TAB number"); the
+-- window then says which tab it drew (ui_tab_shown.txt: "number TAB asked TAB drawn TAB ok or the error TAB rows")
+U.pollTabReq = function()
+	local now = os.clock()
+	if U.tabReqAt and now - U.tabReqAt < 0.5 then return end
+	U.tabReqAt = now
+	local f = C.IO.open(C.DIR .. C.BS .. "ui_tab_req.txt", "rb")
+	if not f then return end
+	local s = f:read("*a") or ""
+	f:close()
+	local tab, seq = s:match("^(%w+)" .. C.TAB .. "(%d+)")
+	if not tab or seq == U.tabReqSeq or not U.SessionWindow then return end
+	U.compact = false
+	if U.openWindow(tab) then
+		U.tabReqSeq, U.tabReqTab, U.tabReqDone = seq, tab, nil
+		U.winChanged()
+		log("autotest: window shown for the " .. tab .. " tab")
+	end
+end
+U.ackTabReq = function(shown, result, nRows)
+	if not U.tabReqSeq or U.tabReqDone == U.tabReqSeq then return end
+	U.tabReqDone = U.tabReqSeq
+	local f = C.IO.open(C.DIR .. C.BS .. "ui_tab_shown.txt", "wb")
+	if f then
+		f:write(U.tabReqSeq .. C.TAB .. tostring(U.tabReqTab) .. C.TAB .. shown .. C.TAB .. tostring(result):gsub("[%c]", " ") .. C.TAB .. tostring(nRows) .. C.NL)
+		f:close()
+	end
+	log("autotest: the " .. shown .. " tab drawn (" .. tostring(U.tabReqTab) .. " asked): " .. tostring(result) .. ", " .. tostring(nRows) .. " rows")
+end
+
+-- ---------------------------------------------------------------- small helpers of the tabs
+-- a text's width in average characters: a wide character (Chinese, Japanese, Korean: 3 bytes or more in UTF-8) counts two
+U.textWidth = function(t)
+	local n = 0
+	for ch in tostring(t or ""):gmatch(UTF8_CHAR) do n = n + (#ch >= 3 and 2 or 1) end
+	return n
+end
+-- a name cut to n characters (combo boxes: a long company name must not widen the row)
+U.short = function(t, n)
+	t = tostring(t or "")
+	if ulen(t) > n then return usub(t, n - 1) .. "…" end
+	return t
+end
+U.hhmm = function(t)
+	local ok, s = pcall(os.date, "%H:%M", t)
+	return ok and s or ""
+end
+-- this player is the session's host (a dedicated server has no host player)
+U.isHost = function(st)
+	for _, pl in ipairs(st and st.players or {}) do
+		if pl.id == st.me and pl.role == "host" then return true end
+	end
+	return false
+end
+-- a speed for the session, asked as the game's own speed buttons ask it (the lockstep's wrapper sends it to MPFever.exe)
+U.setSpeed = function(v)
+	local ok, err = pcall(function() api.cmd.sendCommand(api.cmd.makeGameSetSpeedCmd(v)) end)
+	if not ok then log("speed " .. tostring(v) .. " not asked: " .. tostring(err)) end
+end
+-- a company's money and figures, on one line
+U.coFigures = function(c)
+	return money(c.bal) .. (c.rank and ("  ·  " .. C.Tf("rang %s", "rank %s", c.rank)) or "")
+		.. "  ·  " .. C.Tf("%s lignes, %s véhicules", "%s lines, %s vehicles", c.lines, c.veh)
+end
+-- a company's colour swatch
+U.swatch = function(K, id, size)
+	local CO = U.coLib()
+	local ix = U.coColors and U.coColors[id] or id
+	local c = nil
+	if CO then pcall(function() local r, g, b = CO.rgb(ix); c = api.type.Vec4f.new(r, g, b, 1) end) end
+	return K.builtin.Component { meta = { styleSheet = K.style { size = { size or 14, size or 14 }, image = K.DISC, bg = c } } }
+end
+-- a gift of money to another company (event "give", applied by every game at the same step: see the bridge's handleEvent)
+U.give = function(c, ctx, myBal)
+	local n = tonumber((tostring(ctx.amount:old() or ""):gsub("[%s%.,']", "")))
+	if not n or n <= 0 then U.giveMsg = T("Entrez un montant.", "Enter an amount.") U.winChanged() return end
+	n = math.floor(n)
+	if myBal and n > myBal then U.giveMsg = T("Pas assez d'argent.", "Not enough money.") U.winChanged() return end
+	local ok, err = pcall(function()
+		api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd("mpfever", "mpfever", "give", { to = c.id, amount = n }))
+	end)
+	if not ok then
+		log("companies: gift request failed: " .. tostring(err))
+		U.giveMsg = T("Envoi impossible.", "Could not send.")
+		U.winChanged()
+		return
+	end
+	U.giveMsg = C.Tf("%s envoyés à %s.", "%s sent to %s.", money(n), c.name)
+	log("companies: gift of " .. n .. " to company " .. c.id .. " requested")
+	pcall(sendChat, "→ " .. c.name .. " : " .. money(n))
+	ctx.amount:set("")
+	ctx.giveGen:set(ctx.giveGen:old() + 1)
+	U.winChanged()
+end
+
+-- ---------------------------------------------------------------- the tabs (each one a list of rows, drawn in a scroll area)
+U.TABS = {}
+
+-- The host's [Resynchronise] button: every game reloads the host's game (MPFever.exe's "resync" request). MPFever.exe allows one
+-- resynchronisation every 2 minutes and says how long is left (resyncin= in mp_status.txt): the button waits until then. A
+-- dedicated server has no host player: nobody has the button there. MPFEVER_RESYNCBUTTON=0: no button, as before.
+U.resyncRows = function(K, st, rows)
+	if os.getenv("MPFEVER_RESYNCBUTTON") == "0" or not st or st.started ~= "1" then return end
+	local W = K.TEXT_W
+	if not U.isHost(st) then
+		rows[#rows + 1] = K.muted(T("Seul l'hôte peut demander une resynchronisation.", "Only the host can ask for a resynchronisation."), W)
+		return
+	end
+	local left = tonumber(st.resyncin) or 0
+	local note, enabled = nil, false
+	if st.sync == "resync" then note = T("Resynchro…", "Resyncing…")
+	elseif U.resyncAskedAt and os.clock() - U.resyncAskedAt < 15 then note = T("Resynchronisation demandée…", "Resynchronisation asked…")
+	elseif playerCount(st) < 2 then note = T("Aucun autre joueur à resynchroniser.", "No other player to resynchronise.")
+	elseif left > 0 then note = C.Tf("Possible dans %s s (une seule toutes les 2 minutes).", "Available in %s s (one every 2 minutes).", math.ceil(left))
+	else note, enabled = T("Tous les jeux rechargent votre partie (une minute environ).", "Every game reloads your game (about a minute)."), true end
+	rows[#rows + 1] = K.gap(1, 4)
+	rows[#rows + 1] = K.row { K.btn(T("Resynchroniser", "Resynchronise"), T("Recharger votre partie chez tous les joueurs", "Reload your game on every player's PC"), function()
+		if U.menuRequest("resync") then
+			U.resyncAskedAt = os.clock()
+			U.winChanged()
+		end
+	end, false, enabled) }
+	rows[#rows + 1] = K.muted(note, W)
+end
+
+-- Session: the host, the link, the sync (and the host's resynchronisation), the speed, the players, the invitations
+U.TABS.session = function(K, st, ctx)
+	local rows = {}
+	local W = K.TEXT_W
+	if st and st.host then
+		-- (a dedicated server: its name as its settings write it)
+		local hostText = st.server == "1" and C.Tf("Serveur dédié : %s", "Dedicated server: %s", (st.title and st.title ~= "") and st.title or st.host)
+			or C.Tf("Hôte : %s", "Host: %s", st.host)
+		rows[#rows + 1] = K.muted(hostText .. "  ·  "
+			.. (st.mode == "separate" and T("Une entreprise par joueur", "One company per player") or T("Une entreprise pour tous", "One company for everybody")), W)
+	end
+	local link, linkCls = linkLine(st)
+	if link then rows[#rows + 1] = K.row { K.dot(linkCls), K.gap(8, 1), K.text(link, nil, linkCls, W - 22) } end
+	rows[#rows + 1] = K.gap(1, 8)
+	rows[#rows + 1] = K.section(K.ICON_SYNC, T("Synchronisation", "Sync"))
+	local sync, syncCls = syncLine(st)
+	rows[#rows + 1] = K.row { K.dot(syncCls), K.gap(8, 1), K.text(sync, nil, syncCls, W - 22) }
+	local desyncs, resyncs = tonumber(st and st.desyncs) or 0, tonumber(st and st.resyncs) or 0
+	if desyncs > 0 or resyncs > 0 then
+		rows[#rows + 1] = K.muted(C.Tf("%s désynchronisation(s) et %s resynchronisation(s) depuis le début", "%s desync(s) and %s resync(s) since the start", desyncs, resyncs), W)
+	end
+	U.resyncRows(K, st, rows)
+	-- the session's speed, as the game's own speed buttons ask it (only once MPFever holds the commands back)
+	if U.installed and st and st.started == "1" then
+		rows[#rows + 1] = K.gap(1, 8)
+		rows[#rows + 1] = K.section(K.ICON_SPEED, T("Vitesse", "Speed"))
+		local cur = tonumber(st.speed)
+		local r = {}
+		for i, v in ipairs({ 0, 1, 2, 4 }) do
+			if i > 1 then r[#r + 1] = K.gap(6, 1) end
+			r[#r + 1] = K.btn(v == 0 and "II" or ("x" .. v), v == 0 and T("Pause", "Pause") or nil, function() U.setSpeed(v) end, cur == v)
+		end
+		rows[#rows + 1] = K.row(r)
+	end
+	rows[#rows + 1] = K.gap(1, 8)
+	rows[#rows + 1] = K.section(K.ICON_PLAYERS, T("Joueurs", "Players") .. "  (" .. playerCount(st) .. ")")
+	for _, pl in ipairs(st and st.players or {}) do
+		if pl.role ~= "server" then
+			local line, cls = playerLine(pl, st.me)
+			rows[#rows + 1] = K.row { K.icon(K.ICON_PERSON, 20), K.gap(6, 1), K.text(line, nil, cls, W - 26) }
+		end
+	end
+	if st and st.invite == "1" and U.isHost(st) then
+		rows[#rows + 1] = K.gap(1, 6)
+		rows[#rows + 1] = K.row { K.btn(T("Inviter des amis Steam", "Invite Steam friends"), nil, requestInvite, true) }
+	end
+	rows[#rows + 1] = K.gap(1, 12)
+	rows[#rows + 1] = K.row { K.btn(T("Réduire", "Reduce"), T("Une petite carte : la synchronisation, les joueurs et la discussion", "A small card: the sync, the players and the chat"),
+		function() U.setCompact(true) end) }
+	return rows
+end
+
+-- The Chat tab: the newest messages that fit in about 16 lines (a long message takes several), the newest at the bottom, then
+-- the field to write in. No scroll area here: it would show the oldest lines first and push the field out of view.
+U.CHAT_LINES = 16
+U.chatBody = function(K, st, chat, ctx)
+	local builtin = K.builtin
+	local W = K.TEXT_W
+	local TIME_W, NAME_W = 52, 130
+	local MSG_W = W - TIME_W - NAME_W - 8
+	local me = myChatName()
+	-- (about 46 average characters on a line of the message column, 15 in the name column)
+	local function height(m)
+		if m.kind == "msg" then return math.max(1, math.ceil(U.textWidth(m.text) / 46), math.ceil(U.textWidth(m.name .. ":") / 15)) end
+		if m.kind == "unsent" then return math.max(1, math.ceil((U.textWidth(m.text) + 40) / 60)) end
+		return 1
+	end
+	local pick, budget = {}, U.CHAT_LINES
+	for i = #chat, 1, -1 do
+		local h = height(chat[i])
+		if h > budget and #pick > 0 then break end
+		budget = budget - h
+		table.insert(pick, 1, chat[i])
+	end
+	local rows = {}
+	if #chat == 0 then rows[#rows + 1] = K.muted(T("Aucun message pour l'instant.", "No messages yet."), W) end
+	for _, m in ipairs(pick) do
+		local time = U.hhmm(m.t)
+		if m.kind == "join" then
+			rows[#rows + 1] = K.muted(time .. "   " .. C.Tf("%s a rejoint la partie", "%s joined the game", m.name), W)
+		elseif m.kind == "left" then
+			rows[#rows + 1] = K.muted(time .. "   " .. C.Tf("%s a quitté la partie", "%s left the game", m.name), W)
+		elseif m.kind == "unsent" then
+			rows[#rows + 1] = K.row { K.muted(time, TIME_W),
+				K.text(T("Non envoyé (pas de connexion à l'hôte) : ", "Not sent (no connection to the host): ") .. m.text, nil, "error", W - TIME_W) }
+		else
+			rows[#rows + 1] = K.row { K.muted(time, TIME_W), K.colored(m.name .. ":", K.color(m.name == me and "Ok" or "Info"), NAME_W), K.gap(8, 1),
+				K.text(m.text, nil, nil, MSG_W) }
+		end
+	end
+	local function send(v)
+		if sendChat(v) then
+			ctx.draft:set("")
+			ctx.chatGen:set(ctx.chatGen:old() + 1)
+		end
+	end
+	rows[#rows + 1] = K.gap(1, 10)
+	rows[#rows + 1] = K.row {
+		builtin.TextInputField {
+			meta = { class = "font-scale-body", localKey = "mpfever-chat-input-" .. tostring(ctx.chatGen:old()), styleSheet = K.style { size = { 440, -1 } } },
+			value = "",
+			placeholderText = T("Écrire un message…", "Write a message…"),
+			maxLength = 300,
+			acceptOnFocusLoss = false,
+			onTyping = function(v) ctx.draft:set(v or "") end,
+			onValueChange = function(v) send(v) end,
+		},
+		K.gap(8, 1),
+		K.btn(T("Envoyer", "Send"), nil, function() send(ctx.draft:old()) end, true),
+	}
+	return rows
+end
+
+-- Company (one company per player): this player's company, the answers its chief gives, every company (best first) with
+-- joining and merging, a gift of money, the company's colour, the auction of a bankrupt company
+U.TABS.company = function(K, st, ctx)
+	local builtin = K.builtin
+	local W, CW = K.TEXT_W, K.CARD_TEXT_W
+	if not U.coMap then return { K.muted(T("En attente des entreprises…", "Waiting for the companies…"), W) } end
+	pcall(U.pollEco)
+	local eco = U.eco or U.ECO_EMPTY()
+	local list, myBal = U.companyList(eco)
+	local rows = {}
+	local myKey = eco.myKey
+	local amChief = U.myCo ~= nil and eco.chief[U.myCo] ~= nil and eco.chief[U.myCo] == myKey
+	local asked, offered = nil, nil
+	for _, r in ipairs(eco.requests) do if r.key == myKey then asked = r.to end end
+	for _, o in ipairs(eco.merges) do if o.from == U.myCo then offered = o.to end end
+	-- (a name several companies have, as three « Entreprise Knight-HD2 », gets the company's number)
+	local count = {}
+	for _, c in ipairs(list) do count[c.name] = (count[c.name] or 0) + 1 end
+	local function label(c) return c.name .. ((count[c.name] or 0) > 1 and ("  #" .. c.id) or "") end
+	-- (a company's players once each, its chief marked)
+	local function players(id)
+		local names, done = {}, {}
+		for _, k in ipairs(eco.members[id] or {}) do
+			if not done[k] then
+				done[k] = true
+				names[#names + 1] = k .. (eco.chief[id] == k and T(" (chef)", " (chief)") or "")
 			end
-			return st
+		end
+		return names
+	end
+	local function playersLine(id)
+		local names = players(id)
+		if #names == 0 then return K.muted(T("Aucun joueur : elle continue seule", "No player: it goes on by itself"), CW), 0 end
+		return K.muted(C.Tf("Joueurs : %s", "Players: %s", table.concat(names, ", ")), CW), #names
+	end
+	local function debtLine(id)
+		if not eco.debt[id] then return nil end
+		local lim = eco.bankrupt or 12
+		return K.text(lim > 0 and C.Tf("Endettée depuis %s mois (faillite à %s mois)", "In debt for %s month(s) (bankruptcy at %s months)", eco.debt[id], lim)
+			or C.Tf("Endettée depuis %s mois", "In debt for %s month(s)", eco.debt[id]), nil, "warning", CW)
+	end
+	local mine = nil
+	for _, c in ipairs(list) do if c.id == U.myCo then mine = c end end
+	-- this player's company
+	rows[#rows + 1] = K.section(K.ICON_PLAYERS, T("Votre entreprise", "Your company"))
+	if not mine then
+		rows[#rows + 1] = K.muted(T("Vous n'avez pas d'entreprise pour l'instant.", "You have no company at the moment."), W)
+	else
+		local pl, nPl = playersLine(mine.id)
+		local card = {
+			K.row { U.swatch(K, mine.id, 16), K.gap(8, 1), K.text(label(mine), "font-scale-title-4", nil, CW - 24) },
+			K.muted(U.coFigures(mine), CW),
+			pl,
+		}
+		card[#card + 1] = debtLine(mine.id)
+		if nPl > 1 then
+			card[#card + 1] = K.gap(1, 6)
+			card[#card + 1] = K.muted(T("Vous fondez votre propre entreprise (argent de départ) ; celle-ci continue avec ses autres joueurs", "You start your own company (start money); this one goes on with its other players"), CW)
+			card[#card + 1] = K.row { K.btn(T("Quitter l'entreprise", "Leave the company"), nil, function() U.coSend("co_leave", {}) end) }
+		end
+		rows[#rows + 1] = K.card(card)
+	end
+	-- the requests and offers this company's chief answers: the sentence, then the buttons under it
+	if amChief then
+		for _, r in ipairs(eco.requests) do
+			if r.to == U.myCo then
+				rows[#rows + 1] = K.gap(1, 6)
+				rows[#rows + 1] = K.card {
+					K.text(C.Tf("%s demande à rejoindre votre entreprise.  ", "%s asks to join your company.  ", r.name ~= "" and r.name or r.key), nil, "warning", CW),
+					K.row {
+						K.btn(T("Accepter", "Accept"), nil, function() U.coSend("co_join_answer", { key = r.key, accept = true }) end, true),
+						K.gap(8, 1),
+						K.btn(T("Refuser", "Refuse"), nil, function() U.coSend("co_join_answer", { key = r.key, accept = false }) end),
+					},
+				}
+			end
+		end
+		for _, o in ipairs(eco.merges) do
+			if o.to == U.myCo then
+				local from = "#" .. tostring(o.from)
+				for _, c in ipairs(list) do if c.id == o.from then from = label(c) end end
+				rows[#rows + 1] = K.gap(1, 6)
+				rows[#rows + 1] = K.card {
+					K.text(C.Tf("%s propose de fusionner avec la vôtre (ses biens, son argent et ses joueurs vous rejoignent).  ", "%s offers to merge into yours (its assets, money and players join you).  ", from), nil, "warning", CW),
+					K.row {
+						K.btn(T("Accepter", "Accept"), nil, function() U.coSend("co_merge_answer", { from = o.from, accept = true }) end, true),
+						K.gap(8, 1),
+						K.btn(T("Refuser", "Refuse"), nil, function() U.coSend("co_merge_answer", { from = o.from, accept = false }) end),
+					},
+				}
+			end
+		end
+	end
+	-- every company, best first: one card each, its actions on a row of their own
+	rows[#rows + 1] = K.gap(1, 12)
+	rows[#rows + 1] = K.section(K.ICON_PLAYERS, T("Entreprises", "Companies") .. "  (" .. #list .. ")")
+	for i, c in ipairs(list) do
+		local isMine = c.id == U.myCo
+		local pl = playersLine(c.id)
+		local card = {
+			K.row { U.swatch(K, c.id, 14), K.gap(8, 1), K.text(tostring(i) .. ".  " .. label(c) .. (isMine and T(" (vous)", " (you)") or ""), nil, isMine and "success" or nil, CW - 22) },
+			K.muted(U.coFigures(c), CW),
+			pl,
+		}
+		card[#card + 1] = debtLine(c.id)
+		if not isMine and U.myCo then
+			local acts = {}
+			-- mixed modes: join it (its chief accepts), or merge into it (the two chiefs)
+			if asked == c.id then
+				acts[#acts + 1] = K.btn(T("Annuler la demande", "Cancel the request"), nil, function() U.coSend("co_cancel", { what = "join" }) end)
+			else
+				acts[#acts + 1] = K.btn(T("Rejoindre", "Join"), T("Demander au chef de cette entreprise de vous y accueillir (vous quittez la vôtre, qui continue sans vous)", "Ask this company's chief to take you in (you leave yours, which goes on without you)"),
+					function() U.coSend("co_join_ask", { to = c.id }) end)
+			end
+			if amChief then
+				acts[#acts + 1] = K.gap(8, 1)
+				if offered == c.id then
+					acts[#acts + 1] = K.btn(T("Annuler la fusion", "Cancel the merger"), nil, function() U.coSend("co_cancel", { what = "merge" }) end)
+				else
+					acts[#acts + 1] = K.btn(T("Fusionner", "Merge"), T("Proposer à son chef que votre entreprise rejoigne la sienne : tous vos biens, votre argent et vos joueurs y passent", "Offer its chief that your company joins theirs: all your assets, your money and your players go to it"),
+						function() U.coSend("co_merge_ask", { to = c.id }) end)
+				end
+			end
+			card[#card + 1] = K.gap(1, 4)
+			card[#card + 1] = K.row(acts)
+			if asked == c.id then card[#card + 1] = K.muted(T("Votre demande attend la réponse de son chef.", "Your request is waiting for its chief's answer."), CW) end
+			if offered == c.id then card[#card + 1] = K.muted(T("Votre proposition de fusion attend la réponse de son chef.", "Your merger offer is waiting for its chief's answer."), CW) end
+		end
+		rows[#rows + 1] = K.gap(1, 4)
+		rows[#rows + 1] = K.card(card)
+	end
+	-- a gift: the company in a list, the amount, then the button
+	local targets = {}
+	for _, c in ipairs(list) do if c.id ~= U.myCo then targets[#targets + 1] = c end end
+	if mine and #targets > 0 then
+		local target = targets[1]
+		for _, c in ipairs(targets) do if c.id == ctx.giveTo:old() then target = c end end
+		local items = {}
+		for _, c in ipairs(targets) do
+			items[#items + 1] = builtin.ComboBoxItem { value = c.id, content = K.text(U.short(label(c), 30)) }
+		end
+		rows[#rows + 1] = K.gap(1, 12)
+		rows[#rows + 1] = K.section(K.ICON_MONEY, T("Donner de l'argent", "Give money"))
+		rows[#rows + 1] = K.muted(T("Le montant passe tout de suite à l'entreprise choisie ; le don est annoncé dans la discussion.", "The amount goes at once to the chosen company; the gift is announced in the chat."), W)
+		rows[#rows + 1] = K.row { K.muted(T("À :", "To:")), K.gap(8, 1),
+			builtin.ComboBox { value = target.id, items = items, onValueChange = function(v) v = tonumber(v); if v then ctx.giveTo:set(v) end end } }
+		rows[#rows + 1] = K.row {
+			builtin.TextInputField {
+				meta = { class = "font-scale-body", localKey = "mpfever-give-" .. tostring(ctx.giveGen:old()), styleSheet = K.style { size = { 200, -1 } } },
+				value = "",
+				placeholderText = "100000",
+				maxLength = 15,
+				acceptOnFocusLoss = true,
+				onTyping = function(v) ctx.amount:set(v or "") end,
+				onValueChange = function(v) ctx.amount:set(v or "") end,
+			},
+			K.gap(8, 1),
+			K.btn(T("Donner", "Give"), T("Donner ce montant à l'entreprise choisie", "Give this amount to the chosen company"), function() U.give(target, ctx, myBal) end, true),
+		}
+		if U.giveMsg then rows[#rows + 1] = K.muted(U.giveMsg, W) end
+	end
+	-- this company's colour: the palette in two rows of six, the other companies' colours greyed
+	local CO = U.coLib()
+	if mine and CO and CO.PALETTE then
+		local taken = {}
+		for id, ix in pairs(U.coColors or {}) do if id ~= U.myCo then taken[ix] = true end end
+		local mineIx = U.coColors and U.coColors[U.myCo] or nil
+		rows[#rows + 1] = K.gap(1, 12)
+		rows[#rows + 1] = K.section(K.ICON_COLOR, T("Votre couleur", "Your colour"))
+		for first = 1, #CO.PALETTE, 6 do
+			local sw = {}
+			for ix = first, math.min(#CO.PALETTE, first + 5) do
+				local p = CO.PALETTE[ix]
+				local c = nil
+				pcall(function() c = api.type.Vec4f.new(p[1], p[2], p[3], taken[ix] and 0.25 or 1) end)
+				if ix > first then sw[#sw + 1] = K.gap(6, 1) end
+				sw[#sw + 1] = builtin.Button {
+					meta = { class = ix == mineIx and "primary" or "secondary", enabled = not taken[ix] and ix ~= mineIx,
+						tooltip = taken[ix] and T("Déjà prise par une autre entreprise", "Already taken by another company") or nil },
+					content = builtin.Component { meta = { styleSheet = K.style { size = { 16, 16 }, image = K.DISC, bg = c } } },
+					onClick = function()
+						local ok, err = pcall(function()
+							api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd("mpfever", "mpfever", "recolor", { color = ix }))
+						end)
+						log("companies: colour " .. ix .. " requested" .. (ok and "" or (": " .. tostring(err))))
+					end,
+				}
+			end
+			rows[#rows + 1] = K.row(sw)
+			rows[#rows + 1] = K.gap(1, 4)
+		end
+	end
+	-- the auction of a bankrupt company
+	local au = eco.auction
+	if au then
+		local seller = "#" .. tostring(au.co)
+		for ent, id in pairs(U.coMap) do if id == au.co then seller = companyName(ent) end end
+		local bidder = nil
+		for _, c in ipairs(list) do if c.id == au.bidder then bidder = label(c) end end
+		local what = au.kind == "line" and C.Tf("ligne « %s »", "line « %s »", au.label) or au.kind == "station" and C.Tf("gare « %s »", "station « %s »", au.label) or C.Tf("dépôt « %s »", "depot « %s »", au.label)
+		rows[#rows + 1] = K.gap(1, 12)
+		rows[#rows + 1] = K.section(K.ICON_MONEY, C.Tf("Enchères : biens de %s", "Auction: assets of %s", seller))
+		local card = {
+			K.text(C.Tf("Lot %s/%s : %s", "Lot %s/%s: %s", au.idx, au.n, what), nil, nil, CW),
+			K.muted(C.Tf("Mise à prix %s  ·  meilleure offre %s  ·  encore %s s", "Reserve %s  ·  best bid %s  ·  %s s left",
+				money(au.reserve), au.best > 0 and (money(au.best) .. " (" .. tostring(bidder or "?") .. ")") or T("aucune", "none"), au.left), CW),
+		}
+		if U.myCo and au.bidder ~= U.myCo then
+			local r = {}
+			local seen = {}
+			for _, f in ipairs({ 1, 1.1, 1.25, 1.5 }) do
+				local v = math.ceil(au.min * f / 1000) * 1000
+				if not seen[v] then
+					seen[v] = true
+					if #r > 0 then r[#r + 1] = K.gap(6, 1) end
+					r[#r + 1] = K.btn(money(v), T("Offrir : ", "Bid: ") .. money(v), function() U.coSend("co_bid", { seq = au.seq, lot = au.idx, amount = v }) end,
+						f == 1, myBal == nil or myBal >= v)
+				end
+			end
+			card[#card + 1] = K.gap(1, 4)
+			card[#card + 1] = K.row(r)
+		elseif au.bidder == U.myCo then
+			card[#card + 1] = K.muted(T("Vous avez la meilleure offre.", "You have the best bid."), CW)
+		end
+		rows[#rows + 1] = K.card(card)
+	end
+	return rows
+end
+
+-- One of this company's rules (tracks, stops and stations, depots): its three choices, the amount when it takes a toll (a
+-- list), and what it means. The choice just made shows at once, until every game has applied it (or 10 s).
+U.TOLLS = { 500, 1000, 2000, 5000, 10000 }
+U.STOP_FEES = { 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000 }
+U.ruleBlock = function(K, rows, b)
+	local builtin = K.builtin
+	local W = K.TEXT_W
+	U.rulePending = U.rulePending or {}
+	local pend = U.rulePending[b.kind]
+	if pend and ((pend.rule == b.rule and (b.rule ~= "toll" or pend.amount == b.amount)) or os.clock() - pend.at > 10) then
+		U.rulePending[b.kind] = nil
+		pend = nil
+	end
+	local shown = pend and pend.rule or b.rule
+	local amount = pend and pend.amount or b.amount
+	local function pick(rule, amt)
+		U.rulePending[b.kind] = { rule = rule, amount = amt, at = os.clock() }
+		b.send(rule, amt)
+		U.winChanged()
+	end
+	rows[#rows + 1] = K.gap(1, 12)
+	rows[#rows + 1] = K.section(b.icon, b.title)
+	local r = {}
+	for i, rule in ipairs({ "private", "open", "toll" }) do
+		if i > 1 then r[#r + 1] = K.gap(6, 1) end
+		r[#r + 1] = K.btn(b.labels[rule], b.texts[rule], function() if rule ~= shown then pick(rule, amount) end end, rule == shown)
+	end
+	rows[#rows + 1] = K.row(r)
+	if shown == "toll" then
+		local items, listed = {}, false
+		local amounts = {}
+		for _, v in ipairs(b.amounts) do amounts[#amounts + 1] = v; if v == amount then listed = true end end
+		if not listed and amount > 0 then amounts[#amounts + 1] = amount; table.sort(amounts) end
+		for _, v in ipairs(amounts) do items[#items + 1] = builtin.ComboBoxItem { value = v, content = K.text(money(v)) } end
+		rows[#rows + 1] = K.row { K.muted(b.amountLabel), K.gap(8, 1),
+			builtin.ComboBox { value = amount, items = items, onValueChange = function(v) v = tonumber(v); if v and v ~= amount then pick("toll", v) end end } }
+	end
+	rows[#rows + 1] = K.muted(pend and T("Modification en cours pour tous les joueurs…", "Applying for every player…") or b.texts[shown] or "", W)
+end
+
+-- a company's rule in a few words (the other companies' rules)
+U.ruleWords = function(rule, amount)
+	if rule == "private" then return T("privé", "private") end
+	if rule == "toll" then return C.Tf("péage %s", "toll %s", money(amount or 0)) end
+	return T("libre", "open")
+end
+
+-- Rules (one company per player): this company's rules for its tracks, its stops and stations and its depots (events applied by
+-- every game, see mpfever_eco.lua), the other companies' rules, the fees and tolls earned and paid, the bankruptcy rule. A rule
+-- eco.txt does not give yet is open (the default of every company).
+U.TABS.rules = function(K, st, ctx)
+	local W = K.TEXT_W
+	if not U.coMap then return { K.muted(T("En attente des entreprises…", "Waiting for the companies…"), W) } end
+	pcall(U.pollEco)
+	local eco = U.eco or U.ECO_EMPTY()
+	eco.stops, eco.depotco = eco.stops or {}, eco.depotco or {}
+	local rows = {}
+	local my = U.myCo
+	if not my then
+		rows[#rows + 1] = K.muted(T("Les règles de votre entreprise apparaissent dès que vous en avez une.", "Your company's rules show once you have a company."), W)
+	else
+		local tr = eco.track[my] or { rule = "open", toll = 0 }
+		U.ruleBlock(K, rows, {
+			kind = "track", icon = K.ICON_TRACKS, title = T("Vos voies ferrées", "Your tracks"),
+			rule = tr.rule, amount = (tr.toll or 0) > 0 and tr.toll or 1000, amounts = U.TOLLS, amountLabel = T("Péage par passage : ", "Toll per passage: "),
+			labels = { private = T("Privées", "Private"), open = T("Ouvertes", "Open"), toll = T("Péage", "Toll") },
+			texts = {
+				private = T("Les autres entreprises ne peuvent pas s'y raccorder", "The other companies cannot connect to them"),
+				open = T("Les autres entreprises peuvent s'y raccorder et y faire rouler leurs trains, gratuitement", "The other companies may connect to them and run their trains on them, for free"),
+				toll = T("Ouvertes, chaque train d'une autre entreprise paie le péage à chaque passage", "Open, every train of another company pays the toll each time it enters them"),
+			},
+			send = function(rule, amt) U.coSend("co_track_rule", { rule = rule, toll = amt }) end,
+		})
+		local sp = eco.stops[my] or { rule = "open", fee = 0, own = 0 }
+		local spFee = (sp.fee or 0) > 0 and sp.fee or C.SHARE_DEFAULT
+		U.ruleBlock(K, rows, {
+			kind = "stops", icon = K.ICON_STATIONS, title = T("Vos arrêts et gares", "Your stops and stations"),
+			rule = sp.rule, amount = spFee, amounts = U.STOP_FEES, amountLabel = T("Par arrêt :", "Per stop:"),
+			labels = { private = T("Privés", "Private"), open = T("Ouverts", "Open"), toll = T("Péage", "Toll") },
+			texts = {
+				private = T("Les autres entreprises ne peuvent pas s'arrêter à vos arrêts et gares.", "The other companies cannot stop at your stops and stations."),
+				open = T("Les autres entreprises peuvent s'arrêter à vos arrêts et gares, gratuitement.", "The other companies may stop at your stops and stations, for free."),
+				toll = T("Les véhicules des autres entreprises paient ce montant à chaque arrêt chez vous ; vos lignes s'y arrêtent gratuitement.", "The other companies' vehicles pay this at every stop at yours; your own lines stop for free."),
+			},
+			send = function(rule, amt) U.coSend("co_stop_rule", { rule = rule, fee = amt, reset = false }) end,
+		})
+		-- (a station's own setting, made in its window, comes before the company's)
+		local own = tonumber(sp.own) or 0
+		rows[#rows + 1] = K.muted(own > 0 and C.Tf("%s de vos gares ont leur propre réglage (dans leur fenêtre) : il passe avant celui-ci.", "%s of your stations have their own setting (in their window): it comes before this one.", own)
+			or T("Une gare peut avoir son propre réglage, dans sa fenêtre : il passe avant celui-ci.", "A station may have its own setting, in its window: it comes before this one."), W)
+		rows[#rows + 1] = K.row { K.btn(T("Appliquer à toutes mes gares", "Apply to all my stations"),
+			T("Retire le réglage propre de chacune de vos gares : toutes suivent celui-ci.", "Removes each of your stations' own setting: they all follow this one."), function()
+				U.coSend("co_stop_rule", { rule = sp.rule or "open", fee = spFee, reset = true })
+				U.winChanged()
+			end, false, own > 0 or eco.stops[my] == nil) }
+		local dp = eco.depotco[my] or { rule = "open", toll = 0 }
+		U.ruleBlock(K, rows, {
+			kind = "depots", icon = K.ICON_DEPOTS, title = T("Vos dépôts", "Your depots"),
+			rule = dp.rule, amount = (dp.toll or 0) > 0 and dp.toll or 1000, amounts = U.TOLLS, amountLabel = T("Par véhicule :", "Per vehicle:"),
+			labels = { private = T("Privés", "Private"), open = T("Ouverts", "Open"), toll = T("Péage", "Toll") },
+			texts = {
+				private = T("Seuls vos véhicules peuvent utiliser vos dépôts.", "Only your vehicles may use your depots."),
+				open = T("Les autres entreprises peuvent acheter et envoyer leurs véhicules dans vos dépôts, gratuitement.", "The other companies may buy and send their vehicles to your depots, for free."),
+				toll = T("Les autres entreprises paient ce péage par véhicule acheté ou envoyé dans vos dépôts.", "The other companies pay this toll per vehicle bought or sent to your depots."),
+			},
+			send = function(rule, amt) U.coSend("co_depot_default", { rule = rule, toll = amt }) end,
+		})
+		rows[#rows + 1] = K.muted(T("Un dépôt peut avoir sa propre règle, dans sa fenêtre : elle passe avant celle-ci.", "A depot may have its own rule, in its window: it comes before this one."), W)
+	end
+	-- the other companies' rules (read only)
+	local others = {}
+	for ent, id in pairs(U.coMap) do if id ~= my and not eco.gone[id] then others[#others + 1] = { ent = ent, id = id } end end
+	table.sort(others, function(a, b) return a.id < b.id end)
+	if #others > 0 then
+		rows[#rows + 1] = K.gap(1, 12)
+		rows[#rows + 1] = K.section(K.ICON_PLAYERS, T("Règles des autres entreprises", "The other companies' rules"))
+		for _, o in ipairs(others) do
+			local tr = eco.track[o.id] or { rule = "open", toll = 0 }
+			local sp = eco.stops[o.id] or { rule = "open", fee = 0 }
+			local dp = eco.depotco[o.id] or { rule = "open", toll = 0 }
+			rows[#rows + 1] = K.gap(1, 4)
+			rows[#rows + 1] = K.card {
+				K.row { U.swatch(K, o.id, 14), K.gap(8, 1), K.text(companyName(o.ent), nil, nil, K.CARD_TEXT_W - 22) },
+				K.muted(C.Tf("Voies : %s  ·  arrêts : %s  ·  dépôts : %s", "Tracks: %s  ·  stops: %s  ·  depots: %s",
+					U.ruleWords(tr.rule, tr.toll), U.ruleWords(sp.rule, sp.fee), U.ruleWords(dp.rule, dp.toll)), K.CARD_TEXT_W),
+			}
+		end
+	end
+	-- what this company earned and paid
+	local fe = my and eco.fees[my]
+	if fe then
+		rows[#rows + 1] = K.gap(1, 12)
+		rows[#rows + 1] = K.section(K.ICON_MONEY, T("Gains et frais", "Earnings and fees"))
+		rows[#rows + 1] = K.muted(C.Tf("Gares partagées : reçu %s, payé %s", "Shared stations: earned %s, paid %s", money(fe.si), money(fe.se)), W)
+		rows[#rows + 1] = K.muted(C.Tf("Péages : reçu %s, payé %s", "Tolls: earned %s, paid %s", money(fe.ti), money(fe.te)), W)
+	end
+	local lim = eco.bankrupt or 12
+	rows[#rows + 1] = K.gap(1, 12)
+	rows[#rows + 1] = K.section(K.ICON_ALERT, T("Faillite", "Bankruptcy"))
+	rows[#rows + 1] = K.muted(lim > 0 and C.Tf("Règle de la partie : faillite après %s mois de dette.", "Game rule: bankruptcy after %s months in debt.", lim)
+		or T("Règle de la partie : pas de faillite.", "Game rule: no bankruptcy."), W)
+	return rows
+end
+
+-- the session's settings and this player's own, read only: the game takes them when it loads (they change in MPFever.exe's
+-- settings window). settings_info.txt (MPFever.exe) names them in the player's language; without it, the variables themselves.
+U.settingsRows = function(K, rows)
+	local W = K.TEXT_W
+	local txt = ""
+	local f = C.IO.open(C.DIR .. C.BS .. "settings_info.txt", "rb")
+	if f then txt = f:read("*a") or ""; f:close() end
+	local groups = { session = {}, own = {}, expert = {} }
+	local any = false
+	for line in txt:gmatch("[^" .. C.NL .. "]+") do
+		local key, name, kind, on = line:match("^([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "([^" .. C.TAB .. "]*)" .. C.TAB .. "(%d)")
+		if key and groups[kind] then
+			any = true
+			table.insert(groups[kind], { name = name ~= "" and name or key, on = on == "1" })
+		end
+	end
+	local function onOff(on) return on and T("activé", "on") or T("désactivé", "off") end
+	rows[#rows + 1] = K.gap(1, 12)
+	rows[#rows + 1] = K.section(K.ICON_SETTINGS, T("Réglages de la session", "Session settings"))
+	if any then
+		rows[#rows + 1] = K.muted(T("Choisis par l'hôte, les mêmes pour tous les joueurs.", "Chosen by the host, the same for every player."), W)
+		for _, s in ipairs(groups.session) do rows[#rows + 1] = K.text(s.name .. "  ·  " .. onOff(s.on), nil, s.on and nil or "warning", W) end
+		local off = {}
+		for _, s in ipairs(groups.expert) do if not s.on then off[#off + 1] = s.name end end
+		if #off > 0 then rows[#rows + 1] = K.text(C.Tf("Correctifs récents désactivés : %s", "Recent fixes turned off: %s", table.concat(off, " ; ")), nil, "warning", W) end
+		rows[#rows + 1] = K.gap(1, 8)
+		rows[#rows + 1] = K.text(T("Vos réglages", "Your settings"), "font-scale-title-4", nil, W)
+		for _, s in ipairs(groups.own) do rows[#rows + 1] = K.text(s.name .. "  ·  " .. onOff(s.on), nil, nil, W) end
+	else
+		local keys = {}
+		for k in pairs(C.SETTINGS or {}) do keys[#keys + 1] = k end
+		table.sort(keys)
+		for _, k in ipairs(keys) do rows[#rows + 1] = K.muted(k .. " = " .. tostring(C.SETTINGS[k]), W) end
+		if #keys == 0 then rows[#rows + 1] = K.muted(T("Aucun réglage reçu de MPFever.exe.", "No settings received from MPFever.exe."), W) end
+	end
+	rows[#rows + 1] = K.muted(T("Ils se changent dans la fenêtre Réglages de MPFever.exe et comptent au prochain chargement de la partie.", "They are changed in MPFever.exe's settings window and count from the next load of the game."), W)
+end
+
+-- Settings: whether the window opens by itself, the bankruptcy rule (the host, one company per player), the settings (read
+-- only), the problem report
+U.BANKRUPT_MONTHS = { 0, 3, 6, 12, 24 }
+U.TABS.settings = function(K, st, ctx)
+	local builtin = K.builtin
+	local W = K.TEXT_W
+	local rows = {}
+	local p = U.loadPrefs()
+	rows[#rows + 1] = K.section(K.ICON_SETTINGS, T("Fenêtre MPFever", "MPFever window"))
+	rows[#rows + 1] = K.row { builtin.CheckBox {
+		value = p.autoopen == "0" and 0 or 1,
+		label = T("Ouvrir MPFever au début de chaque partie", "Open MPFever when a game starts"),
+		onValueChange = function(v) U.saveAutoOpen(v == 1); U.winChanged() end,
+	} }
+	-- the months in debt before a bankruptcy: the host's rule, sent by MPFever.exe to every game ("bankrupt" request)
+	if st and st.mode == "separate" and U.isHost(st) then
+		pcall(U.pollEco)
+		-- (the months just chosen show until the game has them, or 15 s)
+		local asked = U.bankruptAsked
+		if asked and ((U.eco and U.eco.bankrupt == asked.v) or os.clock() - asked.at > 15) then U.bankruptAsked = nil; asked = nil end
+		local cur = asked and asked.v or (U.eco and U.eco.bankrupt) or 12
+		local items = {}
+		for _, n in ipairs(U.BANKRUPT_MONTHS) do
+			items[#items + 1] = builtin.ComboBoxItem { value = n, content = K.text(n == 0 and T("Jamais", "Never") or C.Tf("%s mois", "%s months", n)) }
+		end
+		rows[#rows + 1] = K.gap(1, 12)
+		rows[#rows + 1] = K.section(K.ICON_ALERT, T("Faillite", "Bankruptcy"))
+		rows[#rows + 1] = K.muted(T("Mois de dette avant qu'une entreprise fasse faillite, pour toute la partie.", "Months in debt before a company goes bankrupt, for the whole game."), W)
+		rows[#rows + 1] = K.row { builtin.ComboBox { value = cur, items = items, onValueChange = function(v)
+			v = tonumber(v)
+			if v ~= nil and v ~= cur and U.menuRequest("bankrupt", v) then U.bankruptAsked = { v = v, at = os.clock() }; U.winChanged() end
+		end } }
+	end
+	U.settingsRows(K, rows)
+	rows[#rows + 1] = K.gap(1, 12)
+	rows[#rows + 1] = K.section(K.ICON_ALERT, T("Un problème ?", "A problem?"))
+	rows[#rows + 1] = K.muted(T("MPFever.exe rassemble les journaux dans un zip et ouvre un nouveau ticket GitHub.", "MPFever.exe gathers the logs into a zip and opens a new GitHub issue."), W)
+	rows[#rows + 1] = K.row { K.btn(T("Signaler un problème (journaux)", "Report a problem (logs)"), nil, requestReport) }
+	if U.reportMsg and U.reportAsked and os.time() - U.reportAsked <= 120 then rows[#rows + 1] = K.muted(U.reportMsg, W) end
+	return rows
+end
+
+-- ---------------------------------------------------------------- the window itself
+-- The tab strip: the game's TabWidget, as its entity windows put it at the top of their content (make_entity_window.tl).
+-- MPFEVER_WINTABS=buttons: a row of buttons instead (the main menu page's way), should the tab strip misbehave.
+U.tabStrip = function(K, tabs, cur)
+	local builtin = K.builtin
+	if os.getenv("MPFEVER_WINTABS") == "buttons" then
+		local r = {}
+		for i, id in ipairs(tabs) do
+			if i > 1 then r[#r + 1] = K.gap(4, 1) end
+			r[#r + 1] = K.btn(U.tabLabel(id), nil, function() U.setTab(id) end, id == cur)
+		end
+		return K.row(r)
+	end
+	local children = {}
+	for _, id in ipairs(tabs) do
+		children[#children + 1] = builtin.TabWidgetChild {
+			localKey = "mpfever-tab-" .. id,
+			value = id,
+			indicator = builtin.TextView { meta = { class = "font-scale-tab-widget-indicator" }, text = U.tabLabel(id) },
+			item = builtin.Component {},
+		}
+	end
+	return builtin.TabWidget {
+		meta = { class = "no-content", disableFocusableRecursive = true },
+		orientation = builtin.type.TabOrientation.North,
+		deselectAllowed = false,
+		value = cur,
+		onValueChange = function(v) if v ~= nil and tostring(v) ~= U.tab then U.setTab(tostring(v)) end end,
+		tabs = children,
+	}
+end
+
+-- the small card (issue #68): the link, the sync, the players, and the chat
+U.compactContent = function(K, st)
+	local CW = 260
+	local sync, syncCls = syncLine(st)
+	local link, linkCls = linkLine(st)
+	local mini = {}
+	if link then mini[#mini + 1] = K.row { K.dot(linkCls), K.gap(6, 1), K.text(link, nil, linkCls, CW - 20) } end
+	mini[#mini + 1] = K.row { K.dot(syncCls), K.gap(6, 1), K.text(sync, nil, syncCls, CW - 20) }
+	mini[#mini + 1] = K.row { K.icon(K.ICON_PLAYERS, 20), K.gap(6, 1), K.text(T("Joueurs", "Players") .. "  (" .. playerCount(st) .. ")") }
+	local unread = U.chatUnread or 0
+	mini[#mini + 1] = K.row {
+		K.builtin.Button { meta = { class = unread > 0 and "primary" or "secondary", tooltip = T("Discussion", "Chat") }, content = K.icon(K.ICON_CHAT, 20),
+			onClick = function() U.compact = false; U.setTab("chat") end },
+		K.gap(6, 1),
+		K.btn(T("Agrandir", "Expand"), nil, function() U.setCompact(false) end),
+	}
+	return K.builtin.Component { meta = { styleSheet = K.style { size = { 280, -1 } } }, layout = K.col(mini) }
+end
+
+-- the window's content: the tab strip, then the tab (a scroll area of fixed size; the Chat tab without one)
+U.windowContent = function(K, st, chat, ctx)
+	local builtin = K.builtin
+	if U.compact then return U.compactContent(K, st) end
+	local tabs = U.tabsFor(st)
+	local tab = U.validTab(U.tab, st)
+	local rows, result = nil, "ok"
+	local okB, res = pcall(function()
+		if tab == "chat" then return U.chatBody(K, st, chat, ctx) end
+		return U.TABS[tab](K, st, ctx)
+	end)
+	if okB and type(res) == "table" then rows = res else
+		result = tostring(res)
+		if U.tabFailed ~= tab .. result then U.tabFailed = tab .. result; log("window: the " .. tab .. " tab failed: " .. result) end
+		rows = { K.text(T("Cet onglet n'a pas pu être affiché (voir ui_mod.log).", "This tab could not be drawn (see ui_mod.log)."), nil, "error", K.TEXT_W) }
+	end
+	U.ackTabReq(tab, result, #rows)
+	local body
+	if tab == "chat" then
+		body = builtin.Component { meta = { localKey = "mpfever-body-chat", styleSheet = K.style { size = { K.WIN_W, -1 } } }, layout = K.col(rows) }
+	else
+		body = builtin.ScrollArea {
+			meta = { localKey = "mpfever-body-" .. tab, styleSheet = K.style { size = { K.WIN_W, K.BODY_H } } },
+			content = builtin.Component { meta = { styleSheet = K.style { size = { K.INNER_W, -1 } } }, layout = K.col(rows) },
+			horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+			verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+		}
+	end
+	return builtin.Component { meta = { styleSheet = K.style { size = { K.WIN_W, -1 } } }, layout = K.col { U.tabStrip(K, tabs, tab), K.gap(1, 8), body } }
+end
+
+U.installNewWindow = function(react, builtin)
+	local K = U.kit
+	U.SessionWindow = react.RegisterWrapperRecipe("MPFeverSessionWindow", builtin.Window, function(wp)
+		-- (every hook first, the same ones on every render whatever the tab or the card: the game's react wants them in order)
+		local st = useStatus(react)
+		local chat = useChat(react)
+		local view = react.useState(U.viewKey())
+		react.onStepTimer(function()
+			local k = U.viewKey()
+			if view:old() ~= k then view:set(k) end
+		end, 0.25)
+		local ctx = {}
+		ctx.draft = react.useState("")
+		ctx.chatGen = react.useState(0)   -- a new input field after each message (an empty one)
+		ctx.amount = react.useState("")   -- the amount typed for a gift to another company
+		ctx.giveGen = react.useState(0)
+		ctx.giveTo = react.useState(0)    -- the company the gift goes to
+		-- (the window removed in any way: the bar's icon opens it again with one click)
+		react.onUnmount(function()
+			U.winOpen = false
+			pcall(U.refreshChat)
 		end)
-		return ok and st or nil
+		U.winKick = function()
+			local k = U.viewKey()
+			if view:old() ~= k then view:set(k) end
+		end
+		local okC, content = pcall(U.windowContent, K, st, chat, ctx)
+		if not okC then
+			if not U.winFailed then U.winFailed = true; log("window: not drawn: " .. tostring(content)) end
+			content = builtin.Component { meta = { styleSheet = K.style { size = { K.WIN_W, -1 } } },
+				layout = K.col { K.text(T("La fenêtre n'a pas pu être affichée (voir ui_mod.log).", "The window could not be drawn (see ui_mod.log)."), nil, "error", K.TEXT_W) } }
+		end
+		local p = U.loadPrefs()
+		return builtin.Window {
+			title = U.compact and "MPFever" or ("MPFever – " .. T("Multijoueur", "Multiplayer")),
+			id = "window.mpfever.session",
+			initialX = 0.99,
+			initialY = 0.1,
+			movable = true,
+			closable = true,
+			pinnable = true,
+			pinned = p.pinned == "1",
+			onPinned = function(on)
+				p.pinned = on and "1" or "0"
+				U.savePrefs()
+				U.winChanged()
+			end,
+			-- (it opens by itself: it must not take the keyboard from the game)
+			autoFocusOnBecomingVisible = false,
+			onClose = wp.onClose,
+			content = content,
+		}
+	end)
+end
+
+-- ---------------------------------------------------------------- MPFever's icon in the game's bottom bar
+-- A plugin of the game's ::GameBarInfoDisplayExtension (the row of Earnings and Transported; mpfever_bar.res.lua): a disc in the
+-- session's colour (U.barState) and « MPFever », with the number of unread chat messages; a click opens or closes the window.
+-- Not a Button: a button's padding does not fit the bar's 28 pixels (FeverLink3 saw buttons squashed there). The click is
+-- caught as the game's own CheckBox catches it (useSelfRef + onMouseEvent), and the window is opened at the next step by tick
+-- (where it has always been opened from). MPFEVER_BARICON=0: no icon, as before. MPFEVER_BARBUTTON=1: a flat button around
+-- the icon catches the click instead. MPFEVER_BARFAIL=1 (tests): the icon fails to draw; =reg: it is not registered (an empty
+-- recipe takes its place): the game's bar must still show.
+U.BAR_COLOR = { grey = "NeutralLight", green = "Ok", yellow = "Warning", red = "Error" }
+U.barInfo = function()
+	local st = U.status
+	local state, line = U.barState(st)
+	local tip = { "MPFever  –  " .. tostring(line or "") }
+	if st and st.started == "1" then
+		tip[#tip + 1] = C.Tf("%s joueur(s) dans la partie", "%s player(s) in the game", playerCount(st))
+		for _, pl in ipairs(st.players or {}) do
+			if pl.state == "slow" and pl.role ~= "server" then tip[#tip + 1] = pl.name .. " : " .. C.Tf("%s pas de retard", "%s steps behind", pl.lag) end
+		end
 	end
-	-- a small round dot in a status colour (the game's line colour dot)
-	local function dot(cls)
-		return builtin.Component { meta = { styleSheet = style { size = { 14, 14 }, image = "::/gui/line_vehicle_mgmt/icons/line_surface.tga", bg = classColor(cls) } } }
+	tip[#tip + 1] = T("Clic : ouvrir ou fermer la fenêtre", "Click: open or close the window")
+	return state, table.concat(tip, "  ·  ")
+end
+U.barNode = function()
+	if os.getenv("MPFEVER_BARFAIL") == "1" then error("MPFEVER_BARFAIL=1 (test)") end
+	local K = U.kit
+	local builtin = K.builtin
+	local state, tip = U.barInfo()
+	local unread = U.chatUnread or 0
+	local inner = builtin.BoxLayout { orientation = K.H, children = {
+		-- (the disc a little lower: in the middle of the bar's text)
+		builtin.BoxLayout { orientation = K.V, children = { K.gap(1, 7), K.disc(U.BAR_COLOR[state] or "NeutralLight", 14) } },
+		K.gap(6, 1),
+		builtin.TextView { meta = { class = "font-scale-headline" }, text = "MPFever" .. (unread > 0 and ("  (" .. unread .. ")") or "") },
+	} }
+	-- (MPFEVER_BARBUTTON=1, should the bar's row not pass the clicks to the icon: a flat button around it instead)
+	local item
+	if os.getenv("MPFEVER_BARBUTTON") == "1" then
+		item = builtin.Button { meta = { class = "secondary", tooltip = tip, styleSheet = K.style { padding = { 0, 4, 0, 4 } } }, content = builtin.Component { layout = inner },
+			onClick = function() U.barClick = true end }
+	else
+		item = builtin.Component { meta = { tooltip = tip }, layout = inner }
 	end
-	local function icon(path, size)
-		return builtin.ImageView { path = path, meta = { styleSheet = style { size = { size, size } } } }
+	return builtin.BoxLayout { orientation = K.H, children = { item, K.gap(18, 1) } }
+end
+-- a left click on the icon: pressed and released on it (as the game's CheckBox); the window is toggled by tick
+U.barMouse = function(selfRef, evt)
+	if evt.button ~= 0 or os.getenv("MPFEVER_BARBUTTON") == "1" then return false end
+	local node = selfRef:get()
+	if not node then return false end
+	local inside = node:containsPosition(api.type.Vec2i.new(evt.x, evt.y))
+	local types = api.gui.mouse.Event.Type
+	if evt.type == types.Pressed then
+		if inside then
+			U.barPressed = true
+			pcall(function() node:setSelectedRecursive(true) end)
+			return true
+		end
+	elseif evt.type == types.Released then
+		local pressed = U.barPressed
+		U.barPressed = false
+		pcall(function() node:setSelectedRecursive(false) end)
+		if inside and pressed then
+			U.barClick = true
+			return true
+		end
+	elseif evt.type == types.Clicked then
+		return inside
 	end
-	local ICON_PLAYERS = "::/gui/statistics/icons/symbol_person_multiple.tga"
-	local ICON_SYNC = "::/gui/menu/icons/symbol_arrows_refresh.tga"
-	local ICON_PERSON = "::/gui/entity_window/icons/symbol_person.tga"
-	-- the game has no chat icon: MPFever brings its own (48 x 48 grey levels, like the game's icons)
-	local ICON_CHAT = "mpfever_1::/mpfever_chat.tga"
-	local function row(children) return builtin.BoxLayout { orientation = H, children = children } end
+	return false
+end
+U.barFn = function()
+	local react, builtin = U.react, U.builtin
+	-- (read once: the same hooks on every render)
+	if U.barOn == nil then U.barOn = C.ACTIVE and os.getenv("MPFEVER_BARICON") ~= "0" and U.kit ~= nil end
+	if not U.barOn then return builtin.BoxLayout { children = {} } end
+	local key = react.useState("")
+	react.onStepTimer(function()
+		local okI, state, tip = pcall(U.barInfo)
+		local k = okI and (tostring(state) .. "|" .. tostring(tip) .. "|" .. tostring(U.chatUnread or 0)) or "?"
+		if key:old() ~= k then key:set(k) end
+	end, 0.5)
+	local selfRef = react.useSelfRef()
+	react.onMouseEvent(function(evt)
+		local ok, r = pcall(U.barMouse, selfRef, evt)
+		return ok and r == true
+	end)
+	local ok, node = pcall(U.barNode)
+	if ok and node then return node end
+	if not U.barFailLogged then U.barFailLogged = true; log("bar: icon not drawn: " .. tostring(node)) end
+	return builtin.BoxLayout { children = {} }
+end
+
+
+local function installSession(react, builtin)
+	if U.sessionInstalled then return end
+	U.sessionInstalled = true
+	-- (the drawing helpers of the window and the bar's icon, see U.makeKit)
+	local K = U.kit or U.makeKit(builtin)
+	U.kit = K
+	local V, H = K.V, K.H
+	local text, color, classColor, style, dot, icon, row, muted = K.text, K.color, K.classColor, K.style, K.dot, K.icon, K.row, K.muted
+	local ICON_PLAYERS, ICON_SYNC, ICON_PERSON, ICON_CHAT = K.ICON_PLAYERS, K.ICON_SYNC, K.ICON_PERSON, K.ICON_CHAT
 	local function section(path, title) return row { icon(path, 26), text("  " .. title, "font-scale-title-4") } end
-	local function muted(t) return builtin.TextView { meta = { class = "font-scale-body", styleSheet = style { color = color("NeutralLight") } }, text = t } end
+	-- MPFever's window: the tabbed one (U.installNewWindow); MPFEVER_NEWWINDOW=0: the single list of before, below (its width
+	-- set with - and +, the chat in a window of its own)
+	U.newWindow = os.getenv("MPFEVER_NEWWINDOW") ~= "0"
 
 	-- MPFever's window: stays open while playing, can be moved and closed
-	U.SessionWindow = react.RegisterWrapperRecipe("MPFeverSessionWindow", builtin.Window, function(wp)
+	U.ListWindow = react.RegisterWrapperRecipe("MPFeverListWindow", builtin.Window, function(wp)
 		local st = useStatus(react)
 		-- reduced to one small card (issue #68): the sync, the players and the chat, kept for the session
 		local small = react.useState(U.sessionSmall == true)
@@ -1609,8 +2874,11 @@ local function installSession(react, builtin)
 			content = builtin.Component { meta = { styleSheet = style { size = { width:old(), -1 } } }, layout = builtin.BoxLayout { orientation = V, children = rows } },
 		}
 	end)
+	if U.newWindow then U.installNewWindow(react, builtin) else U.SessionWindow = U.ListWindow end
+	log("session: MPFever's window " .. (U.newWindow and "with tabs" or "as a single list (MPFEVER_NEWWINDOW=0)"))
 
 	-- ------------------------------------------------ the chat window and the short notice of new messages
+	-- (the chat window: the single-list window's; the tabbed window has a Chat tab instead)
 	local function hhmm(t)
 		local ok, s = pcall(os.date, "%H:%M", t)
 		return ok and s or ""
@@ -1698,7 +2966,12 @@ local function installSession(react, builtin)
 			if ulen(t) > 70 then t = usub(t, 68) .. "…" end
 			rows[#rows + 1] = row { coloredText(m.name .. ":  ", nameColor(m.name)), text(t) }
 		end
-		rows[#rows + 1] = muted(T("Répondre : Échap  ›  Discussion", "Reply: Esc  ›  Chat"))
+		-- (where to answer: the bar's icon opens the window, its Chat tab; else the pause menu's chat card)
+		if U.newWindow and U.barOn then
+			rows[#rows + 1] = muted(T("Répondre : MPFever (barre du bas)  ›  Chat", "Reply: MPFever (bottom bar)  ›  Chat"))
+		else
+			rows[#rows + 1] = muted(T("Répondre : Échap  ›  Discussion", "Reply: Esc  ›  Chat"))
+		end
 		return builtin.Window {
 			title = "",
 			id = "window.mpfever.chattoast",
@@ -1754,17 +3027,17 @@ local function installSession(react, builtin)
 		end
 		return true
 	end
-	U.openChat = openChat
+	-- (the tabbed window: its Chat tab)
+	U.openChat = U.newWindow and function() return U.openWindow("chat") end or openChat
 
-	local function openSession(commonParams)
-		local ok, err = pcall(function()
-			local wc = commonParams.windowContainer:get():getApi()
-			wc.addSingletonWindow(U.SessionWindow, {
-				onClose = function() commonParams.windowContainer:get():getApi().removeAllWindows(U.SessionWindow) end,
-			})
-		end)
-		if not ok then log("session window not opened: " .. tostring(err)) return end
-		pcall(commonParams.onClose)   -- back to the game: the window stays open
+	-- MPFever's window from a card of the pause menu (on its Session or Chat tab), then back to the game: the window stays open
+	-- (the single-list window's chat: its own window, as before)
+	local function openFromCard(commonParams, tab)
+		local wapi = nil
+		pcall(function() wapi = commonParams.windowContainer:get():getApi() end)
+		local ok
+		if tab == "chat" and not U.newWindow then ok = openChat(wapi) else ok = U.openWindow(tab, wapi) end
+		if ok then pcall(commonParams.onClose) else log("session window not opened from the pause menu") end
 	end
 
 	-- the card in the pause menu: drawn as the menu's own cards (classes of the pause page: dark card, shadow,
@@ -1796,7 +3069,7 @@ local function installSession(react, builtin)
 					builtin.Component { meta = { styleSheet = style { size = { 84, -1 } } }, layout = builtin.BoxLayout { children = { builtin.ImageView { path = ICON_PLAYERS } } } },
 					builtin.Component { layout = info },
 				} } },
-				onClick = function() openSession(p.commonParams) end,
+				onClick = function() openFromCard(p.commonParams, "session") end,
 			},
 		} }
 	end)
@@ -1823,12 +3096,7 @@ local function installSession(react, builtin)
 					builtin.Component { meta = { styleSheet = style { size = { 84, -1 } } }, layout = builtin.BoxLayout { children = { builtin.ImageView { path = ICON_CHAT } } } },
 					builtin.Component { layout = info },
 				} } },
-				onClick = function()
-					local cp = p.commonParams
-					local wapi = nil
-					pcall(function() wapi = cp.windowContainer:get():getApi() end)
-					if openChat(wapi) then pcall(cp.onClose) end
-				end,
+				onClick = function() openFromCard(p.commonParams, "chat") end,
 			},
 		} }
 	end)
@@ -2344,15 +3612,6 @@ local function tick(pendingState)
 	end)
 	pcall(pollBindings)
 	pcall(pollCompanies)
-	-- (autotests, MPFEVER_SHOWWIN=1: MPFever's window opens by itself once the companies are known, for a screenshot)
-	if os.getenv("MPFEVER_SHOWWIN") == "1" and U.coMap and U.SessionWindow and not U.winShown then
-		U.winShown = true
-		pcall(function()
-			local wapi = defaultWindowApi()
-			if wapi then wapi.addSingletonWindow(U.SessionWindow, { onClose = function() pcall(function() wapi.removeAllWindows(U.SessionWindow) end) end }) end
-		end)
-		log("autotest: MPFever's window opened")
-	end
 	if not U.terrainWatch then
 		local okt, errt = pcall(installTerrainWatch)
 		if not okt then U.terrainWatch = true; log("terrain tools: not watched: " .. tostring(errt)) end
@@ -2423,6 +3682,16 @@ local function tick(pendingState)
 		local oks, errs = pcall(installSession, U.react, U.builtin)
 		if not oks then log("session: not installed: " .. tostring(errs)) end
 	end
+	-- MPFever's window: a click on the bar's icon (done here, at the step after it, where the window has always been opened
+	-- from), opened by itself at the start of the session (U.autoOpenTick), a tab the window scenario asks for
+	if U.barClick then
+		U.barClick = nil
+		local okT, errT = pcall(U.toggleWindow)
+		log("bar: click on the icon: window " .. (U.winOpen and "opened" or "closed") .. (okT and "" or (" (" .. tostring(errT) .. ")")))
+	end
+	local okA, errA = pcall(U.autoOpenTick)
+	if not okA and not U.autoOpenFailed then U.autoOpenFailed = true; log("window: not opened by itself: " .. tostring(errA)) end
+	pcall(U.pollTabReq)
 	local okc, errc = pcall(pollControl)
 	if not okc then log("control poll failed: " .. tostring(errc)) end
 	if not U.stepping then U.stepping = true; log("periodic UI hook active") end
@@ -2449,6 +3718,23 @@ do
 				return builtin.BoxLayout { children = {} }
 			end)
 			if okP then M.MPFeverEntry = recipe else log("entry registration failed: " .. tostring(recipe)) end
+		end
+		local okK, kit = pcall(U.makeKit, builtin)
+		if okK then U.kit = kit else log("window: drawing helpers not made: " .. tostring(kit)) end
+		-- MPFever's icon in the game's bottom bar (see U.barFn). mpfever_bar.res.lua names this recipe: it must exist whatever
+		-- happens, an empty one when the bar's extension point cannot be had, or the game would draw its bar with a missing
+		-- recipe. (The bar's module by the very name the game loads it with: the same module, its extension point once.)
+		local okW, gbw = false, nil
+		if os.getenv("MPFEVER_BARFAIL") ~= "reg" then okW, gbw = pcall(ug_require, "/gui/game_bar/game_bar_widgets.tl") end
+		if okW and type(gbw) == "table" and gbw.GameBarInfoDisplayExtension then
+			local okG, recipe = pcall(react.RegisterPluginRecipe, gbw.GameBarInfoDisplayExtension, "MPFeverBar", function(...) return U.barFn(...) end)
+			if okG then M.MPFeverBar = recipe else log("bar: icon not registered: " .. tostring(recipe)) end
+		else
+			log("bar: the game's bottom bar was not found (" .. tostring(gbw):sub(1, 120) .. ")")
+		end
+		if not M.MPFeverBar then
+			local okF, empty = pcall(react.RegisterRecipe, "MPFeverBar", function() return builtin.BoxLayout { children = {} } end)
+			if okF then M.MPFeverBar = empty else log("bar: no empty recipe either: " .. tostring(empty)) end
 		end
 	else
 		log("UI unavailable: react=" .. tostring(okR) .. " builtin=" .. tostring(okB))

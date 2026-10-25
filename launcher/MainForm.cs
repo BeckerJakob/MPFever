@@ -1401,6 +1401,28 @@ namespace MPFever
             {
                 if (steamConnect != null) SteamCtl("invite", steamConnect);
             }
+            else if (cmd == "resync")
+            {
+                // (the host, from its game's MPFever window) every game reloads the host's game now. Only while a session runs
+                // with other players, no resynchronisation is under way and the cooldown is over (the window shows how long is
+                // left: resyncin= in mp_status.txt), so that a host cannot start reload after reload.
+                // MPFEVER_RESYNCBUTTON=0: refused, as before (there was no such request)
+                string why = null;
+                int others; lock (players) others = players.Count(p => p != hostName);
+                double left = ResyncCooldownSeconds - (Now - lastResync);
+                if (Environment.GetEnvironmentVariable("MPFEVER_RESYNCBUTTON") == "0") why = "MPFEVER_RESYNCBUTTON=0";
+                else if (hostGame == null || !started) why = T("pas de session en cours", "no session running");
+                else if (resyncing) why = T("une resynchronisation est déjà en cours", "a resynchronisation is already under way");
+                else if (others == 0) why = T("aucun autre joueur", "no other player");
+                else if (left > 0) why = F("encore {0:0} s d'attente", "{0:0} s to wait", left);
+                if (why != null)
+                {
+                    Log.W(F("Resynchronisation demandée par l'hôte : impossible pour l'instant ({0}).", "Resynchronisation asked by the host: not possible now ({0}).", why));
+                    return;
+                }
+                resyncing = true;
+                new Thread(() => Resync(T("demandée par l'hôte", "asked by the host"))) { IsBackground = true, Name = "Resync" }.Start();
+            }
             else if (cmd == "sendmods")
             {
                 // (the host) "sendmods <player>" with option 1: offer the player its missing mods; 0: say no
@@ -2240,6 +2262,8 @@ namespace MPFever
             Kv("age", lastSyncAt < 0 ? -1 : (int)(Now - lastSyncAt));
             Kv("desyncs", desyncs);
             Kv("resyncs", resyncId);
+            // (seconds before a resynchronisation may start again: the host's [Resynchronise] button in its game waits that long)
+            Kv("resyncin", (int)Math.Ceiling(Math.Max(0, ResyncCooldownSeconds - (Now - lastResync))));
             Kv("invite", steamConnect != null ? 1 : 0);
 
             string[] ready; lock (players) ready = players.ToArray();
