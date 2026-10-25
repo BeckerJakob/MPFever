@@ -34,6 +34,17 @@ local function mk(name) return function(...) return { __cmd = name, args = { ...
 local function execute(cmd, cb)
   local name = cmd.__cmd
   if name == "makeGameSetSpeedCmd" then GAME.speed = cmd.args[1]; if cb then cb({}, true, {}) end return end
+  -- (the exact steps the mod asks for while paused, see O.steps: the engine runs them one after the other)
+  if name == "steps" then
+    for i = 1, cmd.args[1] or 0 do
+      GAME.time = GAME.time + 200
+      GAME.inUpdate = true
+      MOD.update(nil, STATE, 0.2)
+      GAME.inUpdate = false
+    end
+    if cb then cb({}, true, {}) end
+    return
+  end
   if name == "makeScriptingSendEventCmd" then
     if cmd.args[1] == "mpfever" then SIM_EVENT(cmd.args[3], cmd.args[4]) end
     if cb then cb({}, true, {}) end

@@ -177,13 +177,13 @@ What we learned about the engine, the causes of desyncs and what each mode must 
 
 ### Building
 
-You need Windows 10/11 and Visual Studio 2022 or later, with *Desktop development with C++* and *.NET desktop development* (.NET Framework 4.8). Then run:
+You need Windows 10/11, Visual Studio 2022 or later, with *Desktop development with C++* and *.NET desktop development* (.NET Framework 4.8), and Python 3 with lupa (`pip install lupa`). Then run:
 
 ```bat
 build.bat
 ```
 
-It builds `native\out\winhttp.dll`, `launcher\bin\Release\MPFever.exe` and the archives in `release\`.
+It builds `native\out\winhttp.dll` and `launcher\bin\Release\MPFever.exe`, runs the tests (below), and makes the archives in `release\` only when they all pass. A compiler warning stops the build too.
 
 ### Game updates and signatures
 
@@ -197,8 +197,13 @@ python tools\mksigs.py check "<path>\TransportFever3.exe"
 
 ### Tests
 
-- `python tests\test_lang.py`: the language files.
-- `MPFever.exe --selftest`: the relay, the client and the server settings, without the game.
+- `python tests\run_all.py --exe launcher\bin\Release\MPFever.exe`: every test that needs no game, run by `build.bat` and on GitHub for every push and pull request ([CI](.github/workflows/ci.yml)). Nothing is skipped: one failure fails the run.
+  - `tests\check_repo.py`: one version everywhere (`build.bat`, the launcher, the changelog), every Lua, JSON and Python file valid, no merge conflict left;
+  - `tests\test_lockstep.py`: two mocked games running the mod's real Lua files (actions at the same time, ids, native builds, pause);
+  - `tests\test_companies.py`, `tests\test_assets.py`: the companies' rules and tolls, trees and assets;
+  - `tests\test_locals.py`: every Lua file loads in the game (its 200 locals);
+  - `tests\test_lang.py`: every text translated in every language;
+  - `MPFever.exe --selftest`: the relay, the client, the server settings, the updates, UPnP and the redaction of reports.
 - `MPFever.exe --autotest <savegame>`: two real games on one PC, with scenarios chosen by environment variables. See [RESEARCH](docs/RESEARCH.md).
 
 ---

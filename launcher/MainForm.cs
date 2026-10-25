@@ -169,7 +169,6 @@ namespace MPFever
         bool started;
         int speed;            // session speed
         long? pauseAt;        // session paused at this game time
-        long actSeq;
         int hashN;
         readonly Dictionary<int, Dictionary<string, Dictionary<object, object>>> hashes = new Dictionary<int, Dictionary<string, Dictionary<object, object>>>();
         string syncText = "—";

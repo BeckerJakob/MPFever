@@ -10,16 +10,22 @@ if not exist "%VSWHERE%" (echo vswhere.exe not found: install Visual Studio & ex
 for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe`) do set "MSBUILD=%%i"
 if not defined MSBUILD (echo MSBuild not found & exit /b 1)
 
-echo === 1/3 native module
+echo === 1/4 native module
 call native\build.bat || exit /b 1
 
-echo === 2/3 launcher
+echo === 2/4 launcher
 "%MSBUILD%" launcher\MPFever.csproj -restore -p:Configuration=Release -v:minimal -nologo || exit /b 1
 
 rem (the signatures next to the launcher of the build folder too: without them, on a game build the module does not know,
 rem every hook stays off and the games drift apart)
 if exist native\mpfever_sigs.txt copy /y native\mpfever_sigs.txt launcher\bin\Release\ >nul
-echo === 3/3 package
+
+rem every check that needs no game (tests\run_all.py): one failure and no archive is made
+echo === 3/4 tests
+where python >nul 2>&1 || (echo Python not found: install Python 3 and lupa ^(pip install lupa^) & exit /b 1)
+python tests\run_all.py --exe launcher\bin\Release\MPFever.exe || (echo TESTS FAILED: no archive made & exit /b 1)
+
+echo === 4/4 package
 set "VERSION=0.5.1"
 set "DIST=release\dist\MPFever"
 if exist release\dist rmdir /s /q release\dist

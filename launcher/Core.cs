@@ -497,7 +497,6 @@ namespace MPFever
         public volatile bool InGame;
         readonly string inPath, outPath;
         readonly object writeGate = new object();
-        long outOff;
         volatile bool stop;
         Thread poll;
         Process proc;
