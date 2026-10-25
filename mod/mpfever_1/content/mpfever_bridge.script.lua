@@ -5378,6 +5378,28 @@ local function replayAssets(a)
 	end)
 end
 
+-- A build of constructions only (a headquarters, a depot on its own...) whose every construction already stands here, the same file
+-- at the same place: the savegame this game loaded had it (the host built it during the pause of a resynchronisation, saved it,
+-- then shipped it to the game that was loading). Built again, it stood twice on this game only (the collision refused every form
+-- but the last), then the companies got other entity ids here and the game stopped at the next load. MPFEVER_ALREADYBUILT=0: as before
+G.alreadyBuilt = function(a)
+	if a.fn ~= "makeWorldBuildProposalCmd" or os.getenv("MPFEVER_ALREADYBUILT") == "0" then return false end
+	local m = type(a.args) == "table" and a.args[1]
+	if type(m) ~= "table" or #(m.toAdd or {}) == 0 or #(m.toRemove or {}) > 0 then return false end
+	local st = m.proposal or {}
+	if #(st.addedSegments or {}) + #(st.removedSegments or {}) + #(st.addedNodes or {}) + #(st.removedNodes or {}) > 0 then return false end
+	for _, ce in ipairs(m.toAdd) do
+		local t = ce.transf
+		if type(t) ~= "table" or type(t[13]) ~= "number" then return false end
+		local p = { x = t[13], y = t[14], z = t[15] }
+		local e = R.resolve({ k = "con", id = -1, f = ce.fileName, p = p })
+		local c = type(e) == "number" and api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+		local q = c and R.matPos(c.transf)
+		if not q or (q.x - p.x) ^ 2 + (q.y - p.y) ^ 2 + (q.z - p.z) ^ 2 > 0.01 then return false end
+	end
+	return true
+end
+
 local function runNativeReplays()
 	pumpTerrain()
 	pumpCompanies()
@@ -5408,6 +5430,9 @@ local function runNativeReplays()
 			if a.fn == "terrainEdit" then okr, errr = pcall(withActor, PL(a), replayTerrain, a)
 			elseif a.fn == "assetBuild" then okr, errr = pcall(withActor, PL(a), replayAssets, a)
 			elseif a.fn == "mpfCoJoin" then G.coBusy = { a = a, phase = "apply", frame = G.frames }; okr = true
+			elseif select(2, pcall(G.alreadyBuilt, a)) == true then
+				log("NATIVE REPLAY " .. tostring(a.uid) .. ": its construction(s) already stand here (in the loaded savegame): not built again")
+				okr = true
 			else
 				if type(a.cost) == "number" then toSim("replay_cost", { uid = a.uid, cost = a.cost, co = a.co, kind = G.costKind(a) }) end
 				G.refund = a.refund
@@ -5506,6 +5531,18 @@ H.resync_load = function(from, p)
 	if not id then log("resynchronisation: savegame '" .. tostring(p.name) .. "' not found"); return end
 	C.appendFile(C.DIR .. BS .. "resync_pending.txt", "1")
 	log("resynchronisation: loading the host's game '" .. tostring(p.name) .. "'")
+	-- the companies' entity ids of the game unloaded now mean nothing in the one loaded: the native module forgets them until
+	-- this game says them again. Kept, the interface read the player of the old id at once, a group of trees in the host's
+	-- game (the companies had other ids here), and the engine stopped the game. The native module reads its control file when a
+	-- command is added: the event below makes it read it now. MPFEVER_LOADKEEPCO=1: as before
+	if os.getenv("MPFEVER_LOADKEEPCO") ~= "1" then
+		K.coCtlSeq = (K.coCtlSeq or 0) + 1
+		local okT, tm = pcall(os.time)
+		local tok = ((okT and tm or 0) % 1000000) * 100 + K.coCtlSeq % 100
+		nativeCtl("setlocal 0 " .. tok)
+		nativeCtl("setothers " .. tok)
+		pcall(toSim, "native_ctl", {})
+	end
 	-- (with this player's personal mods: see C.loadWithPlan)
 	C.loadWithPlan(id, log, function(fn) G.waits[#G.waits + 1] = { at = G.frames + 1, fn = fn } end)
 end

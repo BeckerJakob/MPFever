@@ -935,7 +935,7 @@ namespace MPFever
             hostBtn.Enabled = joinBtn.Enabled = localBtn.Enabled = false;
             menuGame = new GameLink(SavedName(), "menu");
             games.Add(menuGame);
-            menuGame.Exited += () => { Log.W(T("Transport Fever 3 fermé.", "Transport Fever 3 closed.")); try { BeginInvoke((Action)InstallPendingUpdateThenClose); } catch { } };
+            menuGame.Exited += () => { Log.W(T("Transport Fever 3 fermé.", "Transport Fever 3 closed.")); LeaveOnGameExit(); try { BeginInvoke((Action)InstallPendingUpdateThenClose); } catch { } };
             MenuStatus();
             // (the game rewrites its log at its start: the previous run's is kept for a report)
             if (JoinAtStart == null) Reporter.KeepPreviousGameLog();
@@ -1510,6 +1510,23 @@ namespace MPFever
         /// <summary>The player left the game for the main menu: connections closed, the session's state cleared, the files the
         /// game and MPFever.exe exchange emptied (the next game must not read the previous session's messages). The game
         /// keeps running: the MPFever window of its main menu can host or join again.</summary>
+        /// <summary>The game closed (or crashed): this MPFever leaves its session at once, the session's files kept for a report.
+        /// Kept, a player's MPFever went on reconnecting to the host with no game behind it; the player started MPFever again, and
+        /// the old one and the new one took each other's place every 5 s (the host closes the old connection of a name that comes
+        /// back), with a resynchronisation each time. MPFEVER_EXITKEEPSESSION=1: as before.</summary>
+        void LeaveOnGameExit()
+        {
+            if (ServerMode || Environment.GetEnvironmentVariable("MPFEVER_EXITKEEPSESSION") == "1") return;
+            if (clients.Count == 0 && relay == null) return;
+            Log.W(T("Le jeu est fermé : MPFever quitte la session.", "The game closed: MPFever leaves the session."));
+            sessionGen++;
+            clientCancelled = true;
+            foreach (var cl in clients.ToList()) try { cl.Dispose(); } catch { }
+            lock (clients) clients.Clear();
+            var r = relay; relay = null;
+            if (r != null) { try { r.Dispose(); } catch { } PortMap.Close(); }
+        }
+
         void EndSession(string why = null)
         {
             Log.W(why ?? T("=== Retour au menu principal : fin de la session ===", "=== Back to the main menu: the session ends ==="));

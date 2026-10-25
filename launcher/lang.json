@@ -8606,6 +8606,19 @@
       "ko": "[{0}] 차이를 사용할 수 없음 ({1}): 호스트에게 게임 전체를 요청합니다.",
       "zh-CN": "[{0}] 差异无法使用（{1}）：向主机请求完整游戏。",
       "zh-TW": "[{0}] 差異無法使用（{1}）：向主機要求完整遊戲。"
+    },
+    "The game closed: MPFever leaves the session.": {
+      "de": "Das Spiel wurde geschlossen: MPFever verlässt die Sitzung.",
+      "es": "El juego se cerró: MPFever sale de la sesión.",
+      "it": "Il gioco è stato chiuso: MPFever lascia la sessione.",
+      "nl": "Het spel is gesloten: MPFever verlaat de sessie.",
+      "pl": "Gra została zamknięta: MPFever opuszcza sesję.",
+      "pt-BR": "O jogo foi fechado: o MPFever sai da sessão.",
+      "ru": "Игра закрыта: MPFever выходит из сеанса.",
+      "ja": "ゲームが終了しました：MPFever はセッションから抜けます。",
+      "ko": "게임이 종료되었습니다: MPFever가 세션에서 나갑니다.",
+      "zh-CN": "游戏已关闭：MPFever 退出会话。",
+      "zh-TW": "遊戲已關閉：MPFever 退出工作階段。"
     }
   }
 }

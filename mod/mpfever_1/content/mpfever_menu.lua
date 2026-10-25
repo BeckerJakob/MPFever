@@ -878,7 +878,6 @@ local function setup()
 					end
 				end
 			end
-			right[#right + 1] = vfill()
 			-- the buttons
 			local actions = {}
 			if isHost then
@@ -896,7 +895,9 @@ local function setup()
 					or (st.lobby == "client" and T("Quitter le salon", "Leave the lobby") or T("Annuler", "Cancel"))
 				actions[#actions + 1] = button(cancelLabel, function() request("cancel") end, { icon = "::/gui/menu/icons/symbol_x.tga" })
 			end
-			right[#right + 1] = box(H, actions)
+			-- (kept under the column, always in view: a long list of players or settings scrolls above them, it no longer pushes
+			-- the « Start the game » button out of the page, where it could not be clicked)
+			local actionsBox = box(H, actions)
 
 			-- the mods of the host's savegame, under its picture: the player who joins sees at once which ones are missing here
 			-- (the host's game cannot be loaded without them, see mpfever_auto.lua)
@@ -1046,7 +1047,16 @@ local function setup()
 			body[#body + 1] = box(H, {
 				box(V, leftCol),
 				gap(24, 1),
-				box(V, right, nil, { size = { PAGE_W - SIDE_W - 40, SIDE_W * 9 / 16 } }),
+				box(V, {
+					builtin.ScrollArea{
+						meta = { styleSheet = style{ size = { PAGE_W - SIDE_W - 40, math.floor(SIDE_W * 9 / 16) - 64 } } },
+						content = box(V, right, nil, { size = { PAGE_W - SIDE_W - 60, -1 } }),
+						horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+						verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+					},
+					vfill(),
+					actionsBox,
+				}, nil, { size = { PAGE_W - SIDE_W - 40, SIDE_W * 9 / 16 } }),
 			})
 		elseif tab:old() == "host" then
 			-- the « Host » tab ------------------------------------------------------------------------------------------
