@@ -65,7 +65,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.5.3";
+        public const string Version = "0.5.4";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -951,6 +951,14 @@ namespace MPFever
             hostBtn.Enabled = joinBtn.Enabled = localBtn.Enabled = false;
             menuGame = new GameLink(SavedName(), "menu");
             games.Add(menuGame);
+            // a savegame loaded without a lobby (from the game's own menu): its mod keeps nothing for other players, and the native
+            // module holds no tool build for a lobby (issue #82: the frame rate fell with each module of a train station)
+            menuGame.FromGame += (g, m) =>
+            {
+                if (m.Kind != "hello" || hostFromGame != null || clientFromGame != null) return;
+                g.ToGame(Msg.Make("solo", g.Name));
+                NativeHoldOff(g);
+            };
             menuGame.Exited += () => { Log.W(T("Transport Fever 3 fermé.", "Transport Fever 3 closed.")); LeaveOnGameExit(); try { BeginInvoke((Action)InstallPendingUpdateThenClose); } catch { } };
             MenuStatus();
             // (the game rewrites its log at its start: the previous run's is kept for a report)
@@ -965,6 +973,21 @@ namespace MPFever
                 var addr = JoinAtStart;
                 new Thread(() => { Thread.Sleep(1000); OnMenuRequest("join", addr, menuGame.Name); }) { IsBackground = true }.Start();
             }
+        }
+
+        /// <summary>The native module of this game holds the tools' builds no more (native_ctl.txt "enable 0"): the mod of a session
+        /// turned it on, and nobody releases them once the session is over (a savegame loaded afterwards: no build went through).</summary>
+        static void NativeHoldOff(GameLink g)
+        {
+            try
+            {
+                using (var f = new FileStream(Path.Combine(g.Dir, "native_ctl.txt"), FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    var b = System.Text.Encoding.ASCII.GetBytes("enable 0\n");
+                    f.Write(b, 0, b.Length);
+                }
+            }
+            catch (Exception e) { Log.Dim("native_ctl: " + e.Message); }
         }
 
         /// <summary>Command for the native module's Steam part (steam_ctl.txt): presence / invite / clear.</summary>
@@ -1592,7 +1615,7 @@ namespace MPFever
             sessionGen++;
             clientCancelled = true;
             Options.HostSession = null;
-            foreach (var g in games.ToList()) g.WriteSettings();
+            foreach (var g in games.ToList()) { g.WriteSettings(); NativeHoldOff(g); }
             Client[] gone; lock (clients) { gone = clients.ToArray(); clients.Clear(); }
             foreach (var cl in gone) try { cl.Leave(); } catch { }
             var r = relay; relay = null;

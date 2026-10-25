@@ -2066,6 +2066,8 @@ end
 
 local function captureNativeBuild(state, param)
 	local st = state:get() or {}
+	-- (a game without a lobby sends its builds to nobody: they are not kept, see H.solo)
+	if st.solo then SIM.replayBuildAt = nil; return end
 	R.CO = st.co
 	local now = gameTime()
 	SIM.replayBuildAt = nil   -- (see DET.wrapModEvents)
@@ -2703,6 +2705,9 @@ local function handleEvent(userParams, state, src, id, name, param)
 			-- state megabytes heavy, and the engine copies the whole state at every state:get())
 			local upto = tonumber(param.n) or 0
 			for _, o in ipairs(st.out or {}) do if o.n <= upto then o.args = nil end end
+		elseif name == "solo" then
+			-- (in the state: the simulation's script runs in more than one Lua state. Cleared at every load, see resumeAfterLoad)
+			st.solo = param.on ~= false or nil
 		elseif name == "auth" then
 			for _, o in ipairs(st.authOwn or {}) do
 				if o.n == param.n then correctMoney(o.auth, param, param.n, api.cmd.sendCommand, st.co) end
@@ -3179,7 +3184,18 @@ local H = {}
 H.welcome = function(from, p)
 	if p.you then G.me = p.you end
 	G.connected = true
+	if G.solo then G.solo = nil; pcall(toSim, "solo", { on = false }) end
 	log("connected to session as " .. tostring(G.me) .. " (" .. tostring(p.role) .. ")")
+end
+
+-- The launcher has no lobby for this game (MPFever.exe, then a savegame loaded from the game's own menu): its builds go to nobody.
+-- The simulation stops keeping them (issue #82: every edit of a train station kept in full in its state, which the engine copies
+-- several times a frame; the frame rate fell with each module added)
+H.solo = function(from, p)
+	if G.connected then return end
+	G.solo = true
+	pcall(toSim, "solo", { on = true })
+	log("no lobby: the builds of this game are not kept for other players")
 end
 
 H.chat = function(from, p) log("chat " .. tostring(from) .. ": " .. tostring(p.text)) end
@@ -10044,6 +10060,66 @@ H.badui = function(from, p)
 	G.waits[#G.waits + 1] = { at = G.frames + 300, fn = autoFinish }
 end
 
+-- A train station edited again and again, as the module tool does (MPFEVER_SCENARIO=stationedit, host; issue #82: the frame
+-- rate fell with every module added to a train station): the station with the most modules replaced by itself
+-- MPFEVER_STATIONEDIT_N times (6), 10 s apart. Each round tells the interface's frame rate, the simulation state's size and what
+-- reading it costs. MPFEVER_KEEPOUT=1: the captures keep their proposals, as before 0.5.3 and without a lobby before 0.5.4.
+H.stationedit = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("AUTOTEST stationedit " .. t); AUTO.results[#AUTO.results + 1] = t end
+	if C.ROLE ~= "host" then say("host only"); return autoFinish() end
+	local function pickStation()
+		local pick, pc, best = nil, nil, -1
+		for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
+			local okc, c = pcall(function() return api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) end)
+			if okc and c and tostring(c.fileName):find("stations/rail/", 1, true) then
+				local n = 0
+				pcall(function() for _ in pairs(c.params.modules) do n = n + 1 end end)
+				if n > best then pick, pc, best = e, c, n end
+			end
+		end
+		return pick, pc, best
+	end
+	local function measure()
+		local state = G.stateObj
+		local st = state:get() or {}
+		local withArgs = 0
+		for _, o in ipairs(st.out or {}) do if o.args then withArgs = withArgs + 1 end end
+		local c0 = os.clock()
+		for _ = 1, 5 do state:get() end
+		return #C.ser(st), (os.clock() - c0) / 5 * 1000, #(st.out or {}), withArgs
+	end
+	-- (MPFEVER_STATIONEDIT_SOLO=1: the simulation told « no lobby » as H.solo does; its captures must stop)
+	if os.getenv("MPFEVER_STATIONEDIT_SOLO") == "1" then toSim("solo", { on = true }) end
+	local rounds = tonumber(os.getenv("MPFEVER_STATIONEDIT_N") or "") or 6
+	local k = 0
+	local f0, t0 = G.frames, os.clock()
+	local function round()
+		local fps = (G.frames - f0) / math.max(0.001, os.clock() - t0)
+		local size, getMs, nOut, withArgs = measure()
+		say(string.format("round %d: interface %.1f fps, state %d bytes, state:get() %.2f ms, captures %d (%d with their proposal)", k, fps, size, getMs, nOut, withArgs))
+		if k >= rounds then return autoFinish() end
+		k = k + 1
+		local pick, pc, nmod = pickStation()
+		if not pick then say("no train station"); return autoFinish() end
+		local okp, errp = pcall(function()
+			local params = C.plain(C.marshal(pc.params))
+			local P = api.engine.util.proposal.createProposalReplaceConstruction(pick, params)
+			deferredSend(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res, success)
+				log("AUTOTEST stationedit build " .. k .. ": " .. tostring(success))
+			end)
+		end)
+		if k == 1 then say("station " .. pick .. " '" .. tostring(pc.fileName) .. "', " .. nmod .. " modules") end
+		if not okp then say("edit failed " .. shortErr(errp)) end
+		f0, t0 = G.frames, os.clock()
+		G.waits[#G.waits + 1] = { at = G.frames + 600, fn = round }
+	end
+	G.waits[#G.waits + 1] = { at = G.frames + 300, fn = function() f0, t0 = G.frames, os.clock(); G.waits[#G.waits + 1] = { at = G.frames + 300, fn = round } end }
+end
+
 -- The edit of a construction sent by a window, as the Drive-in Warehouses mod sends a warehouse's goods (MPFEVER_SCENARIO=uiedit,
 -- host): the engine's replacement of a warehouse (else of a station or a depot of a player) with its settings, captured as the
 -- interface hook captures it. Every game must replay it (G.uiEdit) and stay in sync. MPFEVER_UIEDIT_FILE: part of the file name.
@@ -13387,6 +13463,8 @@ local function resumeAfterLoad(state)
 	local st = state:get() or {}
 	for _, o in ipairs(st.out or {}) do if o.n > G.outSent then G.outSent = o.n end end
 	G.outTold = nil
+	-- (a savegame made without a lobby: its builds are kept again until the launcher says « solo », see H.solo)
+	if st.solo then toSim("solo", { on = false }) end
 	-- (keyed by uid and game time: uids start again at 1 in every session, an old record must not hide a new one)
 	for _, r in ipairs(st.results or {}) do G.resultsSeen[tostring(r.uid) .. "@" .. tostring(r.at)] = true end
 	if type(st.hash) == "table" then G.hashSent = st.hash.n end
@@ -14260,6 +14338,7 @@ end
 local function guiUpdate(userParams, state, guiState)
 	if not C.ACTIVE then return end
 	G.frames = G.frames + 1
+	G.stateObj = state
 	if G.frames % 15 == 0 then pcall(G.previewTick) end
 	if G.frames % 600 == 0 then
 		local ps = G.pstat
@@ -14325,7 +14404,7 @@ local function guiUpdate(userParams, state, guiState)
 		local okb, errb = pcall(shipNativeBuilds, st)
 		if not okb then log("shipping native builds failed: " .. tostring(errb)) end
 		-- (the simulation forgets the proposals of the captures sent, and those of the savegame's: see out_shipped)
-		if G.outSent > (G.outTold or 0) then
+		if G.outSent > (G.outTold or 0) and os.getenv("MPFEVER_KEEPOUT") ~= "1" then
 			for _, o in ipairs(st.out or {}) do
 				if o.n <= G.outSent and o.args then toSim("out_shipped", { n = G.outSent }); break end
 			end
@@ -14335,6 +14414,15 @@ local function guiUpdate(userParams, state, guiState)
 			-- (BUILDLEAD: a capture of this game still waits to be shipped, see G.leadRefusedCheck)
 			G.outPending = false
 			for _, o in ipairs(st.out or {}) do if (o.n or 0) > G.outSent then G.outPending = true end end
+		end
+	elseif G.solo then
+		-- (no lobby, see H.solo: the captures made before the launcher said so are forgotten as if sent)
+		for _, o in ipairs(st.out or {}) do if o.n > G.outSent then G.outSent = o.n end end
+		if G.outSent > (G.outTold or 0) then
+			for _, o in ipairs(st.out or {}) do
+				if o.n <= G.outSent and o.args then toSim("out_shipped", { n = G.outSent }); break end
+			end
+			G.outTold = G.outSent
 		end
 	end
 

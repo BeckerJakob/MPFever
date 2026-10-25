@@ -1,6 +1,16 @@
 MPFever - Changelog
 ===================
 
+0.5.4 - train stations without the frame rate falling (issue #82)
+  - FIX (issue #82): the frame rate fell with every module added to a train station, when the game ran without a lobby
+    (MPFever.exe, then a savegame loaded from the game's own menu). MPFever kept every build in full in the simulation's
+    state, to send it to the other players; without a lobby nobody took it, and the engine copies the whole state several
+    times a frame. A game without a lobby no longer keeps its builds (the launcher tells it: « solo »). Measured on a train
+    station of 31 modules edited 6 times: each edit added about 420 KB, and the frame rate fell from 78 to 43 fps; in a
+    lobby, where 0.5.3 already drops a build once it is sent, it stayed between 84 and 88 fps.
+  - FIX (issue #82): after a session, a savegame loaded from the game's menu could not build anything (the tool's build was
+    held for a lobby that was gone). The native module stops holding builds when the session ends.
+
 0.5.3 - towns stay in sync, a much faster simulation, joining through Steam with no port to open, short drops without a reload
   - NEW: join through Steam, with no port to open on the router: the host's game listens on Steam (Steam's own peer to
     peer connections and its relays), and an invitation or « Join game » in the Steam friends list gives the host's Steam
