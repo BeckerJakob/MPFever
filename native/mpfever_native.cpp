@@ -3151,7 +3151,8 @@ static void InstallOrderFixes()
         if (i == 10) layout = layout && getUpd && g_applyTls != 0xFFFFFFFFu && GetEnvironmentVariableA("MPFEVER_NOTICKEPOCH", 0, 0) == 0;
         if (i == 6 || i == 7) layout = layout && GetEnvironmentVariableA("MPFEVER_NOPLATFORMORDER", 0, 0) == 0;
         // (the free-id queue: right after the freed ids' append, r13 the engine; MPFEVER_NOFREEMIN=1 on every game: FIFO as before)
-        if (i == 11) layout = layout && ORDER_FIXES[0].sig && FindSigRva(ORDER_FIXES[0].sig) + 0x22 == at && GetEnvironmentVariableA("MPFEVER_NOFREEMIN", 0, 0) == 0;
+        // (its signature is unique in the game's code; the "freed ids" one cannot be searched again here, its site is spliced already)
+        if (i == 11) layout = layout && GetEnvironmentVariableA("MPFEVER_NOFREEMIN", 0, 0) == 0;
         if (i == 9) {
             static const u8 ctx[] = { 0x49, 0x8B, 0x45, 0x10, 0x48, 0x8B, 0x08, 0x42, 0x8B, 0x1C, 0xA1 };
             layout = layout && g_needsPathGetter && at && memcmp((void*)(g_base + at + 0x1ad), ctx, sizeof(ctx)) == 0
