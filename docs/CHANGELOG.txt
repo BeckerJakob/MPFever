@@ -26,8 +26,11 @@ MPFever - Changelog
     parcel): the street tool gave it its own frame count on the builder's game, the games that replay the build gave it
     0, and a build of a pause took a counter that grows during the pause. Seen in the savegames of both games of a
     session, in the same pause: 275 segments of 1380 had another age. Every segment a build adds now gets the step it is
-    added at, the same on every game (MPFEVER_NOTICKEPOCH=1: as before). The checks compare the segments' ages (« ages »):
-    a difference shows at the build instead of minutes later in the towns.
+    added at, the same on every game, the streets the towns lay too (MPFEVER_NOTICKEPOCH=1: as before). The checks compare
+    the segments' ages (« ages »): a difference shows at the build instead of minutes later in the towns.
+  - FIX (desync): the checks also compare the ids every build gives its new streets and nodes (« buildIds »): a build that
+    made one more entity on one game (2026-10-25 11:03, found 4 minutes later in the vehicles) shows at once, and the
+    game is reloaded before towns and vehicles go apart.
   - FIX (desync): the towns' street field answered a point with the answer of the first point asked in its 50 m square,
     since the world was loaded: a small difference between two games became a lasting one. It is now computed for each
     point (TPF3-MP's town-field fix, MPFever's since 0.5.0, now on by default; MPFEVER_NOTOWNFIELD=1: off).

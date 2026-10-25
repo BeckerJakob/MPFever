@@ -1770,6 +1770,7 @@ namespace MPFever
     {
         public const int MainPort = 28090;
         static long seq;
+        static readonly object cmdGate = new object();
         public static bool Enabled => Environment.GetEnvironmentVariable("MPFEVER_STEAMNET") != "0";
         public static int TestIpPort => int.TryParse(Environment.GetEnvironmentVariable("MPFEVER_STEAMNET_IP"), out int p) && p > 0 && p < 65535 ? p : 0;
 
@@ -1778,7 +1779,10 @@ namespace MPFever
             var path = Path.Combine(dir, "steamnet_cmd.txt");
             var text = Environment.TickCount + "-" + Interlocked.Increment(ref seq) + "\t" + line + "\r\n";
             var b = new UTF8Encoding(false).GetBytes(text);
-            using (var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)) fs.Write(b, 0, b.Length);
+            // (one writer at a time: FileMode.Append seeks to the end when the file opens, so two lines written at once - the
+            // bulk connections are asked for together - landed on the same place and one was lost)
+            lock (cmdGate)
+                using (var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)) fs.Write(b, 0, b.Length);
         }
 
         /// <summary>The module's status lines (the file is complete once its line "end=1" is read), or null.</summary>

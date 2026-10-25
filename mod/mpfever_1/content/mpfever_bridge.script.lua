@@ -371,7 +371,7 @@ end
 
 local hashShown = false
 K.hashCostsShown = 0
-local function simHash(terrainSig, reg, n)
+local function simHash(terrainSig, reg, n, buildIds)
 	local tStart = os.clock()
 	-- the expensive parts take turns (issue #32: the whole check held the simulation step about 0.3 s every 10 s): every
 	-- checkpoint hashes the cheap parts and one group, chosen by the checkpoint's number, the same on every game. The
@@ -387,7 +387,7 @@ local function simHash(terrainSig, reg, n)
 		for _, p in ipairs(keep) do R.hashSkip[p] = nil end
 	end
 	local parts = R.contentHash(C.hashStr, C.dump)
-	parts.buildIds = tostring(R.idN or 0) .. "/" .. tostring(R.idSum or 0)
+	parts.buildIds = type(buildIds) == "table" and (tostring(buildIds.n) .. "/" .. tostring(buildIds.sum)) or "0/0"
 	R.hashSkip = nil
 	-- diagnostic (MPFEVER_VDUMP set): every vehicle and every company's money at each checkpoint, to diff two games
 	if os.getenv("MPFEVER_VDUMP") then
@@ -1153,7 +1153,7 @@ local function simApplyDue(state)
 				if a.kind == "hash" then
 					local c0 = os.clock()
 					local okA, auth = pcall(authValues, st.co)
-					st.hash = { n = a.n, parts = simHash(terrainSigAt(st, now), st.co, a.n), cost = os.clock() - c0, auth = okA and auth or nil }
+					st.hash = { n = a.n, parts = simHash(terrainSigAt(st, now), st.co, a.n, st.buildIds), cost = os.clock() - c0, auth = okA and auth or nil }
 					st.authOwn = st.authOwn or {}
 					st.authOwn[#st.authOwn + 1] = { n = a.n, auth = okA and auth or nil }
 					while #st.authOwn > 10 do table.remove(st.authOwn, 1) end
@@ -1691,9 +1691,17 @@ local function update(userParams, state, dt)
 				end
 				log("build ids t=" .. ck.at .. ": segments " .. table.concat(si, ",") .. " nodes " .. table.concat(ni, ",") .. " (node configurations " .. cfg .. ")")
 				-- (and summed for the checks, part "buildIds": every game gives a build the same ids, or the games went apart
-				-- right there - an entity one game made and not the other, 2026-10-25 11:03 - long before it shows elsewhere)
-				R.idN = (R.idN or 0) + 1
-				R.idSum = ((R.idSum or 0) + C.hashStr(0, ck.at .. ":" .. table.concat(si, ",") .. "|" .. table.concat(ni, ","))) % 4294967296
+				-- right there - an entity one game made and not the other, 2026-10-25 11:03 - long before it shows elsewhere. In
+				-- the simulation's state: the script runs in more than one Lua state, and the interface's checks read it too)
+				local okI, errI = pcall(function()
+					local st = state:get() or {}
+					local b = type(st.buildIds) == "table" and st.buildIds or { n = 0, sum = 0 }
+					b.n = (tonumber(b.n) or 0) + 1
+					b.sum = ((tonumber(b.sum) or 0) + C.hashStr(0, ck.at .. ":" .. table.concat(si, ",") .. "|" .. table.concat(ni, ","))) % 4294967296
+					st.buildIds = b
+					state:set(st)
+				end)
+				if not okI then log("build ids sum: " .. tostring(errI)) end
 			else
 				keep[#keep + 1] = ck
 			end
@@ -7019,7 +7027,7 @@ H.det_run = function(from, p)
 		local t = gameTime()
 		if t >= target then stable = stable + 1 else stable = 0 end
 		if stable >= 5 or G.frames > deadline then
-			local parts = simHash(nil, G.co)
+			local parts = simHash(nil, G.co, nil, G.simBuildIds)
 			parts.reached = (t >= target)
 			send("det_hash", { round = round, steps = steps, parts = parts })
 			-- (MPFEVER_CENSUS_FROM=n: no census before round n)
@@ -7329,7 +7337,7 @@ local function runPausedActions()
 				local okA, auth = pcall(authValues, G.co)
 				G.authOwn = G.authOwn or {}
 				G.authOwn[a.n] = okA and auth or nil
-				send("sync_hash", { n = a.n, parts = simHash(G.simTerrainSig, G.co, a.n), cost = 0, auth = okA and auth or nil })
+				send("sync_hash", { n = a.n, parts = simHash(G.simTerrainSig, G.co, a.n, G.simBuildIds), cost = 0, auth = okA and auth or nil })
 			elseif a.fn == "mpfCoJoin" or coIsLoanEvent({ co = G.co }, a) then
 				toSim("co_apply", a)
 			else
@@ -14282,6 +14290,7 @@ local function guiUpdate(userParams, state, guiState)
 	local okh, st = pcall(function() return state:get() end)
 	if not (okh and type(st) == "table") then st = {} end
 	G.simTerrainSig = st.terrainSig
+	G.simBuildIds = st.buildIds
 	G.co = st.co
 	local okco, errco = pcall(coGui, st)
 	if not okco then log("companies (gui): " .. tostring(errco)) end
