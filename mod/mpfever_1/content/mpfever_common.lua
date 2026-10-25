@@ -104,6 +104,20 @@ function C.appendFile(path, text)
 	return true
 end
 
+-- A file read again every frame, which the launcher appends to: kept open (never closed). An open of a file another program has
+-- just written waits for the antivirus to read it again (about 9 ms with Windows Defender, measured), several times a second
+-- during a session; through a kept handle the appended lines are read in microseconds. (The launcher empties these files, it
+-- never deletes them: the handle stays the file's.) A missing file is looked for again twice a second.
+C.kept, C.keptMissed = {}, {}
+function C.keptOpen(path)
+	local f = C.kept[path]
+	if f then return f end
+	if not C.IO or (C.keptMissed[path] and os.clock() - C.keptMissed[path] < 0.5) then return nil end
+	f = C.IO.open(path, "rb")
+	if f then C.kept[path] = f; C.keptMissed[path] = nil else C.keptMissed[path] = os.clock() end
+	return f
+end
+
 function C.logger(prefix, fileName)
 	return function(msg)
 		pcall(debugPrint, "[MPFEVER" .. prefix .. "] " .. msg)

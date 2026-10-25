@@ -1,6 +1,33 @@
 MPFever - Changelog
 ===================
 
+0.5.3 - (in progress)
+  - FIX (desync): towns grew differently next to the streets and tracks the players built (« script:towns », then the
+    streets, a reload). Every street and track segment has an age the towns' parcels compare (the older segment keeps the
+    parcel): the street tool gave it its own frame count on the builder's game, the games that replay the build gave it
+    0, and a build of a pause took a counter that grows during the pause. Seen in the savegames of both games of a
+    session, in the same pause: 275 segments of 1380 had another age. Every segment a build adds now gets the step it is
+    added at, the same on every game (MPFEVER_NOTICKEPOCH=1: as before). The checks compare the segments' ages (« ages »):
+    a difference shows at the build instead of minutes later in the towns.
+  - FIX (desync): the towns' street field answered a point with the answer of the first point asked in its 50 m square,
+    since the world was loaded: a small difference between two games became a lasting one. It is now computed for each
+    point (TPF3-MP's town-field fix, MPFever's since 0.5.0, now on by default; MPFEVER_NOTOWNFIELD=1: off).
+  - FIX (desync): a save changed the world of the game that saved (the game's own clean-up of empty ground textures), and
+    the games of a session save at other moments (autosaves, a player saving). Saving now leaves the world as it is
+    (MPFEVER_SAVECLEANUP=1: as before).
+  - FIX (desync, issue #85): a signal put on a track bridge or in a tunnel was replayed in a way that shaped the ground
+    there again, which the signal tool does not do: « TOWN STATS DIFFER » and a reload after each such signal. It is now
+    replayed from the tool's own proposal, as the stops on bridges are since 0.5.1 (MPFEVER_NATIVESIGNAL=0: as before),
+    and the replay that remains for the other cases leaves the towns alone when the builder's build did.
+  - PERF: the simulation kept the last 50 builds made here in full (about 4.6 MB at the end of a 2-hour session, and
+    every game took them with the host's game at a reload); the engine reads that whole state several times per step. A
+    build's proposal is now dropped once it is sent to the others.
+  - PERF: the files the launcher and the game exchange several times a second stay open (in.log, out.log, the native
+    module's controls): every open of a file another program had just written waited about 9 ms for the antivirus.
+  - TESTS: autotest recplay (tools/recplay.py): a real session's actions, pauses, speeds and autosaves replayed on two
+    games from one of its savegames, to reproduce a desync of a player's session. The census reads the segments' ages
+    (MPFEVER_CENSUS=TICK_EPOCH). Scenario dsignal: MPFEVER_DSIGNALBRIDGE=1 puts the signal on a track bridge.
+
 0.5.2 - a savegame that crashed at every load (issue #84)
   - FIX: a savegame made in a session could keep an action of that session past its time; it was applied as the world
     loaded, and a vehicle it sold crashed the game at every load (« it != components.end() » in UI::CSelector, issue #84).

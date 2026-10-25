@@ -1075,6 +1075,17 @@ function R.contentHash(hashStr, dumpFn)
 		return s1 .. "-" .. s2 .. tostring(c.roadTemplate) .. "/" .. tostring(okd and nd or 0) .. "/" .. tostring(c.roadStyle)
 			.. "/" .. tostring(c.roadType) .. "/" .. tostring(c.type) .. "/" .. tostring(c.typeIndex) .. "/" .. deco .. "/" .. lanesig .. "/d" .. tostring(c.distance)
 	end) end)
+	-- the segments' ages (TICK_EPOCH: the step each was added at, which the towns' parcels compare; the street tool used to give
+	-- its own on the builder's game only), as a set
+	part("ages", function()
+		local ct = CT("TICK_EPOCH")
+		if not ct then return "none" end
+		local get = api.engine.getComponent
+		return count("BASE_EDGE", function(e)
+			local ok, t = pcall(get, e, ct)
+			return ok and t and (tostring(t.time) .. "/" .. tostring(t.commandIndex) .. "/" .. tostring(t.subIndex)) or "-"
+		end)
+	end)
 	part("vehicles", function() return count("TRANSPORT_VEHICLE", function(e)
 		local c = comp(e, "MOVE_PATH")
 		return c and dumpFn(c.dyn) or "depot"

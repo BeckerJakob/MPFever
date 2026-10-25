@@ -65,7 +65,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.5.2";
+        public const string Version = "0.5.3";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -203,7 +203,7 @@ namespace MPFever
         // parts every game corrects by itself from the host's values (not a reason to reload)
         static readonly HashSet<string> CorrectedParts = new HashSet<string> { "money" };
         // game state that is never a local measure, even when it differs right after a reload (a company a game missed must be seen)
-        static readonly HashSet<string> NeverLocalParts = new HashSet<string> { "companies", "money", "owners", "loans", "edges", "constructions", "lines" };
+        static readonly HashSet<string> NeverLocalParts = new HashSet<string> { "companies", "money", "owners", "loans", "edges", "ages", "constructions", "lines" };
         // the simulation's own state (passengers boarding, vehicle positions, the towns and what follows them): it used to drift
         // by itself (the game's Lua walked its tables in a different order on every PC, fixed in 0.3.4), so it was only reloaded
         // when it lasted. The games now stay identical: a difference there comes from an action applied differently and must be
@@ -3580,6 +3580,24 @@ namespace MPFever
                 }
                 return true;
             };
+            // (the regular checks of the session: every change of their result, with the game time it was seen at)
+            bool replaying = true;
+            new Thread(() =>
+            {
+                string lastSync = null;
+                while (replaying)
+                {
+                    Thread.Sleep(1000);
+                    string s = syncText;
+                    if (s != lastSync) { lastSync = s; AutoLine("recplay: t=" + MaxClock() + " check: " + s); }
+                }
+            }) { IsBackground = true, Name = "RecplayWatch" }.Start();
+            try { RecPlayEvents(lines, appliedEverywhere); }
+            finally { replaying = false; }
+        }
+
+        void RecPlayEvents(string[] lines, Func<string, bool> appliedEverywhere)
+        {
             foreach (var raw in lines)
             {
                 if (ClosedGames() != "") { AutoLine("recplay: a game closed: " + ClosedGames()); break; }
@@ -3600,10 +3618,14 @@ namespace MPFever
                     case "pauseat":
                         {
                             long at = long.Parse(p[1], CultureInfo.InvariantCulture);
+                            // (a time the games already passed: they stop at the next time every game can still reach)
+                            long ahead = FutureStamp();
+                            bool past = MaxClock() + 2 * Step >= at;
+                            if (past) at = Math.Max(at, ahead);
                             lock (sessionGate) pauseAt = at;
                             BroadcastSession();
-                            bool ok = WaitUntil(() => { lock (clocks) return clocks.Count >= 2 && clocks.Values.All(c => c.T == at); }, 180);
-                            AutoLine("recplay: paused at " + at + (ok ? "" : " NOT REACHED (" + string.Join(",", clocks.Values.Select(c => c.T)) + ")"));
+                            bool ok = WaitUntil(() => { lock (clocks) return clocks.Count >= 2 && clocks.Values.All(c => c.T == at); }, 300);
+                            AutoLine("recplay: paused at " + at + (past ? " (asked " + p[1] + ", already passed)" : "") + (ok ? "" : " NOT REACHED (" + string.Join(",", clocks.Values.Select(c => c.T)) + ")"));
                             break;
                         }
                     case "speed":

@@ -762,11 +762,12 @@ namespace MPFever
                             if (m != null) FromGame?.Invoke(this, m);
                         }
                     }
-                    catch (Exception e) { Log.Warn(L.F("[{0}] lecture {1} : {2}", "[{0}] reading {1}: {2}", Name, Path.GetFileName(src.Path), e.Message)); Thread.Sleep(500); }
+                    catch (Exception e) { Log.Warn(L.F("[{0}] lecture {1} : {2}", "[{0}] reading {1}: {2}", Name, Path.GetFileName(src.Path), e.Message)); src.Dispose(); Thread.Sleep(500); }
                 }
                 LogMemory();
                 Thread.Sleep(5);
             }
+            foreach (var src in sources) src.Dispose();
         }
 
         DateTime memAt = DateTime.MinValue;
@@ -787,35 +788,43 @@ namespace MPFever
             catch { }
         }
 
-        sealed class Tail
+        /// <summary>The lines a game appends to a file. The file stays open: an open of a file another program has just
+        /// written waits for the antivirus to read it again (about 9 ms with Windows Defender, and its processor time), and
+        /// this one is read 200 times a second.</summary>
+        sealed class Tail : IDisposable
         {
             public readonly string Path;
             long off;
+            FileStream fs;
             readonly List<byte> pending = new List<byte>();
             public Tail(string path) { Path = path; }
 
             public IEnumerable<string> ReadLines()
             {
                 var lines = new List<string>();
-                if (!File.Exists(Path)) return lines;
-                using (var fs = new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                if (fs == null)
                 {
-                    if (fs.Length < off) { off = 0; pending.Clear(); }
-                    if (fs.Length > off)
+                    if (!File.Exists(Path)) return lines;
+                    fs = new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                }
+                long len = fs.Length;
+                if (len < off) { off = 0; pending.Clear(); }
+                if (len > off)
+                {
+                    fs.Seek(off, SeekOrigin.Begin);
+                    var buf = new byte[len - off];
+                    int n = fs.Read(buf, 0, buf.Length);
+                    off += n;
+                    for (int k = 0; k < n; k++)
                     {
-                        fs.Seek(off, SeekOrigin.Begin);
-                        var buf = new byte[fs.Length - off];
-                        int n = fs.Read(buf, 0, buf.Length);
-                        off += n;
-                        for (int k = 0; k < n; k++)
-                        {
-                            if (buf[k] == 10) { lines.Add(Utf8.GetString(pending.ToArray()).TrimEnd((char)13)); pending.Clear(); }
-                            else pending.Add(buf[k]);
-                        }
+                        if (buf[k] == 10) { lines.Add(Utf8.GetString(pending.ToArray()).TrimEnd((char)13)); pending.Clear(); }
+                        else pending.Add(buf[k]);
                     }
                 }
                 return lines;
             }
+
+            public void Dispose() { fs?.Dispose(); fs = null; }
         }
 
         public void Dispose() { stop = true; }

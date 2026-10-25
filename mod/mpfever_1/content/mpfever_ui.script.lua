@@ -3299,13 +3299,12 @@ local function pollControl()
 			if not ok then log("load: " .. tostring(err)) end
 		end
 	end
-	local f = C.IO.open(C.DIR .. C.BS .. "in.log", "rb")
+	local f = C.keptOpen(C.DIR .. C.BS .. "in.log")
 	if not f then return end
 	local size = f:seek("end")
 	if U.ctlOff == nil or size < U.ctlOff then
 		-- messages from before this UI started are not for it
 		U.ctlOff = size
-		f:close()
 		return
 	end
 	if size > U.ctlOff then
@@ -3326,7 +3325,6 @@ local function pollControl()
 		end
 		U.ctlOff = U.ctlOff + consumed
 	end
-	f:close()
 	local keep = {}
 	for _, r in ipairs(U.resyncQueue or {}) do
 		if os.clock() - r.t < 1.5 then

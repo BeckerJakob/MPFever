@@ -420,6 +420,16 @@ static void AppendEvent(Buf& b)
 static volatile long g_tinWant = 0, g_tinLoaded = 0;      // terrain edit sent by the mod, to be injected: id asked / id loaded
 static void TerrainLoadIn(long id);
 static void* g_slot = 0;
+// the game state of the command each thread applies (ApplyDetour; the module has no CRT, so no __declspec(thread))
+struct ApplySlot { volatile long tid; u8* state; };
+static ApplySlot g_applying[8];
+static ApplySlot* ApplyingOf()
+{
+    long tid = (long)GetCurrentThreadId();
+    for (int i = 0; i < 8; i++) if (g_applying[i].tid == tid) return &g_applying[i];
+    for (int i = 0; i < 8; i++) if (_InterlockedCompareExchange(&g_applying[i].tid, tid, 0) == 0) return &g_applying[i];
+    return 0;
+}
 static long g_iter = 0;
 static long g_iterlogDone = 0;
 static volatile long g_setPlayer = 0;
@@ -551,17 +561,33 @@ static bool InOpenNet(i32 e)
     return false;
 }
 
+// a file the mod writes and the module reads again and again, kept open: an open of a file just written waits for the
+// antivirus (about 9 ms with Windows Defender), through the kept handle the read takes microseconds. The mod only appends to
+// these files or rewrites them, it never deletes them. (A missing file is looked for again at most twice a second.)
+struct KeptFile { HANDLE h; DWORD missedAt; };
+static HANDLE KeptHandle(KeptFile& k, const char* name)
+{
+    if (k.h && k.h != INVALID_HANDLE_VALUE) return k.h;
+    DWORD now = GetTickCount();
+    if (k.h == INVALID_HANDLE_VALUE && now - k.missedAt < 500) return INVALID_HANDLE_VALUE;
+    char path[400];
+    PathOf(path, name);
+    k.h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    if (k.h == INVALID_HANDLE_VALUE) k.missedAt = now;
+    return k.h;
+}
+
+static KeptFile g_ctlFile = { 0, 0 };
 static void ReadControl()
 {
-    char path[400];
-    PathOf(path, "native_ctl.txt");
-    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    HANDLE f = KeptHandle(g_ctlFile, "native_ctl.txt");
     if (f == INVALID_HANDLE_VALUE) return;
     static char buf[16384];
     DWORD size = GetFileSize(f, 0), got = 0;
-    if (size > sizeof(buf) - 1) { SetFilePointer(f, (long)(size - (sizeof(buf) - 1)), 0, 0); size = sizeof(buf) - 1; }
+    if (size == INVALID_FILE_SIZE) return;
+    SetFilePointer(f, size > sizeof(buf) - 1 ? (long)(size - (sizeof(buf) - 1)) : 0, 0, 0);
+    if (size > sizeof(buf) - 1) size = sizeof(buf) - 1;
     ReadFile(f, buf, size, &got, 0);
-    CloseHandle(f);
     buf[got] = 0;
     long wantLocal = 0, wantTok = 0; bool haveLocal = false;
     long wantOthers[32]; int nWantOthers = 0; long othersTok = 0; bool haveOthers = false;
@@ -988,7 +1014,10 @@ extern "C" u64 PreIterDetour(void* a)
         void* c = d.cmd;
         d.cmd = 0;
         if (g_timing) TimingLine("deferred-apply", (u64)g_iter, (u64)(g_iter - d.queued));
+        ApplySlot* s = ApplyingOf();
+        if (s) s->state = (u8*)g_slot;
         g_applyOrig(g_slot, c);
+        if (s) s->state = 0;
         ((Dtor0)(g_base + RVA_CMD_DTOR))(c);
         HeapFree(GetProcessHeap(), 0, c);
     }
@@ -1510,7 +1539,18 @@ extern "C" u64 ReplDetour(void* src, void* dst, u64 flag)
     return r;
 }
 
+static u64 ApplyBody(void* a, void* b);
 extern "C" u64 ApplyDetour(void* a, void* b)
+{
+    ApplySlot* s = ApplyingOf();
+    u8* prev = s ? s->state : 0;
+    if (s) s->state = (u8*)a;
+    u64 r = ApplyBody(a, b);
+    if (s) s->state = prev;
+    return r;
+}
+
+static u64 ApplyBody(void* a, void* b)
 {
     g_slot = a;
     ApplyLocalPlayer("apply");
@@ -2906,6 +2946,42 @@ static void FixNeedsPath(SavedRegs* r)
     SortEntityVector(data, 9);
 }
 
+// 10: the TickEpoch of the street and track segments (time, commandIndex, subIndex: "the last time an entity was modified or
+// added"). street_util::AddToEngine gives each new segment of a build its component; the engine fills commandIndex (a per-frame
+// counter of the builds applied) and subIndex (its place in the build) when commandIndex is still -1, and keeps the time the
+// proposal's segment carries: the street tool's GameTime.tickCount on the builder's game (the frames it was open, paused ones
+// too), 0 on the games that replay the build from its segments, the old segment's when the tool replaced one. The towns' parcels
+// compare those (parcel_util: the older segment keeps the parcel, then the lower commandIndex, subIndex and entity id), so the
+// same street had another age on every game and towns grew differently next to it. Seen in the savegames of the two games of
+// 2026-10-25, in the same pause: 275 of 1380 segments differed (the host's tool times against 0, commandIndex 2230 against 0,
+// and subIndex 33 against 12: a replay does not group the segments as the tool does). Every segment a command adds now gets the
+// step it is added at (updateCount, the same on every game) and commandIndex and subIndex 0: segments of one step are ordered
+// by their entity ids, which every game gives alike. cmp word [rdi+0x31c],0 (whether the engine stamps it) finds it stamped.
+static u32 g_getUpdRva = 0;                         // GameTime's updateCount getter, called with the state's time (state+0x28)
+static volatile long g_tickLogged = 0;
+static void FixTickEpoch(SavedRegs* r)
+{
+    _InterlockedIncrement(&g_orderSorts[10]);
+    ApplySlot* s = ApplyingOf();
+    u8* gs = s ? s->state : 0;
+    u64 rec = r->rdi;
+    if (!gs || !g_getUpdRva || !Readable(gs + 0x18, 0x18) || r->rsi != *(u64*)(gs + 0x18) || !Writable((void*)(rec + 0x318), 8)) { _InterlockedIncrement(&g_orderRefused[10]); return; }
+    u64 time = *(u64*)(gs + 0x28);
+    if (!time || !Readable((void*)time, 0x18)) { _InterlockedIncrement(&g_orderRefused[10]); return; }
+    u32 step = ((u32(*)(u64))(g_base + g_getUpdRva))(time);
+    u32 was = *(u32*)(rec + 0x318);
+    u16 wasCmd = *(u16*)(rec + 0x31c);
+    if (was != step || wasCmd != 0xFFFF) _InterlockedIncrement(&g_orderReorders[10]);
+    if (g_tickLogged < 6) {
+        _InterlockedIncrement(&g_tickLogged);
+        Buf b; b.str("tick epoch: segment ").dec(*(i32*)rec).str(" added at step ").dec((long)step).str(" (it carried ").dec((long)was).str("/")
+            .dec((long)(short)wasCmd).str(")"); LogLine(b);
+    }
+    *(u32*)(rec + 0x318) = step;
+    *(u16*)(rec + 0x31c) = 0;
+    *(u16*)(rec + 0x31e) = 0;
+}
+
 // A mid-function splice: steal whole instructions at the site (no branch, call or rip-relative operand, nothing jumping
 // inside them), jump to a stub that saves every register and xmm0-5, calls fn with the saved registers, restores them,
 // runs the stolen bytes and jumps back.
@@ -2951,6 +3027,8 @@ static const OrderFix ORDER_FIXES[] = {
     { "platform candidates", "49 8B CE 49 2B CD 48 8B C7 48 F7 E9 48 D1 FA 4C 8B C2 49 C1 E8 3F 4C 03 C2 4C 8D 4D F0 49 8B D6 49 8B CD E8", 0, 6, FixPlatformCandidates },
     { "town street field", "80 79 19 00 74 D6 41 80 79 19 00 75 35 41 3B 69 1C 75 0A 41 3B 71 20 75 04 32 D2 EB 04 41 0F 4D D3 84 D2 78 1D 4D 3B CA 74 18", 6, 5, FixTownField },
     { "needs path", "49 8B 45 10 48 8B 50 08 48 2B 10 48 C1 FA 02 4C 8D 45 30 48 8D 4D E0 E8", 0, 8, FixNeedsPath },
+    // build 40425; 0.5.3
+    { "tick epochs", "66 83 BF 1C 03 00 00 00 7D 1B 0F B7 05 ?? ?? ?? ?? 66 89 87 1C 03 00 00 0F B7 C5 66 89 87 1E 03 00 00 66 FF C5", 0, 8, FixTickEpoch },
 };
 static const int ORDER_N = (int)(sizeof(ORDER_FIXES) / sizeof(ORDER_FIXES[0]));
 
@@ -2972,16 +3050,24 @@ static void InstallOrderFixes()
             0x48, 0x8B, 0x41, 0x08, 0x48, 0x85, 0xC0, 0x0F, 0x84, 0xA7, 0x00, 0x00, 0x00, 0x83, 0x78, 0x08, 0x01, 0x0F, 0x8E, 0x9D, 0x00, 0x00, 0x00 };
         if (memcmp((void*)(g_base + g), head, sizeof(head)) == 0) g_needsPathGetter = g;
     }
+    // GameTime's getters: tickCount (+0x3c) and updateCount (+0x40)
+    u32 getTick = FindSigRva("48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 3C 48 83 C4 28 C3");
+    u32 getUpd = FindSigRva("48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 40 48 83 C4 28 C3");
+    g_getUpdRva = getUpd;
     Buf b; b.str("order fixes (from TPF3-MP):");
     for (int i = 0; i < ORDER_N; i++) {
         const OrderFix& f = ORDER_FIXES[i];
         u32 at = FindSigRva(f.sig);
         bool layout = true;
         if (i == 1) layout = recordsOk;
-        // (the four ported in 0.5.0, OFF unless MPFEVER_ORDER2=1: 40 minutes at x4 on a large map stayed in sync without them,
-        // as with them; nothing they would fix was ever seen in MPFever's sessions. Kept for a diagnosis)
-        if (i >= 6 && GetEnvironmentVariableA("MPFEVER_ORDER2", 0, 0) == 0) layout = false;
+        // (three of the four ported in 0.5.0, OFF unless MPFEVER_ORDER2=1: 40 minutes at x4 on a large map stayed in sync
+        // without them, as with them; nothing they would fix was ever seen in MPFever's sessions. Kept for a diagnosis. The
+        // town street field is on since 0.5.3: a game that answered one point of a cell differently answered every later point
+        // of it differently, which made a small difference between the games a lasting one)
+        if (i >= 6 && i <= 9 && i != 8 && GetEnvironmentVariableA("MPFEVER_ORDER2", 0, 0) == 0) layout = false;
         if (i == 8) layout = layout && fieldAt && at + f.offset == fieldAt + 0xba && GetEnvironmentVariableA("MPFEVER_NOTOWNFIELD", 0, 0) == 0;
+        // (the segments' ages: the stolen compare is the one the stamping follows, and the step comes from GameTime's getter)
+        if (i == 10) layout = layout && getUpd && GetEnvironmentVariableA("MPFEVER_NOTICKEPOCH", 0, 0) == 0;
         if (i == 6 || i == 7) layout = layout && GetEnvironmentVariableA("MPFEVER_NOPLATFORMORDER", 0, 0) == 0;
         if (i == 9) {
             static const u8 ctx[] = { 0x49, 0x8B, 0x45, 0x10, 0x48, 0x8B, 0x08, 0x42, 0x8B, 0x1C, 0xA1 };
@@ -2996,9 +3082,8 @@ static void InstallOrderFixes()
     // development...): tickCount also counts the frames a game stands still, a different number on every game of a session;
     // those calls now read updateCount (the simulation step, the same everywhere). TPF3-MP's "paused-tick" fix does the same by
     // not counting the paused frames; this keeps tickCount itself as it is (the mod's stillness checks read it). The two calls
-    // from the interface's tools (0x577e0b, 0x5a51f1) are left as they are.
-    u32 getTick = FindSigRva("48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 3C 48 83 C4 28 C3");
-    u32 getUpd = FindSigRva("48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 40 48 83 C4 28 C3");
+    // from the interface's tools (0x577e0b, 0x5a51f1) are left as they are (the street tool's is the segments' time, which the
+    // tick epochs fix above replaces when the build is applied).
     int moved = 0;
     if (getTick && getUpd) {
         for (int ci = 0; ci < g_nSimCalls; ci++) {
@@ -3015,6 +3100,27 @@ static void InstallOrderFixes()
         }
     }
     Buf t; t.str("simulation seeds from the step count instead of tickCount: ").dec(moved).str(" of ").dec(g_nSimCalls).str(" calls"); LogLine(t);
+}
+
+// A save changed the world of the game that saved: the GameSave command removes, before it writes the file, the TerrainTileBrush
+// component of every terrain tile whose ground textures are all empty (the component's storage, the tiles' revisions and the
+// terrain's brush counters change). The games of a session save at other moments (autosaves count real time, a player saves
+// by hand), so their worlds differed after a save. The call is left out: the components stay (they hold nothing, a game saved
+// without the mod drops them at its next save), and saving changes nothing in the world. MPFEVER_SAVECLEANUP=1 keeps it.
+static void PatchSaveCleanup()
+{
+    if (GetEnvironmentVariableA("MPFEVER_SAVECLEANUP", 0, 0) > 0) { Buf b; b.str("saves: the game's tile clean-up kept (MPFEVER_SAVECLEANUP)"); LogLine(b); return; }
+    u32 at = FindSigRva("49 8B 44 24 08 48 8B 50 10 48 8B 48 18 E8 ?? ?? ?? ?? 49 8B 44 24 10");
+    u8* site = at ? (u8*)(g_base + at + 13) : 0;
+    DWORD old;
+    bool ok = site && site[0] == 0xE8 && VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &old);
+    if (ok) {
+        static const u8 nop5[] = { 0x0F, 0x1F, 0x44, 0x00, 0x00 };
+        memcpy(site, nop5, 5);
+        VirtualProtect(site, 5, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), site, 5);
+    }
+    Buf b; b.str(ok ? "saves: no change to the world (the tile clean-up of the GameSave command left out)" : "saves: the tile clean-up NOT found (a save changes the world of the game that saves)"); LogLine(b);
 }
 
 // ---------------------------------------------------------------- the tools' company (ported from TPF3-MP, MIT)
@@ -3308,17 +3414,16 @@ typedef u64 (*SyncCallF)(void*, void*);
 static void* g_syncTarget = 0;
 static long g_trimSeq = -1;
 static DWORD g_trimSeqAt = 0, g_paceReadAt = 0;
+static KeptFile g_paceFile = { 0, 0 };
 static void ReadPace()
 {
-    char path[400];
-    PathOf(path, "native_pace.txt");
-    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    HANDLE f = KeptHandle(g_paceFile, "native_pace.txt");
     DWORD now = GetTickCount();
     if (f != INVALID_HANDLE_VALUE) {
         char buf[64] = {};
         DWORD got = 0;
+        SetFilePointer(f, 0, 0, 0);
         ReadFile(f, buf, 63, &got, 0);
-        CloseHandle(f);
         long v = 0, seq = 0; DWORD i = 0;
         while (i < got && buf[i] >= '0' && buf[i] <= '9') v = v * 10 + (buf[i++] - '0');
         while (i < got && buf[i] == ' ') i++;
@@ -3429,6 +3534,7 @@ static DWORD WINAPI Init(void*)
     HookWordReads();
     // (found by their own signatures, on any build where those match exactly once)
     InstallOrderFixes();
+    PatchSaveCleanup();
     if (g_layout) InstallToolCompany();
     if (g_layout) InstallHudShare();
     if (g_layout) InstallStopSnap();

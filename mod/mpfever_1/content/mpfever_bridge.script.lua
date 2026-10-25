@@ -370,7 +370,7 @@ local function simHash(terrainSig, reg, n)
 	local rot = os.getenv("MPFEVER_HASHROT")
 	R.hashSkip = nil
 	if n and (rot == "1" or (rot ~= "0" and not os.getenv("MPFEVER_SAVE"))) then
-		local groups = { { "conParams" }, { "edges" }, { "constructions", "nodeConfigs" } }
+		local groups = { { "conParams" }, { "edges", "ages" }, { "constructions", "nodeConfigs" } }
 		local keep = groups[(n % #groups) + 1]
 		R.hashSkip = {}
 		for _, g in ipairs(groups) do for _, p in ipairs(g) do R.hashSkip[p] = true end end
@@ -1631,6 +1631,8 @@ local function update(userParams, state, dt)
 	pcall(DET.installModCmds)
 	SIM.evTick = (SIM.evTick or 0) + 1
 	if SIM.evTick % 50 == 1 then pcall(DET.wrapModEvents) end
+	-- (how many engine events this script receives, every one of them: see subscribeToAllEvents below)
+	if SIM.evTick % 3000 == 0 then log(string.format("events received: %.1f per update", (SIM.evN or 0) / 3000)); SIM.evN = 0 end
 	if not SIM.subscribed then
 		SIM.subscribed = true
 		pcall(function() state:subscribeToAllEvents() end)
@@ -2415,6 +2417,7 @@ end
 
 local function handleEvent(userParams, state, src, id, name, param)
 	if not C.ACTIVE then return end
+	SIM.evN = (SIM.evN or 0) + 1
 	if id == "apply_command" and name == "onPostBuildProposal" then
 		log("engine: post build t=" .. tostring(gameTime()))
 		if os.getenv("MPFEVER_CONDUMP") then
@@ -2630,6 +2633,11 @@ local function handleEvent(userParams, state, src, id, name, param)
 				if not (st.replaySigs and st.replaySigs.at == gameTime()) then st.replaySigs = { at = gameTime(), list = {} } end
 				st.replaySigs.list[#st.replaySigs.list + 1] = param.sig
 			end
+		elseif name == "out_shipped" then
+			-- (the interface has sent the captured builds up to n: their proposals are not needed here any more. They made the
+			-- state megabytes heavy, and the engine copies the whole state at every state:get())
+			local upto = tonumber(param.n) or 0
+			for _, o in ipairs(st.out or {}) do if o.n <= upto then o.args = nil end end
 		elseif name == "auth" then
 			for _, o in ipairs(st.authOwn or {}) do
 				if o.n == param.n then correctMoney(o.auth, param, param.n, api.cmd.sendCommand, st.co) end
@@ -2712,7 +2720,7 @@ local function send(kind, payload)
 end
 
 local function readLines(fileName, offKey)
-	local f = C.IO.open(C.DIR .. BS .. fileName, "rb")
+	local f = C.keptOpen(C.DIR .. BS .. fileName)
 	if not f then return {} end
 	local size = f:seek("end")
 	local lines = {}
@@ -2732,7 +2740,6 @@ local function readLines(fileName, offKey)
 		end
 		if last then G[offKey] = G[offKey] + last end
 	end
-	f:close()
 	return lines
 end
 
@@ -3846,8 +3853,11 @@ local function replayStop(a, plan, variant)
 		-- never fired and is gone; see G.replayNativeStop (the tool's own native proposal) and SIM.townStats (the resynchronisation
 		-- asked for at once when the towns would drift))
 		local ctx = sContext(not plan.after and a or nil, plan.cleanup)
-		if free then return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true, true) end
-		return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true)
+		-- (there, a builder's build that left the towns alike is replayed as a script's build, which the towns ignore as they
+		-- ignored the builder's: G.stopNoTown. Issue #85: signals on track bridges, "TOWN STATS DIFFER" and a reload each time)
+		local pi = not (a and ((type(c.type) == "number") and c.type or 0) ~= 0 and G.stopNoTown(a))
+		if free then return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, pi, true) end
+		return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, pi)
 	end)
 		if okf and cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " stop context: tool flags " .. tostring(a.ctx)) end
 	if not okf or not cmd then
@@ -4817,9 +4827,9 @@ end
 -- and the games were reloaded 30 to 140 s later. The native replays of the bridges themselves gave the builder's alignment
 -- exactly. What this way cannot make goes to replayStop as before (never to a resynchronisation); a native stop applied with
 -- another number of stops than the builder's asks for one at once. On by default for the stops on bridges and in tunnels since the
--- game test of 2026-10-25 (132: the native stops on bridge segments built, and their town statistics were the builder's): the
--- signals there too with MPFEVER_NATIVESIGNAL=1; MPFEVER_NATIVESTOP=all: every stop and signal (tests); MPFEVER_NATIVESTOP=0: as
--- before (replayStop for every stop).
+-- game test of 2026-10-25 (132: the native stops on bridge segments built, and their town statistics were the builder's); the
+-- signals there too since 0.5.3 (issue #85: signals on track bridges, the towns drifted after each; MPFEVER_NATIVESIGNAL=0: as
+-- before); MPFEVER_NATIVESTOP=all: every stop and signal (tests); MPFEVER_NATIVESTOP=0: as before (replayStop for every stop).
 G.nativeStopWanted = function(a, plan)
 	local sw = os.getenv("MPFEVER_NATIVESTOP")
 	if sw == "0" then return false end
@@ -4828,7 +4838,7 @@ G.nativeStopWanted = function(a, plan)
 	if sw == "all" then return true end
 	local okc, c = pcall(function() return api.engine.getComponent(plan.E, api.type.ComponentType.BASE_EDGE) end)
 	if not (okc and c) or ((type(c.type) == "number") and c.type or 0) == 0 then return false end
-	if plan.segType == 1 and os.getenv("MPFEVER_NATIVESIGNAL") ~= "1" then return false end
+	if plan.segType == 1 and os.getenv("MPFEVER_NATIVESIGNAL") == "0" then return false end
 	return true
 end
 
@@ -6833,7 +6843,9 @@ local CENSUS_TYPES = { "AIRCRAFT", "ANIMAL", "ASSET_GROUP", "BASE_EDGE", "BASE_E
 	"TRAIN", "CARRIAGE", "CARRIAGE_LIST", "VEHICLE_DEPOT", "COLOR", "CONSTRUCTION", "SUBCONSTRUCTION",
 	"PERSON_CAPACITY", "PLAYER_OWNED", "ACCOUNT", "GAME_SCRIPT", "WAREHOUSE", "TRANSPORT_NETWORK", "MAINTENANCE_COST",
 	"RAILROAD_CROSSING", "PLAYER", "WORLD", "BRIDGE", "BASE_NODE_CONFIG", "LAND_VEHICLE", "BASE_NODE_TRAFFIC_LIGHT", "EDGE_OBJECT",
-	"EMISSION_GRID", "SHIP" }
+	"EMISSION_GRID", "SHIP", "TICK_EPOCH" }
+-- (TICK_EPOCH: the step each street and track segment was added at, which the towns' parcels compare; not in the API's
+-- documentation, read when the game has it)
 -- (left out: what only the renderer uses - MODEL_INSTANCE_LIST, MODEL_PERSON, BOUNDING_VOLUME - and the terrain, compared by
 -- its own signature)
 
@@ -6876,7 +6888,7 @@ local function census(tag)
 	table.sort(universe)
 	local WHERE = {
 		BASE_EDGE = { "edges" }, BASE_EDGE_STREET = { "edges" }, BRIDGE = { "edges" }, BASE_PARALLEL_STRIP = { "edges" }, SIGNAL_LIST = { "edges" },
-		BASE_NODE = { "nodes" }, BASE_NODE_CONFIG = { "nodes" }, BASE_NODE_TRAFFIC_LIGHT = { "nodes" }, RAILROAD_CROSSING = { "nodes" },
+		TICK_EPOCH = { "edges" }, BASE_NODE = { "nodes" }, BASE_NODE_CONFIG = { "nodes" }, BASE_NODE_TRAFFIC_LIGHT = { "nodes" }, RAILROAD_CROSSING = { "nodes" },
 		TRANSPORT_NETWORK = { "edges", "nodes", "cons", "objs" }, LINE = { "lines" }, EDGE_OBJECT = { "objs" },
 		NAME = { "lines", "vehicles", "cons", "players", "persons", "objs" }, COLOR = { "lines", "vehicles", "cons", "players" },
 		LOG_BOOK = { "lines", "vehicles", "cons", "players", "persons" }, MOVE_PATH = { "vehicles", "persons" }, LAND_VEHICLE = { "vehicles", "persons" },
@@ -12146,7 +12158,7 @@ H.dnodemove = function(from, p)
 end
 
 -- A signal put on a track like the signal tool does (its segment replaced by a copy carrying the new signal, no street graph
--- cleanup), held and shipped as a native build: the other games replay it
+-- cleanup), held and shipped as a native build: the other games replay it. MPFEVER_DSIGNALBRIDGE=1: on a track bridge (issue #85)
 H.dsignal = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
 	AUTO.running = true
@@ -12156,9 +12168,10 @@ H.dsignal = function(from, p)
 		local list = {}
 		for _, e in ipairs(R.allEdges()) do
 			local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
-			if c and c.type == 0 and #c.objects == 0 and not api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) then
+			local bridge = os.getenv("MPFEVER_DSIGNALBRIDGE") == "1"
+			if c and c.type == (bridge and 1 or 0) and #c.objects == 0 and not api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) then
 				local a, b = nodePosition(c.node0), nodePosition(c.node1)
-				if a and b and math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) > 40 then list[#list + 1] = e end
+				if a and b and math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) > (bridge and 12 or 40) then list[#list + 1] = e end
 			end
 		end
 		if #list == 0 then AUTO.results[#AUTO.results + 1] = "dsignal: no free track segment"; return autoFinish() end
@@ -13308,6 +13321,7 @@ local function resumeAfterLoad(state)
 	-- records of the savegame's script state (an earlier session, or the host's): never shipped or reported again
 	local st = state:get() or {}
 	for _, o in ipairs(st.out or {}) do if o.n > G.outSent then G.outSent = o.n end end
+	G.outTold = nil
 	-- (keyed by uid and game time: uids start again at 1 in every session, an old record must not hide a new one)
 	for _, r in ipairs(st.results or {}) do G.resultsSeen[tostring(r.uid) .. "@" .. tostring(r.at)] = true end
 	if type(st.hash) == "table" then G.hashSent = st.hash.n end
@@ -14244,6 +14258,13 @@ local function guiUpdate(userParams, state, guiState)
 		if not oks then log("stamping failed: " .. tostring(errs)) end
 		local okb, errb = pcall(shipNativeBuilds, st)
 		if not okb then log("shipping native builds failed: " .. tostring(errb)) end
+		-- (the simulation forgets the proposals of the captures sent, and those of the savegame's: see out_shipped)
+		if G.outSent > (G.outTold or 0) then
+			for _, o in ipairs(st.out or {}) do
+				if o.n <= G.outSent and o.args then toSim("out_shipped", { n = G.outSent }); break end
+			end
+			G.outTold = G.outSent
+		end
 		if G.buildLead then
 			-- (BUILDLEAD: a capture of this game still waits to be shipped, see G.leadRefusedCheck)
 			G.outPending = false

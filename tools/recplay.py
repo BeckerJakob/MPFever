@@ -4,7 +4,7 @@ session's pauses and speeds, and optional saves of one game (where its autosave 
 action as another player's (as a player who received it did), from a savegame of that session.
 
     python tools/recplay.py --launcher <host launcher log> --out <a game's out.log> [--out <another game's out.log>]
-        --start HH:MM:SS [--end HH:MM:SS] [--save host@HH:MM:SS] [--save client@HH:MM:SS] [--run 300] > recplay.txt
+        --start HH:MM:SS [--end HH:MM:SS] [--save host@HH:MM:SS] [--save client@HH:MM:SS] [--run 300] [--speed 4] > recplay.txt
 
 --start: the time (host's clock, the launcher log's) the savegame was made; the replay begins with what came after it.
 --end: the last event replayed (default: the end of the log). --run: seconds the games run after the last event.
@@ -17,9 +17,10 @@ import sys
 
 ACT = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ Action (\S+) (?:de|by) (\S+) (?:au temps|at time) (\d+)")
 PAUSE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ Pause (?:au temps|at time) (\d+)")
-SPEED = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ (?:Vitesse|Speed) : x(\d)|^(\d\d:\d\d:\d\d)\.\d+ Speed: x(\d)")
+SPEED = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ (?:Vitesse : |Speed: )x(\d)")
 PENDING = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ (\S+) : nat_pending (\{.*\})$")
 RESYNC = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ === Resynchroni[sz]ation n")
+STEP = 200
 
 
 def acts_of(out_logs):
@@ -29,7 +30,7 @@ def acts_of(out_logs):
         for line in open(path, encoding="utf-8", errors="replace"):
             if not line.startswith("act\t"):
                 continue
-            kind, frm, payload = line.rstrip("\n").split("\t", 2)
+            payload = line.rstrip("\n").split("\t", 2)[2]
             origin = re.search(r'\["origin"\]="([^"]+)"', payload)
             uid = re.search(r'\["uid"\]="([^"]+)"', payload)
             at = re.search(r'\["at"\]=(\d+)', payload)
@@ -51,17 +52,36 @@ def main():
     ap.add_argument("--end", default="99:99:99")
     ap.add_argument("--save", action="append", default=[])
     ap.add_argument("--run", type=int, default=300)
-    ap.add_argument("--speed", type=int, default=0, help="every speed of the session replaced by this one (0: as in the session)")
+    ap.add_argument("--speed", type=int, default=0)
     a = ap.parse_args()
     acts = acts_of(a.out)
     nexti = {k: 0 for k in acts}
     saves = sorted((s.split("@", 1)[1], s.split("@", 1)[0]) for s in a.save)
     ev = ["# recplay from " + a.launcher + " start " + a.start + " end " + a.end]
-    paused, speed, last = True, 1, None
+    st = {"paused": True, "speed": 1}
+    pending = {}     # nat_pending of a running game, by (origin, build number), sent with its act
+    group = []       # the acts of a running game stamped with one time, sent together
+
+    def flush_group():
+        # a running game's acts: the games stop 30 steps before their time, receive them (with their builds' announcements),
+        # run on, and apply them at their own time, as the games of the session did
+        if not group:
+            return
+        at = group[0][1]
+        ev.append("pauseat\t" + str(at - 30 * STEP))
+        for origin, _, uid, payload, nat in group:
+            if nat in pending:
+                ev.append("msg\tnat_pending\t" + origin + "\t" + pending.pop(nat))
+            ev.append("msg\tact\t" + origin + "\t" + strip_turn(payload))
+        ev.append("speed\t" + str(st["speed"]))
+        for _, _, uid, _, _ in group:
+            ev.append("waitact\t" + uid + "\t600")
+        group.clear()
 
     def flush_saves(upto):
         while saves and saves[0][0] <= upto:
             t, role = saves.pop(0)
+            flush_group()
             ev.append("log\t" + role + " saves (its autosave at " + t + ")")
             ev.append("save\t" + role + "\trecplay save " + role + " " + t.replace(":", ""))
 
@@ -82,42 +102,55 @@ def main():
             if clock <= a.start or clock > a.end:
                 continue
             flush_saves(clock)
-            if not paused:
-                # an action of a running game: the replay stops the games at its time, applies it, and runs on
-                ev.append("pauseat\t" + str(at))
+            if not st["paused"]:
+                if group and group[0][1] != at:
+                    flush_group()
+                nat = re.search(r'\["natId"\]=(\d+)', payload)
+                group.append((origin, at, uid, payload, (origin, nat.group(1)) if nat else None))
+                continue
+            flush_group()
             ev.append("msg\tact\t" + origin + "\t" + strip_turn(payload))
-            ev.append("waitact\t" + uid + "\t90")
-            if not paused:
-                ev.append("speed\t" + str(speed))
-            last = clock
+            ev.append("waitact\t" + uid + "\t600")
             continue
         if clock <= a.start or clock > a.end:
             continue
         m = PENDING.match(line)
         if m:
             flush_saves(clock)
-            if paused:
+            if st["paused"]:
+                flush_group()
                 ev.append("msg\tnat_pending\t" + m.group(2) + "\t" + m.group(3))
-            # (running: the replay pauses at the act's time instead)
+                # (the replay's host gives that build its turn and tells every game; the build itself comes after it, as in
+                # the session, where the builder sends it once its game has made it)
+                ev.append("run\t2")
+            else:
+                nid = re.search(r'\["id"\]=(\d+)', m.group(3))
+                org = re.search(r'\["origin"\]="([^"]+)"', m.group(3))
+                if nid and org:
+                    pending[(org.group(1), nid.group(1))] = m.group(3)
             continue
         m = PAUSE.match(line)
         if m:
             flush_saves(clock)
+            flush_group()
             ev.append("pauseat\t" + m.group(2))
-            paused = True
+            st["paused"] = True
             continue
         m = SPEED.match(line)
         if m:
             flush_saves(clock)
-            speed = a.speed or int(m.group(2) or m.group(4))
-            ev.append("speed\t" + str(speed))
-            paused = False
+            flush_group()
+            st["speed"] = a.speed or int(m.group(2))
+            ev.append("speed\t" + str(st["speed"]))
+            st["paused"] = False
             continue
         if RESYNC.match(line):
+            flush_group()
             ev.append("log\tthe session resynchronised here (" + clock + ")")
             continue
+    flush_group()
     flush_saves("99:99:99")
-    if paused:
+    if st["paused"]:
         ev.append("speed\t4")
     ev.append("log\trunning " + str(a.run) + " s after the last event")
     for _ in range(max(1, a.run // 30)):
