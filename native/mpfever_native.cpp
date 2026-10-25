@@ -420,16 +420,11 @@ static void AppendEvent(Buf& b)
 static volatile long g_tinWant = 0, g_tinLoaded = 0;      // terrain edit sent by the mod, to be injected: id asked / id loaded
 static void TerrainLoadIn(long id);
 static void* g_slot = 0;
-// the game state of the command each thread applies (ApplyDetour; the module has no CRT, so no __declspec(thread))
-struct ApplySlot { volatile long tid; u8* state; };
-static ApplySlot g_applying[8];
-static ApplySlot* ApplyingOf()
-{
-    long tid = (long)GetCurrentThreadId();
-    for (int i = 0; i < 8; i++) if (g_applying[i].tid == tid) return &g_applying[i];
-    for (int i = 0; i < 8; i++) if (_InterlockedCompareExchange(&g_applying[i].tid, tid, 0) == 0) return &g_applying[i];
-    return 0;
-}
+// the game state of the command a thread applies (ApplyDetour), in a TLS slot of Windows' (the module has no CRT, so no
+// __declspec(thread)); 0xFFFFFFFF: no slot, the tick epochs fix stays off
+static DWORD g_applyTls = 0xFFFFFFFFu;
+static inline u8* ApplyingState() { return g_applyTls == 0xFFFFFFFFu ? 0 : (u8*)TlsGetValue(g_applyTls); }
+static inline void SetApplyingState(u8* gs) { if (g_applyTls != 0xFFFFFFFFu) TlsSetValue(g_applyTls, gs); }
 static long g_iter = 0;
 static long g_iterlogDone = 0;
 static volatile long g_setPlayer = 0;
@@ -1014,10 +1009,10 @@ extern "C" u64 PreIterDetour(void* a)
         void* c = d.cmd;
         d.cmd = 0;
         if (g_timing) TimingLine("deferred-apply", (u64)g_iter, (u64)(g_iter - d.queued));
-        ApplySlot* s = ApplyingOf();
-        if (s) s->state = (u8*)g_slot;
+        u8* prevState = ApplyingState();
+        SetApplyingState((u8*)g_slot);
         g_applyOrig(g_slot, c);
-        if (s) s->state = 0;
+        SetApplyingState(prevState);
         ((Dtor0)(g_base + RVA_CMD_DTOR))(c);
         HeapFree(GetProcessHeap(), 0, c);
     }
@@ -1539,23 +1534,23 @@ extern "C" u64 ReplDetour(void* src, void* dst, u64 flag)
     return r;
 }
 
-static u64 ApplyBody(void* a, void* b);
+static u64 ApplyBody(void* a, void* b, bool inLoop);
 extern "C" u64 ApplyDetour(void* a, void* b)
 {
-    ApplySlot* s = ApplyingOf();
-    u8* prev = s ? s->state : 0;
-    if (s) s->state = (u8*)a;
-    u64 r = ApplyBody(a, b);
-    if (s) s->state = prev;
+    // (read here, where the engine's call returns to: the loop of RunGameSimLoop, or a caller applying one command at once)
+    bool inLoop = (u32)((uptr)_ReturnAddress() - g_base) == RVA_LOOP_RET;
+    u8* prev = ApplyingState();
+    SetApplyingState((u8*)a);
+    u64 r = ApplyBody(a, b, inLoop);
+    SetApplyingState(prev);
     return r;
 }
 
-static u64 ApplyBody(void* a, void* b)
+static u64 ApplyBody(void* a, void* b, bool inLoop)
 {
     g_slot = a;
     ApplyLocalPlayer("apply");
     u8* pay = *(u8**)b;
-    bool inLoop = (u32)((uptr)_ReturnAddress() - g_base) == RVA_LOOP_RET;    // the loop of RunGameSimLoop (the other callers apply one command at once)
     u32 kind = pay ? *(u8*)(pay + 0x9b8) : 255;
     if (kind < 128) { if (inLoop) g_kcLoop[kind]++; else g_kcDir[kind]++; }
     AuditFlush(false);
@@ -2978,8 +2973,7 @@ static volatile long g_tickLogged = 0;
 static void FixTickEpoch(SavedRegs* r)
 {
     _InterlockedIncrement(&g_orderSorts[10]);
-    ApplySlot* s = ApplyingOf();
-    u8* gs = s ? s->state : 0;
+    u8* gs = ApplyingState();
     u64 rec = r->rdi;
     if (!gs || !g_getUpdRva || !Readable(gs + 0x18, 0x18) || r->rsi != *(u64*)(gs + 0x18) || !Writable((void*)(rec + 0x318), 8)) { _InterlockedIncrement(&g_orderRefused[10]); return; }
     u64 time = *(u64*)(gs + 0x28);
@@ -3070,6 +3064,8 @@ static void InstallOrderFixes()
     u32 getTick = FindSigRva("48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 3C 48 83 C4 28 C3");
     u32 getUpd = FindSigRva("48 83 EC 28 48 8B 41 10 48 8B 49 08 8B 10 E8 ?? ?? ?? ?? 8B 40 40 48 83 C4 28 C3");
     g_getUpdRva = getUpd;
+    if (g_applyTls == 0xFFFFFFFFu) g_applyTls = TlsAlloc();
+    bool tickOn = false;
     Buf b; b.str("order fixes (from TPF3-MP):");
     for (int i = 0; i < ORDER_N; i++) {
         const OrderFix& f = ORDER_FIXES[i];
@@ -3083,7 +3079,7 @@ static void InstallOrderFixes()
         if (i >= 6 && i <= 9 && i != 8 && GetEnvironmentVariableA("MPFEVER_ORDER2", 0, 0) == 0) layout = false;
         if (i == 8) layout = layout && fieldAt && at + f.offset == fieldAt + 0xba && GetEnvironmentVariableA("MPFEVER_NOTOWNFIELD", 0, 0) == 0;
         // (the segments' ages: the stolen compare is the one the stamping follows, and the step comes from GameTime's getter)
-        if (i == 10) layout = layout && getUpd && GetEnvironmentVariableA("MPFEVER_NOTICKEPOCH", 0, 0) == 0;
+        if (i == 10) layout = layout && getUpd && g_applyTls != 0xFFFFFFFFu && GetEnvironmentVariableA("MPFEVER_NOTICKEPOCH", 0, 0) == 0;
         if (i == 6 || i == 7) layout = layout && GetEnvironmentVariableA("MPFEVER_NOPLATFORMORDER", 0, 0) == 0;
         if (i == 9) {
             static const u8 ctx[] = { 0x49, 0x8B, 0x45, 0x10, 0x48, 0x8B, 0x08, 0x42, 0x8B, 0x1C, 0xA1 };
@@ -3091,9 +3087,12 @@ static void InstallOrderFixes()
                 && GetEnvironmentVariableA("MPFEVER_NONEEDSPATH", 0, 0) == 0;
         }
         bool ok = at && layout && Splice(mem, at + f.offset, f.steal, f.fn);
+        if (i == 10) tickOn = ok;
         b.str(" ").str(f.name).str(ok ? " on" : " OFF").str(i + 1 < ORDER_N ? "," : "");
     }
     LogLine(b);
+    // (the mod compares the segments' ages only where they are stamped: its check "ages")
+    WriteSessionFile("native_state.txt", tickOn ? "tickepochs=1\n" : "tickepochs=0\n", 13);
     // the simulation's seeds from GameTime.tickCount (the land vehicles' shuffle, a vehicle variant pick, town and street
     // development...): tickCount also counts the frames a game stands still, a different number on every game of a session;
     // those calls now read updateCount (the simulation step, the same everywhere). TPF3-MP's "paused-tick" fix does the same by

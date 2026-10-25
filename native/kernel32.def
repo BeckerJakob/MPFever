@@ -42,3 +42,6 @@ TryAcquireSRWLockExclusive
 GetTickCount64
 SetEndOfFile
 GetCurrentProcessId
+TlsAlloc
+TlsGetValue
+TlsSetValue

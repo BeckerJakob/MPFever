@@ -1576,7 +1576,7 @@ namespace MPFever
             // (taken and emptied at once: a reconnection that adds its connection in between finds the session left, see
             // StartClient, or has its connection closed here)
             Client[] gone; lock (clients) { gone = clients.ToArray(); clients.Clear(); }
-            foreach (var cl in gone) try { cl.Dispose(); } catch { }
+            foreach (var cl in gone) try { cl.Leave(); } catch { }
             var r = relay; relay = null;
             if (r != null) { try { r.Dispose(); } catch { } PortMap.Close(); }
         }
@@ -1594,7 +1594,7 @@ namespace MPFever
             Options.HostSession = null;
             foreach (var g in games.ToList()) g.WriteSettings();
             Client[] gone; lock (clients) { gone = clients.ToArray(); clients.Clear(); }
-            foreach (var cl in gone) try { cl.Dispose(); } catch { }
+            foreach (var cl in gone) try { cl.Leave(); } catch { }
             var r = relay; relay = null;
             if (r != null) { try { r.Dispose(); } catch { } PortMap.Close(); }
             // (the host's game no longer takes Steam connections for this session)
@@ -2019,7 +2019,7 @@ namespace MPFever
             relay.Away += p =>
             {
                 Log.Warn(F("{0} a perdu la connexion : la partie l'attend ({1:0} s au plus)", "{0} lost the connection: the game waits for them ({1:0} s at most)", p.Name, relay?.Grace ?? 0));
-                lock (clocks) if (clocks.TryGetValue(p.Name, out var c)) { c.T = (long)Estimate(c); c.At = Now; c.Sp = 0; }
+                lock (clocks) if (clocks.TryGetValue(p.Name, out var c)) { c.At = Now; c.Sp = 0; }
                 HostChat("away", BaseName(p.Name), "");
                 if (lobbyOpen) { BroadcastLobby(); MenuStatus(); }
             };
@@ -2097,6 +2097,8 @@ namespace MPFever
             // if it still waits for this player (SessionLink)
             var link = new SessionLink();
             bool CanResume() => SessionLink.Grace > 0 && !string.IsNullOrEmpty(link.Token) && !link.Broken && game.InGame;
+            // (the game's messages while cut, for the connection that takes over: sent in order before any newer one)
+            var waiting = new List<Msg>();
             clientCancelled = false;
             leftSession = null;   // (a report describes this session now)
             // a reconnect thread of an earlier session must not wake up in this one (issue #13)
@@ -2121,7 +2123,12 @@ namespace MPFever
                     lock (clients)
                     {
                         left = staleCheck && gen != sessionGen;
-                        if (!left) { clients.Add(c); current = c; }
+                        if (!left)
+                        {
+                            clients.Add(c);
+                            // (what the game sent while cut goes first; a link that does not go on drops it, see Client)
+                            lock (waiting) { foreach (var w in waiting) c.Send(w); waiting.Clear(); current = c; }
+                        }
                     }
                 if (!left) return true;
                 Log.W(F("[{0}] session quittée pendant la connexion : la connexion à l'hôte est refermée", "[{0}] session left while connecting: the connection to the host is closed again", name));
@@ -2140,9 +2147,12 @@ namespace MPFever
             game.FromGame += clientFromGame = (g, m) =>
             {
                 if (m.Kind == "hello") { g.InGame = true; if (menuMode) { menuPhase = "ingame"; menuText = T("En partie.", "In game."); MenuStatus(); } }
-                var to = current;
-                if (to != null) to.Send(m);
-                else if (CanResume()) link.Sent(m);   // (cut: kept for the host, sent when the session goes on)
+                lock (waiting)
+                {
+                    var to = current;
+                    if (to != null) to.Send(m);
+                    else if (CanResume() && waiting.Count < 100000) waiting.Add(m);   // (cut: kept for the host, see AddUnlessLeft)
+                }
             };
             Action<Client> wire = null;
             wire = client =>
@@ -2162,13 +2172,19 @@ namespace MPFever
                 bool haveSent = false;   // resync_have: once per connection, at its first welcome
                 client.Resumed += () =>
                 {
+                    haveSent = true;   // (no resync_have: the host goes on with this player as it was)
                     Log.Ok(F("[{0}] reconnecté à l'hôte : la session continue", "[{0}] reconnected to the host: the session goes on", name));
                     ClientStatus("ok", 0);
                     if (menuMode) { menuPhase = "ingame"; menuText = T("Reconnecté : la partie continue.", "Reconnected: the game goes on."); MenuStatus(); }
                 };
                 client.ResumeRefused += () =>
                 {
-                    if (menuMode) { menuPhase = "connected"; menuText = T("Reconnecté. L'hôte renvoie sa partie...", "Reconnected. The host sends its game again..."); MenuStatus(); }
+                    if (menuMode) { menuPhase = "connected"; menuText = T("Reconnecté. L'hôte renvoie sa partie...", "Reconnected. The host sends its game again..."); MenuStatus(); return; }
+                    // (outside the main menu nobody sends this game the host's: it stops rather than play on a world of its own)
+                    clientCancelled = true;
+                    game.ToGame(Msg.Make("session", "MPFever", "{[\"started\"]=false,[\"speed\"]=0}"));
+                    ClientStatus("gone", 0);
+                    new Thread(() => { try { client.Dispose(); } catch { } }) { IsBackground = true }.Start();
                 };
                 client.Received += m =>
                 {
@@ -2761,7 +2777,8 @@ namespace MPFever
                     WarnUnknownBuild(m.Payload);
                     WarnOtherBuild(m.From, m.Payload);
                     // a game started again (resynchronisation): it needs its identity again
-                    if (from != null) relay.Send(from, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(from.Name) + ",[\"role\"]=\"client\",[\"v\"]=" + LuaLit.Quote(Version) + ",[\"run\"]=" + LuaLit.Quote(myRun) + ",[\"opts\"]=" + LuaLit.Quote(Options.SessionPayload()) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods) + "}"));
+                    if (from != null) relay.Send(from, Msg.Make("welcome", hostName, "{[\"you\"]=" + LuaLit.Quote(from.Name) + ",[\"role\"]=\"client\",[\"v\"]=" + LuaLit.Quote(Version) + ",[\"run\"]=" + LuaLit.Quote(myRun) + ",[\"opts\"]=" + LuaLit.Quote(Options.SessionPayload()) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods)
+                        + ",[\"rtok\"]=" + LuaLit.Quote(from.Link?.Token ?? "") + (hostSteamId != null ? ",[\"sid\"]=" + LuaLit.Quote(hostSteamId) : "") + "}"));
                     // (a player who reconnected during the resynchronisation answers under its new name: Philippe#2 for Philippe#1)
                     lock (resyncWaiting) resyncWaiting.RemoveWhere(w => w == m.From || BaseName(w) == BaseName(m.From));
                     if (from != null && server != null) ServerGreet(from);
@@ -3302,17 +3319,16 @@ namespace MPFever
                 new Thread(() =>
                 {
                     var t0 = DateTime.UtcNow;
-                    for (int i = 0; i < parts; i++)
+                    // (a newer game is being sent, or this one's wait is over: the rest would only hold the others up)
+                    if (!SendParts(p, id, bytes.Length, i =>
                     {
-                        // (a newer game is being sent, or this one's wait is over: the rest would only hold the others up)
-                        if (saveCancel >= id || resyncBytesId != id) return;
                         int len = Math.Min(ResyncChunk, bytes.Length - i * ResyncChunk);
-                        if (relay == null || !relay.TrySend(p, Msg.MakeBinary("resync_bin", hostName,
-                            "[\"id\"]=" + id + ",[\"i\"]=" + i + ",[\"n\"]=" + parts + ",[\"sha\"]=" + LuaLit.Quote(sha), bytes, i * ResyncChunk, len))) return;
-                    }
+                        return Msg.MakeBinary("resync_bin", hostName, "[\"id\"]=" + id + ",[\"i\"]=" + i + ",[\"n\"]=" + parts + ",[\"sha\"]=" + LuaLit.Quote(sha), bytes, i * ResyncChunk, len);
+                    }, out int links)) return;
                     double s = Math.Max(0.1, (DateTime.UtcNow - t0).TotalSeconds);
                     lock (peerSpeed) peerSpeed[BaseName(p.Name)] = bytes.Length / 1048576.0 / s;
-                    Log.W(F("{0} : partie envoyée ({1:0.0} Mo en {2:0} s, {3:0.0} Mo/s)", "{0}: game sent ({1:0.0} MB in {2:0} s, {3:0.0} MB/s)", p.Name, bytes.Length / 1048576.0, s, bytes.Length / 1048576.0 / s));
+                    Log.W(F("{0} : partie envoyée ({1:0.0} Mo en {2:0} s, {3:0.0} Mo/s)", "{0}: game sent ({1:0.0} MB in {2:0} s, {3:0.0} MB/s)", p.Name, bytes.Length / 1048576.0, s, bytes.Length / 1048576.0 / s)
+                        + (links > 0 ? F(" par {0} connexions Steam", " over {0} Steam connections", links) : ""));
                 }) { IsBackground = true, Name = "Save to " + p.Name }.Start();
             }
         }
@@ -3370,16 +3386,53 @@ namespace MPFever
                 new Thread(() =>
                 {
                     var t0 = DateTime.UtcNow;
-                    for (int i = 0; i < parts; i++)
+                    if (!SendParts(p, id, delta.Length, i =>
                     {
-                        if (saveCancel >= id || resyncBytesId != id) return;
                         int len = Math.Min(ResyncChunk, delta.Length - i * ResyncChunk);
-                        if (relay == null || !relay.TrySend(p, Msg.MakeBinary("delta_bin", hostName,
-                            "[\"id\"]=" + id + ",[\"i\"]=" + i + ",[\"n\"]=" + parts + ",[\"sha\"]=" + LuaLit.Quote(sha) + ",[\"base\"]=" + LuaLit.Quote(baseSha), delta, i * ResyncChunk, len))) return;
-                    }
-                    Log.W(F("{0} : différences envoyées ({1:0.0} Mo en {2:0} s)", "{0}: differences sent ({1:0.0} MB in {2:0} s)", p.Name, delta.Length / 1048576.0, (DateTime.UtcNow - t0).TotalSeconds));
+                        return Msg.MakeBinary("delta_bin", hostName, "[\"id\"]=" + id + ",[\"i\"]=" + i + ",[\"n\"]=" + parts + ",[\"sha\"]=" + LuaLit.Quote(sha) + ",[\"base\"]=" + LuaLit.Quote(baseSha), delta, i * ResyncChunk, len);
+                    }, out int links)) return;
+                    Log.W(F("{0} : différences envoyées ({1:0.0} Mo en {2:0} s)", "{0}: differences sent ({1:0.0} MB in {2:0} s)", p.Name, delta.Length / 1048576.0, (DateTime.UtcNow - t0).TotalSeconds)
+                        + (links > 0 ? F(" par {0} connexions Steam", " over {0} Steam connections", links) : ""));
                 }) { IsBackground = true, Name = "Delta to " + p.Name }.Start();
             }
+        }
+
+        /// <summary>(the host) The parts of a game (or of its differences) to one player: over its Steam bulk connections when it
+        /// has some (all at once, each taking the next part: Steam limits each connection's rate), else over its connection. A part
+        /// a dying bulk connection could not send goes over the others, then over the main connection. The player puts the parts
+        /// together by their numbers. False when the sending stopped (a newer game, this one's wait over, the player gone).</summary>
+        bool SendParts(Peer p, int id, int size, Func<int, Msg> part, out int linksUsed)
+        {
+            int parts = (size + ResyncChunk - 1) / ResyncChunk;
+            bool Stopped() => saveCancel >= id || resyncBytesId != id || relay == null;
+            var links = relay?.BulkOf(p) ?? new BulkLink[0];
+            linksUsed = links.Length;
+            int next = -1;
+            var again = new System.Collections.Concurrent.ConcurrentQueue<int>();
+            if (links.Length > 0)
+            {
+                var threads = links.Select(b => new Thread(() =>
+                {
+                    while (!Stopped() && !b.Dead)
+                    {
+                        if (!again.TryDequeue(out int i)) { i = Interlocked.Increment(ref next); if (i >= parts) return; }
+                        try { lock (b.Gate) part(i).WriteTo(b.Writer); }
+                        catch { again.Enqueue(i); b.Dead = true; return; }
+                    }
+                }) { IsBackground = true, Name = "Parts to " + p.Name + " #" + b.Index }).ToList();
+                foreach (var t in threads) t.Start();
+                foreach (var t in threads) t.Join();
+            }
+            // (the rest, or all of it without bulk connections: over the main connection, in order)
+            var rest = again.ToList();
+            for (int i = Math.Min(parts, Volatile.Read(ref next) + 1); i < parts; i++) rest.Add(i);
+            rest.Sort();
+            foreach (int i in rest)
+            {
+                if (Stopped()) return false;
+                if (!relay.TrySend(p, part(i))) return false;
+            }
+            return true;
         }
 
         /// <summary>(the host) The game every player loads now: the base of the next resynchronisation's differences.</summary>
@@ -3696,8 +3749,9 @@ namespace MPFever
 
         void RecPlayEvents(string[] lines, Func<string, bool> appliedEverywhere)
         {
-            foreach (var raw in lines)
+            for (int li = 0; li < lines.Length; li++)
             {
+                var raw = lines[li];
                 if (ClosedGames() != "") { AutoLine("recplay: a game closed: " + ClosedGames()); break; }
                 var p = raw.Split('\t');
                 if (p.Length == 0 || p[0] == "" || p[0].StartsWith("#")) continue;
@@ -3730,9 +3784,21 @@ namespace MPFever
                             break;
                         }
                     case "speed":
-                        lock (sessionGate) { speed = Math.Max(1, Math.Min(4, int.Parse(p[1]))); pauseAt = null; }
-                        BroadcastSession();
-                        break;
+                        {
+                            // (the games run up to the next pause of the replay and stop there exactly, as in the session: asked
+                            // later, the pause could only be put after the time the games had reached, and the actions stamped
+                            // for it came in the past, applied at another time on every game)
+                            long? next = null;
+                            for (int k = li + 1; k < lines.Length && next == null; k++)
+                            {
+                                var q = lines[k].Split('\t');
+                                if (q[0] == "speed") break;
+                                if (q[0] == "pauseat" && q.Length > 1 && long.TryParse(q[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out long nt) && nt > MaxClock()) next = nt;
+                            }
+                            lock (sessionGate) { speed = Math.Max(1, Math.Min(4, int.Parse(p[1]))); pauseAt = next; }
+                            BroadcastSession();
+                            break;
+                        }
                     case "run":
                         Thread.Sleep((int)(double.Parse(p[1], CultureInfo.InvariantCulture) * 1000));
                         break;

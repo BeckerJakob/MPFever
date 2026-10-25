@@ -332,7 +332,8 @@ namespace MPFever
             var line = new MemoryStream();
             while (true)
             {
-                if (!Fill()) return line.Length > 0 ? Encoding.UTF8.GetString(line.ToArray()) : null;
+                // (a line the end of the connection cut is not a message: its sender still has it, and sends it again)
+                if (!Fill()) return null;
                 int start = pos;
                 while (pos < count && buf[pos] != (byte)'\n') pos++;
                 line.Write(buf, start, pos - start);
@@ -842,9 +843,12 @@ namespace MPFever
         public string Token;
         long tx, rx, outBytes;
         readonly Queue<KeyValuePair<long, Msg>> outbox = new Queue<KeyValuePair<long, Msg>>();
-        public volatile bool Broken;
+        bool overflowed;
+        /// <summary>More than MaxOutBytes wait for the other end now (or twice that once: then nothing more is kept).</summary>
+        public bool Broken { get { lock (outbox) return overflowed || outBytes > MaxOutBytes; } }
 
-        public static bool IsControl(string kind) => kind == "join" || kind == "denied" || kind == "resumed" || (kind != null && kind.StartsWith("~", StringComparison.Ordinal));
+        public static bool IsControl(string kind) => kind == "join" || kind == "denied" || kind == "resumed" || kind == "steamtun" || kind == "bulk"
+            || (kind != null && kind.StartsWith("~", StringComparison.Ordinal));
 
         public static string NewToken()
         {
@@ -863,9 +867,11 @@ namespace MPFever
             lock (outbox)
             {
                 tx++;
+                if (overflowed) return;
                 outbox.Enqueue(new KeyValuePair<long, Msg>(tx, m));
                 outBytes += Size(m);
-                if (outBytes > MaxOutBytes) Broken = true;
+                // (an end that never acknowledges: nothing kept from here on, the link cannot go on after a cut)
+                if (outBytes > 2 * MaxOutBytes) { overflowed = true; outbox.Clear(); outBytes = 0; }
             }
         }
 
@@ -883,10 +889,9 @@ namespace MPFever
         /// <summary>The link starts again from nothing (a player that joined again as a new one).</summary>
         public void Reset(string token)
         {
-            lock (outbox) { tx = 0; outbox.Clear(); outBytes = 0; }
+            lock (outbox) { tx = 0; outbox.Clear(); outBytes = 0; overflowed = false; }
             Interlocked.Exchange(ref rx, 0);
             Token = token;
-            Broken = false;
         }
 
         static long Size(Msg m) => (m.Payload?.Length ?? 0) + (m.Data?.Length ?? 0) + 64;
@@ -903,6 +908,17 @@ namespace MPFever
                 return double.TryParse(Environment.GetEnvironmentVariable("MPFEVER_RESUMEGRACE"), NumberStyles.Float, CultureInfo.InvariantCulture, out var g) ? Math.Max(0, g) : 60;
             }
         }
+    }
+
+    /// <summary>One more Steam connection of a player, for the host's game only (savegame parts, SendParts): Steam limits each
+    /// connection's rate, several carry it faster (design: 3.7). It carries no session message and is never a player.</summary>
+    sealed class BulkLink
+    {
+        public TcpClient Tcp;
+        public StreamWriter Writer;
+        public readonly object Gate = new object();
+        public volatile bool Dead;
+        public int Index;
     }
 
     sealed class Peer
@@ -929,6 +945,10 @@ namespace MPFever
         public TcpClient CutTcp;
         /// <summary>The player came through Steam (its game's module tunnels it to the Relay): its Steam id.</summary>
         public string SteamId;
+        /// <summary>A Steam bulk connection, not a player (its first lines: steamtun kind=bulk, then "bulk" with the player's link).</summary>
+        public volatile bool IsBulk;
+        /// <summary>This player's bulk connections (Steam), live ones.</summary>
+        public readonly List<BulkLink> Bulk = new List<BulkLink>();
     }
 
     /// <summary>Host side: accepts TCP clients and relays every message to everybody else.</summary>
@@ -1015,17 +1035,21 @@ namespace MPFever
                         if ((now - q.AwaySince).TotalSeconds > Grace) Finalize(q, L.T("pas revenu à temps", "not back in time"));
                         continue;
                     }
-                    long rx = q.Link.Rx;
-                    if (!told.TryGetValue(q, out var t) || t.Key != rx || (now - t.Value).TotalSeconds >= 2)
-                    {
-                        told[q] = new KeyValuePair<long, DateTime>(rx, now);
-                        TrySend(q, SessionLink.AckMsg(rx));
-                    }
                     if (q.Acks && (now.Ticks - Interlocked.Read(ref q.LastRecvTicks)) / TimeSpan.TicksPerSecond > 15 && q.Tcp != null && q.Tcp != q.CutTcp)
                     {
+                        // (also frees a writer blocked on that connection)
                         Log.Warn(L.F("{0} : plus rien reçu depuis 15 s, connexion coupée", "{0}: nothing received for 15 s, connection cut", q.Name));
                         q.CutTcp = q.Tcp;
                         NetAddr.Cut(q.Tcp);
+                        continue;
+                    }
+                    long rx = q.Link.Rx;
+                    if ((!told.TryGetValue(q, out var t) || t.Key != rx || (now - t.Value).TotalSeconds >= 2) && Monitor.TryEnter(q.Gate))
+                    {
+                        // (a writer busy on this player's connection - a savegame part on a slow link - delays its ack, not the others')
+                        try { if (!q.Away) { SessionLink.AckMsg(rx).WriteTo(q.Writer); told[q] = new KeyValuePair<long, DateTime>(rx, now); } }
+                        catch { }
+                        finally { Monitor.Exit(q.Gate); }
                     }
                 }
                 foreach (var q in told.Keys.Where(q => !all.Contains(q)).ToList()) told.Remove(q);
@@ -1036,7 +1060,7 @@ namespace MPFever
         /// joined again as a new player).</summary>
         public void Finalize(Peer q, string why)
         {
-            lock (peers) { if (!q.Away || !peers.Remove(q)) return; q.Away = false; }
+            lock (q.Gate) lock (peers) { if (!q.Away || !peers.Remove(q)) return; q.Away = false; q.NoWait = true; }
             Log.Warn(L.F("{0} : plus attendu ({1})", "{0}: no longer waited for ({1})", q.Name, why));
             Left?.Invoke(q);
         }
@@ -1092,18 +1116,22 @@ namespace MPFever
                         if (p.Admitted || p.SteamId != null || !SteamTunnel(p, m)) break;
                         continue;
                     }
+                    if (p.IsBulk)
+                    {
+                        // (a bulk connection: its one line names the player's link; it then only carries the host's savegame parts)
+                        if (m.Kind == "bulk") { AttachBulk(p, tcp, m); return; }
+                        break;
+                    }
+                    if (p.Tcp != tcp) break;   // (the player went on over a newer connection)
                     if (m.Kind == "~ack") { p.Acks = true; long n = SessionLink.ReadN(m); if (n >= 0) p.Link?.Ack(n); continue; }
+                    // (the player leaves on purpose: not waited for)
+                    if (m.Kind == "~bye") { p.NoWait = true; continue; }
                     if (m.Kind.StartsWith("~", StringComparison.Ordinal)) continue;
                     if (m.Kind == "join")
                     {
                         if (p.Admitted) continue;
-                        var back = Claimed(p, m, out long claimRx);
-                        if (back != null)
-                        {
-                            p = back;
-                            Replay(p, claimRx);
-                            continue;
-                        }
+                        var back = Resume(p, m);
+                        if (back != null) { p = back; continue; }
                         p.Name = Sanitize(m.From) + "#" + p.Id;
                         string refused = null;
                         try { refused = Admit?.Invoke(p, m); }
@@ -1120,7 +1148,8 @@ namespace MPFever
                     }
                     if (!In(p)) continue;   // nothing counts before the player is let in
                     m.From = p.Name; // the relay decides who is speaking; the host decides who receives it
-                    p.Link?.Received();
+                    // (counted under the player's lock, which a claim takes to move the player to its new connection)
+                    if (p.Link != null) lock (p.Gate) { if (p.Tcp != tcp) break; p.Link.Received(); }
                     Received?.Invoke(p, m);
                 }
             }
@@ -1140,17 +1169,43 @@ namespace MPFever
             string who = m.From ?? "";
             bool idOk = SteamNet.IsSteamId("steam:" + who, out _) || (who.StartsWith("ip:", StringComparison.Ordinal) && SteamNet.TestIpPort > 0);
             var secret = SteamSecret;
-            if (!local || secret == null || k == null || k.Length != secret.Length || !idOk || kind != "main"
+            if (!local || secret == null || k == null || k.Length != secret.Length || !idOk || (kind != "main" && kind != "bulk")
                 || !k.Select((c, i) => c == secret[i]).Aggregate(true, (a, b) => a & b))
             {
                 Log.Warn(L.F("Connexion Steam refusée ({0})", "Steam connection refused ({0})", !local ? "not local" : secret == null ? "no secret" : !idOk ? "id" : kind != "main" ? "kind " + kind : "secret"));
                 return false;
             }
             p.SteamId = who;
+            p.IsBulk = kind == "bulk";
             p.Address = "steam:" + who + " (" + SteamNet.RouteText(t) + ")";
             Log.Dim(L.F("Connexion entrante par Steam de {0} ({1})", "Incoming connection through Steam from {0} ({1})", who, SteamNet.RouteText(t)));
             return true;
         }
+
+        /// <summary>A Steam bulk connection named its player's link (tok): it joins that player's bulk connections until it ends.</summary>
+        void AttachBulk(Peer conn, TcpClient tcp, Msg m)
+        {
+            var t = LuaLit.Parse(m.Payload) as Dictionary<object, object>;
+            string tok = t != null && t.TryGetValue("tok", out var tv) ? tv as string : null;
+            int index = t != null && t.TryGetValue("i", out var iv) && iv is double d ? (int)d : 0;
+            Peer owner;
+            lock (peers)
+            {
+                peers.Remove(conn);
+                owner = string.IsNullOrEmpty(tok) ? null : peers.FirstOrDefault(q => q.Admitted && q.Link != null && q.Link.Token == tok);
+            }
+            if (owner == null) { Log.Warn(L.T("Connexion Steam supplémentaire refusée (joueur inconnu)", "Extra Steam connection refused (unknown player)")); NetAddr.Cut(tcp); return; }
+            var b = new BulkLink { Tcp = tcp, Writer = conn.Writer, Index = index };
+            lock (owner.Bulk) owner.Bulk.Add(b);
+            Log.Dim(L.F("{0} : connexion Steam supplémentaire n°{1} pour les parties envoyées", "{0}: extra Steam connection #{1} for the games sent", owner.Name, index));
+            try { var r = new NetReader(tcp.GetStream()); while (!stop && r.Read() != null) { } } catch { }
+            b.Dead = true;
+            lock (owner.Bulk) owner.Bulk.Remove(b);
+            NetAddr.Cut(tcp);
+        }
+
+        /// <summary>A player's live bulk connections.</summary>
+        public BulkLink[] BulkOf(Peer p) { lock (p.Bulk) return p.Bulk.Where(b => !b.Dead).ToArray(); }
 
         /// <summary>A connection ended. Its player is waited for when MayWait says so (Away), otherwise it leaves (Left);
         /// nothing when the player went on over a newer connection (it came back before this one was noticed dead).</summary>
@@ -1179,60 +1234,61 @@ namespace MPFever
             catch (Exception e) { Log.W("resume: " + e.Message); return false; }
         }
 
-        /// <summary>A join that asks to go on with a link ("resume" = {tok, rx}): the player of that link takes this
-        /// connection (the old one, if it still looked alive, is closed), or null (a plain join: unknown or broken link,
-        /// gone after the grace, or more acknowledged than ever sent).</summary>
-        Peer Claimed(Peer conn, Msg join, out long rx)
+        /// <summary>A join that asks to go on with a link ("resume" = {tok, rx}): the player of that link takes this connection
+        /// (the old one, if it still looked alive, is closed), is told what the host received from it ("resumed", rx), gets every
+        /// message after the last it has, in order, and is a player of the session again; all under the player's lock, so that no
+        /// message slips in between. Null: a plain join (unknown, gone, kicked, too much waiting, or more acknowledged than sent).
+        /// If writing fails, the player is waited for again.</summary>
+        Peer Resume(Peer conn, Msg join)
         {
-            rx = -1;
             if (!(LuaLit.Parse(join.Payload) is Dictionary<object, object> t) || !t.TryGetValue("resume", out var rv) || !(rv is Dictionary<object, object> rc)) return null;
             string tok = rc.TryGetValue("tok", out var tv) ? tv as string : null;
-            rx = rc.TryGetValue("rx", out var xv) && xv is double xd ? (long)xd : -1;
+            long rx = rc.TryGetValue("rx", out var xv) && xv is double xd ? (long)xd : -1;
             if (string.IsNullOrEmpty(tok) || rx < 0) return null;
             Peer old;
             lock (peers) old = peers.FirstOrDefault(q => q != conn && q.Admitted && q.Link != null && q.Link.Token == tok);
-            if (old == null || old.Link.Broken || rx > old.Link.Tx)
+            string why = old == null ? L.T("inconnu ou parti", "unknown or gone") : null;
+            TcpClient prev = null;
+            int n = 0;
+            double away = 0;
+            if (old != null)
+                lock (old.Gate)
+                {
+                    lock (peers)
+                    {
+                        if (!peers.Contains(old) || old.NoWait) why = L.T("inconnu ou parti", "unknown or gone");
+                        else if (old.Link.Broken) why = L.T("trop de messages en attente", "too many messages waiting");
+                        else if (rx > old.Link.Tx) why = "rx";
+                        else { peers.Remove(conn); prev = old.Tcp; old.Tcp = conn.Tcp; }
+                    }
+                    if (why == null)
+                    {
+                        bool wasAway = old.Away;
+                        old.Away = true;   // (until it has what it missed: what is sent to it meanwhile is only kept)
+                        if (!wasAway) old.AwaySince = DateTime.UtcNow;
+                        old.Writer = conn.Writer;
+                        old.Address = conn.Address;
+                        old.Acks = conn.Acks;
+                        old.SteamId = conn.SteamId;
+                        Interlocked.Exchange(ref old.LastRecvTicks, DateTime.UtcNow.Ticks);
+                        away = wasAway ? (DateTime.UtcNow - old.AwaySince).TotalSeconds : 0;
+                        old.Link.Ack(rx);
+                        var missed = old.Link.After(rx);
+                        Msg.Make("resumed", "MPFever", "{[\"rx\"]=" + old.Link.Rx + "}").WriteTo(old.Writer);
+                        foreach (var m in missed) m.WriteTo(old.Writer);
+                        n = missed.Count;
+                        old.Away = false;
+                    }
+                }
+            if (why != null)
             {
-                Log.Warn(L.F("{0} : reprise de la session impossible ({1}), il la rejoint comme un nouveau joueur", "{0}: the session cannot go on ({1}), it joins it as a new player",
-                    Sanitize(join.From), old == null ? L.T("inconnu ou parti", "unknown or gone") : old.Link.Broken ? L.T("trop de messages en attente", "too many messages waiting") : "rx"));
+                Log.Warn(L.F("{0} : reprise de la session impossible ({1}), il la rejoint comme un nouveau joueur", "{0}: the session cannot go on ({1}), it joins it as a new player", Sanitize(join.From), why));
                 return null;
             }
-            TcpClient prev;
-            lock (old.Gate)
-            {
-                lock (peers)
-                {
-                    peers.Remove(conn);
-                    prev = old.Tcp;
-                    old.Tcp = conn.Tcp;
-                }
-                old.Writer = conn.Writer;
-                old.Address = conn.Address;
-                old.Acks = conn.Acks;
-                Interlocked.Exchange(ref old.LastRecvTicks, DateTime.UtcNow.Ticks);
-            }
             if (prev != null && prev != old.Tcp) NetAddr.Cut(prev);   // (a connection that still looked alive: taken over)
+            Log.Ok(L.F("{0} est revenu après {1:0} s : la session continue ({2} message(s) envoyé(s) à nouveau)", "{0} is back after {1:0} s: the session goes on ({2} message(s) sent again)", old.Name, away, n));
+            Resumed?.Invoke(old, away, n);
             return old;
-        }
-
-        /// <summary>Right after a claimed join: the player is told what the host received from it ("resumed", rx), gets every
-        /// message after the last it has, in order, and is a player of the session again.</summary>
-        void Replay(Peer p, long rx)
-        {
-            int n;
-            double away;
-            lock (p.Gate)
-            {
-                away = p.Away ? (DateTime.UtcNow - p.AwaySince).TotalSeconds : 0;
-                p.Link.Ack(rx);
-                var missed = p.Link.After(rx);
-                Msg.Make("resumed", "MPFever", "{[\"rx\"]=" + p.Link.Rx + "}").WriteTo(p.Writer);
-                foreach (var m in missed) m.WriteTo(p.Writer);
-                n = missed.Count;
-                p.Away = false;
-            }
-            Log.Ok(L.F("{0} est revenu après {1:0} s : la session continue ({2} message(s) envoyé(s) à nouveau)", "{0} is back after {1:0} s: the session goes on ({2} message(s) sent again)", p.Name, away, n));
-            Resumed?.Invoke(p, away, n);
         }
 
         static string BaseOf(string n) { if (n == null) return ""; int i = n.LastIndexOf('#'); return i < 0 ? n : n.Substring(0, i); }
@@ -1254,7 +1310,12 @@ namespace MPFever
         {
             string Base(string n) { int i = n.LastIndexOf('#'); return i < 0 ? n : n.Substring(0, i); }
             var found = Admitted().Where(p => string.Equals(Base(p.Name), name, StringComparison.OrdinalIgnoreCase) || p.Name == name).ToList();
-            foreach (var p in found) new Thread(() => Deny(p, payload)) { IsBackground = true, Name = "Kick " + p.Id }.Start();
+            foreach (var p in found)
+            {
+                // (a player the host waits for has no connection: it leaves now, and may not come back with its link)
+                if (p.Away) { p.NoWait = true; Finalize(p, L.T("exclu", "kicked")); continue; }
+                new Thread(() => Deny(p, payload)) { IsBackground = true, Name = "Kick " + p.Id }.Start();
+            }
             return found.Count;
         }
 
@@ -1407,6 +1468,7 @@ namespace MPFever
                 claimPending = true;
             }
             else Link.Reset(null);   // (a new player: the host counts from this join; what waited is dropped)
+            myName = name;
             Send(Msg.Make("join", name, "{[\"v\"]=" + LuaLit.Quote(MainForm.Version)
                 + (string.IsNullOrEmpty(password) ? "" : ",[\"pw\"]=" + LuaLit.Quote(password)) + claim + "}"));
             new Thread(ReadLoop) { IsBackground = true, Name = "Client read" }.Start();
@@ -1461,14 +1523,56 @@ namespace MPFever
         /// <summary>The game whose module carries this player's Steam connection (its session folder), or null.</summary>
         public string SteamDir;
         NetReader steamReader;
-        string steamCid;
+        string steamCid, steamSid, myName;
         static int steamCids;
+        readonly List<TcpClient> bulk = new List<TcpClient>();
+
+        /// <summary>How many extra Steam connections a player opens for the host's savegame (MPFEVER_STEAMBULK, 0 to 8; 4).</summary>
+        static int BulkWanted => int.TryParse(Environment.GetEnvironmentVariable("MPFEVER_STEAMBULK"), out int k) ? Math.Max(0, Math.Min(8, k)) : 4;
+
+        /// <summary>Through Steam, once the host named this player's link: the extra connections that carry the host's game
+        /// (each Steam connection has its own rate: four together are about four times as fast). Their messages go to Received
+        /// like the main connection's; they are not counted in the link.</summary>
+        void OpenBulk()
+        {
+            if (steamSid == null || SteamDir == null || BulkWanted == 0 || string.IsNullOrEmpty(Link.Token)) return;
+            lock (bulk) { bulk.RemoveAll(c => !c.Connected); if (bulk.Count > 0) return; }
+            string tok = Link.Token;
+            for (int i = 0; i < BulkWanted; i++)
+            {
+                int index = i;
+                new Thread(() =>
+                {
+                    try
+                    {
+                        var c = ConnectSteamTunnel(steamSid, SteamNet.MainPort + 1, "bulk", out var reader, out _, out _);
+                        if (stop) { NetAddr.Cut(c); return; }
+                        lock (bulk) bulk.Add(c);
+                        var w = new StreamWriter(c.GetStream(), new UTF8Encoding(false)) { NewLine = "\n", AutoFlush = true };
+                        Msg.Make("bulk", myName ?? "", "{[\"tok\"]=" + LuaLit.Quote(tok) + ",[\"i\"]=" + index + "}").WriteTo(w);
+                        Msg m;
+                        while (!stop && (m = reader.Read()) != null)
+                            if (m.IsBinary) Received?.Invoke(m);
+                    }
+                    catch (Exception e) { if (!stop) Log.W(L.F("Client : connexion Steam supplémentaire n°{0} : {1}", "Client: extra Steam connection #{0}: {1}", index, e.Message)); }
+                }) { IsBackground = true, Name = "Client bulk " + index }.Start();
+            }
+        }
 
         /// <summary>A connection to the host's Steam id through this PC's game: its module connects over Steam (P2P or Steam's
         /// relays) and dials a one-shot loopback listener here, whose first line carries the nonce given to it.</summary>
         TcpClient ConnectSteam(string sid, out string usedText)
         {
-            usedText = null;
+            var c = ConnectSteamTunnel(sid, SteamNet.MainPort, "main", out var reader, out usedText, out string cid);
+            steamReader = reader;
+            steamCid = cid;
+            steamSid = sid;
+            return c;
+        }
+
+        TcpClient ConnectSteamTunnel(string sid, int vport, string kind, out NetReader readerOut, out string usedText, out string cidOut)
+        {
+            usedText = null; readerOut = null; cidOut = null;
             if (!SteamNet.WaitReady(SteamDir, 120, out _, out string why)) throw new IOException(why);
             int ipPort = SteamNet.TestIpPort;
             if (ipPort > 0) SteamNet.Cmd(SteamDir, "ipmode connect 127.0.0.1:" + ipPort);
@@ -1479,8 +1583,8 @@ namespace MPFever
                 int local = ((IPEndPoint)listener.LocalEndpoint).Port;
                 string nonce = SessionLink.NewToken();
                 string cid = "c" + Process.GetCurrentProcess().Id + "-" + Interlocked.Increment(ref steamCids);
-                steamCid = cid;
-                SteamNet.Cmd(SteamDir, "connect " + cid + " " + sid + " " + SteamNet.MainPort + " " + local + " " + nonce + " main");
+                cidOut = cid;
+                SteamNet.Cmd(SteamDir, "connect " + cid + " " + sid + " " + vport + " " + local + " " + nonce + " " + kind);
                 var accept = listener.AcceptTcpClientAsync();
                 var end = DateTime.UtcNow.AddSeconds(45);
                 while (!accept.Wait(250))
@@ -1501,7 +1605,7 @@ namespace MPFever
                     NetAddr.Cut(c);
                     throw new IOException(L.T("tunnel Steam inattendu", "unexpected Steam tunnel"));
                 }
-                steamReader = reader;
+                readerOut = reader;
                 usedText = "steam:" + sid + " (" + SteamNet.RouteText(f) + ")";
                 return c;
             }
@@ -1547,6 +1651,7 @@ namespace MPFever
                         }
                         Log.Ok(L.F("Client : la session continue ({0} message(s) envoyé(s) à nouveau)", "Client: the session goes on ({0} message(s) sent again)", n));
                         Resumed?.Invoke();
+                        OpenBulk();
                         continue;
                     }
                     if (m.Kind == "welcome")
@@ -1558,10 +1663,19 @@ namespace MPFever
                         lock (gate)
                         {
                             refused = claimPending;
-                            if (refused) Link.Reset(tok); else Link.Token = tok;
+                            if (refused) Link.Reset(tok);
+                            else if (!string.IsNullOrEmpty(tok)) Link.Token = tok;   // (the welcomes after a world's load name none)
                             claimPending = false;
                         }
                         if (refused) { Log.Warn(L.T("Client : l'hôte n'attendait plus ce joueur : il rejoint la session comme un nouveau joueur", "Client: the host no longer waited for this player: it joins the session as a new player")); ResumeRefused?.Invoke(); }
+                        OpenBulk();
+                    }
+                    // (a claim the host could not take: it let this player in as a new one, and a broadcast came before its welcome)
+                    if (claimPending && !SessionLink.IsControl(m.Kind))
+                    {
+                        lock (gate) { Link.Reset(null); claimPending = false; }
+                        Log.Warn(L.T("Client : l'hôte n'attendait plus ce joueur : il rejoint la session comme un nouveau joueur", "Client: the host no longer waited for this player: it joins the session as a new player"));
+                        ResumeRefused?.Invoke();
                     }
                     Link.Received();
                     Received?.Invoke(m);
@@ -1569,6 +1683,7 @@ namespace MPFever
             }
             catch (Exception e) { if (!stop) Log.W("client : " + e.Message); }
             stop = true;
+            lock (bulk) { foreach (var c in bulk) NetAddr.Cut(c); bulk.Clear(); }
             Closed?.Invoke();
         }
 
@@ -1628,7 +1743,19 @@ namespace MPFever
             catch (Exception e) { Log.Warn(L.T("envoi vers l'hôte : ", "sending to the host: ") + e.Message); }
         }
 
-        public void Dispose() { stop = true; NetAddr.Cut(tcp); }
+        /// <summary>Leaves the session on purpose: the host is told ("~bye"), it does not wait for this player.</summary>
+        public void Leave()
+        {
+            try { lock (gate) Msg.Make("~bye", "-", "{}").WriteTo(writer); } catch { }
+            Dispose();
+        }
+
+        public void Dispose()
+        {
+            stop = true;
+            NetAddr.Cut(tcp);
+            lock (bulk) { foreach (var c in bulk) NetAddr.Cut(c); bulk.Clear(); }
+        }
     }
 
     /// <summary>MPFever's connections over Steam, carried by the game's own Steam (the native module, mpf_steamnet.cpp): no port to

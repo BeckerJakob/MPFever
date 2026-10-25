@@ -1080,6 +1080,8 @@ function R.contentHash(hashStr, dumpFn)
 	part("ages", function()
 		local ct = CT("TICK_EPOCH")
 		if not ct then return "none" end
+		-- (only where the native module stamps them, R.tickEpochsOn: without it the street tool's ages differ by design)
+		if R.tickEpochsOn and not R.tickEpochsOn() then return "off" end
 		local get = api.engine.getComponent
 		return count("BASE_EDGE", function(e)
 			local ok, t = pcall(get, e, ct)

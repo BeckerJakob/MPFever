@@ -23,6 +23,16 @@ if not okCO then CO = ug_require("mpfever_1::/mpfever_co.lua") end
 -- companies: the registry of this state (set from the simulation state / the GUI mirror) maps company numbers and player entities
 R.coEntity = function(id) return R.CO and CO.entityOf(R.CO, id) or nil end
 R.coIdOf = function(e) return R.CO and CO.idOfEntity(R.CO, e) or nil end
+-- the native module stamps the segments' ages the same on every game (native_state.txt, written when it starts): read once
+R.tickEpochsOn = function()
+	if R.tickState == nil then
+		local f = C.IO and C.IO.open(C.DIR .. C.BS .. "native_state.txt", "rb")
+		local t = f and f:read("*a") or ""
+		if f then f:close() end
+		R.tickState = t:find("tickepochs=1", 1, true) ~= nil
+	end
+	return R.tickState
+end
 local BS, NL, CR, TAB = C.BS, C.NL, C.CR, C.TAB
 
 local STEP = 200          -- game time units per simulation step

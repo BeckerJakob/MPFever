@@ -10244,6 +10244,71 @@
       "ko": "게임 중 아님",
       "zh-CN": "不在游戏中",
       "zh-TW": "不在遊戲中"
+    },
+    "Extra Steam connection refused (unknown player)": {
+      "de": "Zusätzliche Steam-Verbindung abgelehnt (unbekannter Spieler)",
+      "es": "Conexión Steam adicional rechazada (jugador desconocido)",
+      "it": "Connessione Steam aggiuntiva rifiutata (giocatore sconosciuto)",
+      "nl": "Extra Steam-verbinding geweigerd (onbekende speler)",
+      "pl": "Odrzucono dodatkowe połączenie Steam (nieznany gracz)",
+      "pt-BR": "Conexão Steam adicional recusada (jogador desconhecido)",
+      "ru": "Дополнительное подключение Steam отклонено (неизвестный игрок)",
+      "ja": "追加の Steam 接続を拒否しました（不明なプレイヤー）",
+      "ko": "추가 Steam 연결 거부됨 (알 수 없는 플레이어)",
+      "zh-CN": "已拒绝额外的 Steam 连接（未知玩家）",
+      "zh-TW": "已拒絕額外的 Steam 連線（未知玩家）"
+    },
+    "{0}: extra Steam connection #{1} for the games sent": {
+      "de": "{0}: zusätzliche Steam-Verbindung Nr. {1} für gesendete Spielstände",
+      "es": "{0}: conexión Steam adicional n.º {1} para las partidas enviadas",
+      "it": "{0}: connessione Steam aggiuntiva n. {1} per le partite inviate",
+      "nl": "{0}: extra Steam-verbinding nr. {1} voor verzonden spellen",
+      "pl": "{0}: dodatkowe połączenie Steam nr {1} do wysyłanych gier",
+      "pt-BR": "{0}: conexão Steam adicional n.º {1} para as partidas enviadas",
+      "ru": "{0}: дополнительное подключение Steam № {1} для отправки игры",
+      "ja": "{0}：送信するゲーム用の追加 Steam 接続 #{1}",
+      "ko": "{0}: 보내는 게임용 추가 Steam 연결 #{1}",
+      "zh-CN": "{0}：用于发送游戏的额外 Steam 连接 #{1}",
+      "zh-TW": "{0}：用於傳送遊戲的額外 Steam 連線 #{1}"
+    },
+    "Client: extra Steam connection #{0}: {1}": {
+      "de": "Client: zusätzliche Steam-Verbindung Nr. {0}: {1}",
+      "es": "Cliente: conexión Steam adicional n.º {0}: {1}",
+      "it": "Client: connessione Steam aggiuntiva n. {0}: {1}",
+      "nl": "Client: extra Steam-verbinding nr. {0}: {1}",
+      "pl": "Klient: dodatkowe połączenie Steam nr {0}: {1}",
+      "pt-BR": "Cliente: conexão Steam adicional n.º {0}: {1}",
+      "ru": "Клиент: дополнительное подключение Steam № {0}: {1}",
+      "ja": "クライアント：追加の Steam 接続 #{0}：{1}",
+      "ko": "클라이언트: 추가 Steam 연결 #{0}: {1}",
+      "zh-CN": "客户端：额外的 Steam 连接 #{0}：{1}",
+      "zh-TW": "用戶端：額外的 Steam 連線 #{0}：{1}"
+    },
+    " over {0} Steam connections": {
+      "de": " über {0} Steam-Verbindungen",
+      "es": " por {0} conexiones Steam",
+      "it": " su {0} connessioni Steam",
+      "nl": " via {0} Steam-verbindingen",
+      "pl": " przez {0} połączenia Steam",
+      "pt-BR": " por {0} conexões Steam",
+      "ru": " через {0} подключения Steam",
+      "ja": "（{0} 本の Steam 接続）",
+      "ko": " ({0}개의 Steam 연결)",
+      "zh-CN": "（通过 {0} 个 Steam 连接）",
+      "zh-TW": "（透過 {0} 個 Steam 連線）"
+    },
+    "kicked": {
+      "de": "ausgeschlossen",
+      "es": "expulsado",
+      "it": "espulso",
+      "nl": "verwijderd",
+      "pl": "wyrzucony",
+      "pt-BR": "expulso",
+      "ru": "исключён",
+      "ja": "追放",
+      "ko": "추방됨",
+      "zh-CN": "已踢出",
+      "zh-TW": "已踢出"
     }
   }
 }

@@ -104,6 +104,9 @@ namespace MPFever
                 current.Connect("127.0.0.1", port, "Client");
                 ok &= Wait(() => welcomes == 1 && link.Token != null);
                 Exchange(300);
+                // (the welcome a host sends when the player's game has loaded a world names no link: the link goes on)
+                relay.Send(peer, Msg.Make("welcome", "Host", "{}"));
+                ok &= Wait(() => welcomes == 2) && link.Token != null;
                 // a cut with messages on their way, both sides going on while it lasts
                 var old = current; current = null; old.Dispose();
                 ok &= Wait(() => aways == 1);
@@ -114,14 +117,14 @@ namespace MPFever
                 Exchange(100);
                 ok &= Wait(() => InOrder(fromClient, clientN) && InOrder(fromHost, hostN));
                 Log.W("resume: " + fromHost.Count + "/" + hostN + " from the host, " + fromClient.Count + "/" + clientN + " from the player in order, welcomes " + welcomes + ", away " + aways + ", resumed " + resumes + ", left " + lefts);
-                ok &= welcomes == 1 && lefts == 0 && InOrder(fromClient, clientN) && InOrder(fromHost, hostN);
+                ok &= welcomes == 2 && lefts == 0 && InOrder(fromClient, clientN) && InOrder(fromHost, hostN);
                 // an unknown claim: a plain welcome (the player is a new one), and the player waited for under that name leaves
                 link.Token = "0123456789abcdef0123456789abcdef";
                 var old2 = current; current = null; old2.Dispose();
                 ok &= Wait(() => aways == 2);
                 current = Wire(new Client(link));
                 current.Connect("127.0.0.1", port, "Client", null, true);
-                ok &= Wait(() => welcomes == 2 && lefts == 1);
+                ok &= Wait(() => welcomes == 3 && lefts == 1);
                 // a player not back within the grace leaves
                 var old3 = current; current = null; old3.Dispose();
                 ok &= Wait(() => aways == 3);
