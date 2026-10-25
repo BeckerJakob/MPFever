@@ -1064,6 +1064,11 @@ local function simApplyDue(state)
 	local now = gameTime()
 	local changed = false
 	if REFUND.on and REFUND.book(st, now) then changed = true end
+	-- (the replays of an earlier game time are all applied: their town statistics against their builders', see SIM.townStats)
+	if st.rstats then
+		local okT, closed = pcall(SIM.townDue, st, now, false)
+		if okT and closed then changed = true end
+	end
 	-- each company's rank, four times a game month (mpfever_progression.lua)
 	if st.co and st.co.mode == "separate" then
 		local PG = C.progression()
@@ -1837,11 +1842,170 @@ SIM.assetDiag = function(e, why)
 	log("ASSETS: removal " .. tostring(e) .. " " .. tostring(why) .. ": " .. R.assetComponents(e))
 end
 
+-- The town statistics of a build: what the game's towns script takes from every player's build (towns.script onPreBuildProposal ->
+-- town_util.getProposalStats): the terrain alignment volumes added and removed, the trees and rocks the engine takes away (auto
+-- removal), the terrain brush's volumes and the volume of new tunnels, each summed over the towns. A replay that gives the towns
+-- other numbers than the builder's build gave its own makes the towns drift apart: script:towns at the next checks, then a
+-- resynchronisation 30 to 140 s later (a stop placed on a bridge, replayed with 77.517/117.783 of terrain alignment against the
+-- builder's 0/0, 2026-10-25). The builder ships them with its build (ts, next to its cost); each replaying game adds up its own
+-- replay's proposals (SIM.townAdd) and, when they differ, asks for a resynchronisation at once (SIM.townClose, G.townDiffs). Not
+-- the money (a replay's cost may differ, REFUND books that), nor the town buildings taken away (town streets: the engine puts them
+-- back itself). MPFEVER_ALIGNCHECK=0: off (nothing shipped, nothing compared). Never part of the simulation: only a message to
+-- the host.
+SIM.TOWNKEYS = { "al", "ar", "tr", "rk", "ba", "br", "tv" }
+SIM.alignShip = os.getenv("MPFEVER_ALIGNCHECK") ~= "0"
+SIM.townStats = function(proposal, data, pi)
+	local t = { al = 0, ar = 0, tr = 0, rk = 0, ba = 0, br = 0, tv = 0 }
+	-- (a build not initiated by a player: the towns script takes nothing from it)
+	if pi == false then return t end
+	local U = api.engine.util.town or {}
+	-- (a value that cannot be read is left out, and then never compared)
+	local function sum(fn, arg, ka, kb)
+		local ok, r = pcall(fn, arg)
+		if not (ok and type(r) == "table") then t[ka], t[kb] = nil, nil return end
+		for _, v in pairs(r) do
+			t[ka] = t[ka] + (tonumber(v[1]) or 0)
+			t[kb] = t[kb] + (tonumber(v[2]) or 0)
+		end
+	end
+	sum(U.getTerrainAlignmentImpact, data, "al", "ar")
+	sum(U.getAutoRemovalEntityImpact, data, "tr", "rk")
+	sum(U.getTerrainBrushVolumeImpact, proposal, "ba", "br")
+	-- (the towns count what a build adds of tunnels beyond what it removes, never less than nothing)
+	local okv, va, vr = pcall(SIM.tunnelVolume, proposal, data)
+	if okv and type(va) == "number" and type(vr) == "number" then t.tv = math.max(0, va - vr) else t.tv = nil end
+	return t
+end
+
+-- The volume of the tunnels a build adds and removes, as town_util.getProposalStats measures it (its getBaseParallelStripVolume:
+-- length x width x height of each strip whose first edge is a tunnel), without the towns' share by distance
+SIM.tunnelVolume = function(proposal, data)
+	local BE = api.type.ComponentType.BASE_EDGE
+	local added = {}
+	local sp = proposal.proposal
+	for i = 1, sp.addedSegments_native:size() do
+		local s = sp.addedSegments_native:at(i)
+		added[s.entity] = s.comp
+	end
+	local function edgeOf(e)
+		if e >= 0 then return api.engine.getComponent(e, BE) end
+		return added[e]
+	end
+	local function len(be)
+		local p, q = be.position0, be.position1
+		return math.sqrt((p.x - q.x) ^ 2 + (p.y - q.y) ^ 2 + (p.z - q.z) ^ 2)
+	end
+	local function volume(strip)
+		local v, width, height = 0, 0, 0
+		local groups = strip.rangeGroups_native
+		for i = 1, groups:size() do
+			local g = groups:at(i)
+			local first = edgeOf(g:at(1).edge)
+			if not first then return 0 end
+			if i == 1 then
+				if first.type ~= 2 then return 0 end
+				local tun = api.res.tunnelTypeRep.get(first.typeIndex)
+				if not tun then return 0 end
+				local w = 0
+				for k = 1, first.laneConfigs_native:size() do w = w + first.laneConfigs_native:at(k).width end
+				if g:size() == 1 then width = w + 2 * tun.padding else width = w * g:size() + 2 * tun.padding + (g:size() - 1) * first.distance end
+				height = tun.height
+			end
+			local l = len(first) * math.abs(g:at(1).bounds[1] - g:at(1).bounds[2])
+			if g:size() > 1 then
+				local last = edgeOf(g:at(g:size()).edge)
+				if last then l = (l + len(last) * math.abs(g:at(g:size()).bounds[1] - g:at(g:size()).bounds[2])) / 2 end
+			end
+			v = v + l * width * height
+		end
+		return v
+	end
+	local va, vr = 0, 0
+	local pp = data.parallelProposal
+	for i = 1, pp.toAdd_native:size() do va = va + volume(pp.toAdd_native:at(i)) end
+	for i = 1, pp.toRemove_native:size() do
+		local s = api.engine.getComponent(pp.toRemove_native:at(i), api.type.ComponentType.BASE_PARALLEL_STRIP)
+		if s then vr = vr + volume(s) end
+	end
+	return va, vr
+end
+
+-- (event replay_stats, from G.townExpect) a replay about to be applied here, with its builder's town statistics: the replays
+-- before it are all applied, they are compared now
+SIM.townExpect = function(st, p)
+	SIM.townDue(st, gameTime(), true)
+	if type(p) ~= "table" or type(p.ts) ~= "table" then return end
+	local got = {}
+	for _, k in ipairs(SIM.TOWNKEYS) do got[k] = 0 end
+	st.rstats = st.rstats or {}
+	st.rstats[#st.rstats + 1] = { at = gameTime(), uid = p.uid, tok = p.tok, exp = p.ts, got = got, n = 0 }
+	while #st.rstats > 8 do table.remove(st.rstats, 1) end
+end
+
+-- (captureNativeBuild) one proposal applied here for the replay announced last, at its time
+SIM.townAdd = function(st, now, ts)
+	local rs = st.rstats and st.rstats[#st.rstats]
+	if not rs or rs.at ~= now or type(ts) ~= "table" then return end
+	rs.n = rs.n + 1
+	for _, k in ipairs(SIM.TOWNKEYS) do
+		if rs.got[k] ~= nil and type(ts[k]) == "number" then rs.got[k] = rs.got[k] + ts[k] else rs.got[k] = nil end
+	end
+end
+
+-- the replays whose builds are applied (an earlier game time, or all of them): their statistics against the builder's
+SIM.townDue = function(st, now, all)
+	if not st.rstats or #st.rstats == 0 then return false end
+	local keep = {}
+	for _, rc in ipairs(st.rstats) do
+		if all or rc.at < now then
+			local ok, err = pcall(SIM.townClose, st, rc)
+			if not ok then log("town stats of build " .. tostring(rc.uid) .. " not compared: " .. tostring(err)) end
+		else
+			keep[#keep + 1] = rc
+		end
+	end
+	local closed = #keep ~= #st.rstats
+	st.rstats = #keep > 0 and keep or nil
+	return closed
+end
+
+SIM.townClose = function(st, rc)
+	-- (nothing applied here: a refused replay asks for the resynchronisation itself)
+	if (rc.n or 0) == 0 or type(rc.exp) ~= "table" or type(rc.got) ~= "table" then return end
+	local diffs, shown = {}, {}
+	for _, k in ipairs(SIM.TOWNKEYS) do
+		local e, g = tonumber(rc.exp[k]), tonumber(rc.got[k])
+		if e and g then
+			-- (the same proposal gives the same numbers on every game: the native replays of two bridges on 2026-10-25 gave their
+			-- builder's to the last digit; a relative margin for the big volumes)
+			local tol = math.max(0.05, 1e-5 * math.max(math.abs(e), math.abs(g)))
+			if math.abs(e - g) > tol then diffs[#diffs + 1] = string.format("%s %.3f/%.3f", k, e, g) end
+			if e ~= 0 or g ~= 0 then shown[#shown + 1] = string.format("%s %.3f", k, g) end
+		end
+	end
+	if #diffs == 0 then
+		if #shown > 0 then log("town stats of build " .. tostring(rc.uid) .. " as the builder's (" .. rc.n .. " proposal(s) here): " .. table.concat(shown, ", ")) end
+		return
+	end
+	local why = "town stats differ (builder/here): " .. table.concat(diffs, ", ")
+	log("TOWN STATS DIFFER for build " .. tostring(rc.uid) .. " (" .. rc.n .. " proposal(s) here): " .. table.concat(diffs, ", ")
+		.. " (al/ar terrain alignment added/removed, tr/rk trees/rocks taken away, ba/br terrain brush, tv tunnels)")
+	st.townDiffs = st.townDiffs or {}
+	st.townDiffs[#st.townDiffs + 1] = { uid = rc.uid, tok = rc.tok, at = rc.at, why = why:sub(1, 110) }
+	while #st.townDiffs > 8 do table.remove(st.townDiffs, 1) end
+end
+
 local function captureNativeBuild(state, param)
 	local st = state:get() or {}
 	R.CO = st.co
 	local now = gameTime()
 	SIM.replayBuildAt = nil   -- (see DET.wrapModEvents)
+	-- (the build's town statistics, see SIM.townStats)
+	local tstats = nil
+	if SIM.alignShip then
+		local okS, ts = pcall(SIM.townStats, param[1], param[2], param[4])
+		if okS then tstats = ts else log("town stats not read: " .. tostring(ts)) end
+	end
 	-- diagnostic: what the game's town script takes from every player build (town reputation, see town_util.getProposalStats)
 	-- and what it costs, on the builder's game and on the replaying ones alike: a replay that differs here makes the towns
 	-- (script:towns) and the money drift apart
@@ -1893,6 +2057,8 @@ local function captureNativeBuild(state, param)
 		local rc = st.rcost and st.rcost[#st.rcost]
 		local cl = REFUND.costOf(param)
 		if rc and rc.at == now and cl then rc.got = (rc.got or 0) + cl; rc.n = (rc.n or 0) + 1 end
+		-- (and its town statistics, against the builder's: see SIM.townStats)
+		if tstats then pcall(SIM.townAdd, st, now, tstats) end
 		-- (BUILDLEAD: a build this game released at once may land at this step too: taken for the replay, it would never be
 		-- shipped. The interface avoids it (buildLeadState); this says when it happened anyway)
 		if st.leadOut and #st.leadOut > 0 then
@@ -2178,8 +2344,10 @@ local function captureNativeBuild(state, param)
 	-- applied natively here at "now": the other games apply it at the same game time
 	log("capture: checked " .. string.format("%.3f", os.clock() - c0) .. " s")
 	local hasObjects = #((compact.proposal or {}).edgeObjectsToAdd or {}) > 0
+	-- (ts: its town statistics, which the replaying games compare with their replay's, see SIM.townStats)
 	st.out[#st.out + 1] = { n = st.outSeq, at = now, paused = (st.pauseAt ~= nil and now >= st.pauseAt) or nil,
-		fn = "makeWorldBuildProposalCmd", args = args, captured = now, ready = not hasObjects, cost = REFUND.on and REFUND.costOf(param) or nil }
+		fn = "makeWorldBuildProposalCmd", args = args, captured = now, ready = not hasObjects, cost = REFUND.on and REFUND.costOf(param) or nil,
+		ts = tstats }
 	if st.leadOut and #st.leadOut > 0 then table.remove(st.leadOut, 1) end   -- (BUILDLEAD: the released build, captured)
 	st.lastCapture = hasObjects and { n = st.outSeq, at = now } or nil
 	while #st.out > 50 do table.remove(st.out, 1) end
@@ -2403,6 +2571,10 @@ local function handleEvent(userParams, state, src, id, name, param)
 			st.rcost = st.rcost or {}
 			st.rcost[#st.rcost + 1] = { at = gameTime(), uid = param.uid, cost = tonumber(param.cost), co = param.co, got = 0, n = 0, kind = param.kind }
 			while #st.rcost > 8 do table.remove(st.rcost, 1) end
+		elseif name == "replay_stats" then
+			-- (a shipped native build about to be replayed here, with its builder's town statistics: see SIM.townStats)
+			local okT, errT = pcall(SIM.townExpect, st, param)
+			if not okT then log("town stats: " .. tostring(errT)) end
 		elseif name == "replay_unused" then
 			-- (a counted replay the engine refused: no build of it will come, see replaySend)
 			if st.replay and st.replay.at == gameTime() and st.replay.n > 0 then
@@ -3609,17 +3781,26 @@ local function replayStop(a, plan, variant)
 		if not okn then log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: node configurations not copied: " .. tostring(errn)) end
 	end
 	sp.streetProposal = ssp
+	-- (diagnostic, MPFEVER_STOPALIGNPROBE=1: a stop on a bridge or in a tunnel, =all: every stop; once per replay, nothing built:
+	-- which form of the replay shapes the ground, see G.stopAlignProbe. plan.probeOnly: H.bridgestopprobe, the proposal is only
+	-- probed, never sent)
+	local probeSw = os.getenv("MPFEVER_STOPALIGNPROBE")
+	if (plan.probeOnly or (probeSw and probeSw ~= "0")) and not plan.alignProbed then
+		plan.alignProbed = true
+		if plan.probeOnly or probeSw == "all" or ((type(c.type) == "number") and c.type or 0) ~= 0 then
+			local okq, errq = pcall(G.stopAlignProbe, a, plan, sp, function() return sContext(not plan.after and a or nil, plan.cleanup) end)
+			if not okq then log("STOPALIGNPROBE " .. tostring(a.uid) .. " failed: " .. shortErr(errq)) end
+		end
+		if plan.probeOnly then return end
+	end
 	local free = G.toolCosts(a, plan) and cc.roadTemplate == c.roadTemplate
 	local okf, cmd = pcall(function()
+		-- (a stop on a bridge or in a tunnel shapes the ground here and not on the builder's game whatever this context says: the
+		-- stop tool's flags (32) already ask for no terrain alignment, the engine still aligns the ground around the rebuilt bridge
+		-- segment (77.517/117.783 against the builder's 0/0, 2026-10-25). The check of 0.5.1 that turned the alignment off here
+		-- never fired and is gone; see G.replayNativeStop (the tool's own native proposal) and SIM.townStats (the resynchronisation
+		-- asked for at once when the towns would drift))
 		local ctx = sContext(not plan.after and a or nil, plan.cleanup)
-		-- (a stop on a bridge or in a tunnel: the stop tool shapes no ground there, the replay with the tool's terrain alignment
-		-- did, around the bridge's ends (a manual test: 4.261/12.642 against 0), and the towns drifted apart.
-		-- MPFEVER_BRIDGESTOPALIGN=1: as before)
-		if cc.type ~= 0 and ctx.checkTerrainAlignment and os.getenv("MPFEVER_BRIDGESTOPALIGN") ~= "1" then
-			ctx.checkTerrainAlignment = false
-			if not plan.alignLogged then log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: segment " .. plan.E .. " is a bridge or a tunnel (type " .. tostring(cc.type) .. "): no terrain alignment") end
-			plan.alignLogged = true
-		end
 		if free then return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true, true) end
 		return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true)
 	end)
@@ -4216,6 +4397,9 @@ G.keptNodeConfigs = function(a, E, seg)
 end
 
 local function replayNativeStreet(a)
+	-- (a build that re-creates stops or signals on its new segments, MPFEVER_EOINLINE=1: the engine's own edge objects first,
+	-- taken from a refused dry run, then this proposal with them, see G.replayStreetWithObjects)
+	if not a.eoTried and G.eoInlineOk(a.args and a.args[1]) then return G.replayStreetWithObjects(a) end
 	-- (a plain new street of the tool, see replayNative: when the tool's proposal cannot be made or is refused here, the
 	-- script forms are tried, as before 0.4.0)
 	local fallback = a.plainStreet and G.replayForms or nil
@@ -4227,21 +4411,27 @@ local function replayNativeStreet(a)
 		end
 		replayFailed(a, why)
 	end
+	-- (with the engine's own edge objects, or sent here from the stop branch for them: what this proposal cannot do goes the way
+	-- of before, which never needed it (the street, then its stops), never to a resynchronisation; see G.eoAsBefore)
+	local function gaveUp(why)
+		if a.eoNative or a.eoRoute == "stop" then return G.eoAsBefore(a, "native street: " .. why) end
+		replayFailed(a, why)
+	end
 	local cArgs = C.deser(C.ser(a.args))
 	local miss = R.translateIn(cArgs, G.bind)
-	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: unresolved " .. table.concat(miss, ",")) replayFailed(a, "unresolved references") return end
+	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: unresolved " .. table.concat(miss, ",")) gaveUp("unresolved references") return end
 	local m = cArgs[1]
 	local rmIds = {}
 	for _, sg in ipairs(m.proposal.removedSegments or {}) do if type(sg.entity) == "number" and sg.entity >= 0 then rmIds[#rmIds + 1] = sg.entity end end
 	local okr, rm = pcall(function() return api.engine.util.proposal.makeSegmentsRemoveProposal(rmIds) end)
-	if not okr or not rm then log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: removal proposal " .. shortErr(rm)) replayFailed(a, "removal proposal") return end
+	if not okr or not rm then log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: removal proposal " .. shortErr(rm)) gaveUp("removal proposal") return end
 	local nSeg, nNodes = -1, -1
 	pcall(function() nSeg = #rm.proposal.removedSegments end)
 	pcall(function() nNodes = #rm.proposal.removedNodes end)
 	local capNodes = #(m.proposal.removedNodes or {})
 	if nSeg ~= #rmIds or nNodes < 0 then
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: the engine's removal (" .. nSeg .. " segments) differs from the tool's (" .. #rmIds .. ")")
-		replayFailed(a, "removal differs")
+		gaveUp("removal differs")
 		return
 	end
 	local toolNodes = nNodes ~= capNodes
@@ -4265,10 +4455,18 @@ local function replayNativeStreet(a)
 	ctx.player = api.engine.util.getPlayer()
 	G.refundInto(ctx)
 	local okk, cmd, label = false, nil, nil
+	local eoUsed = a.eoNative
 	for _, variant in ipairs({ {}, { noConfigs = true }, { noConfigs = true, noMaps = true } }) do
 		C.errors = {}
 		variant.toolNodes = toolNodes
 		variant.townAuto = a.townAuto
+		-- (the engine's own edge objects of the dry run, matched by rank, and the tool's map of the objects it re-created,
+		-- MPFEVER_EOMAPS=0: without that map)
+		if eoUsed then
+			variant.withObjects = eoUsed
+			variant.eoByRank = true
+			variant.eoMaps = os.getenv("MPFEVER_EOMAPS") ~= "0"
+		end
 		local okp, P = pcall(C.rebuildNativeWithConstruction, m, nil, rm, variant)
 		label = (variant.noMaps and "without node configurations and id maps") or (variant.noConfigs and "without node configurations") or "complete"
 		if okp and P then
@@ -4280,19 +4478,35 @@ local function replayNativeStreet(a)
 		end
 		if okk and cmd then break end
 	end
+	if (not okk or not cmd) and eoUsed then return G.eoAsBefore(a, "native street command with its edge objects " .. shortErr(cmd)) end
 	if not okk or not cmd then failed("native street command") return end
 	local edgesBefore = #R.allEdges()
+	local objsBefore = eoUsed and G.eoCount() or nil
 	toSim("replaying", {})
 	replaySend(cmd, function(res, success)
 		if not success then
 			local why = ""
 			pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
-			log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: refused " .. why .. (a.plainStreet and "" or " (desync)"))
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: refused " .. why .. ((a.plainStreet or eoUsed) and "" or " (desync)"))
 			logRefusal(a, res)
+			-- (refused, it changed nothing: the way of before)
+			if eoUsed then return G.eoAsBefore(a, "native street with its edge objects refused " .. why) end
 			failed("native street refused " .. why)
 			return
 		end
 		log("NATIVE REPLAY " .. tostring(a.uid) .. " native street BUILT (" .. label .. ")")
+		if eoUsed then
+			-- one build as the builder's, its stops and signals in it: none placed afterwards (a.stopsAfter is never set on this
+			-- way). Their number here against the builder's, net of what the build removed
+			local exp = #(m.proposal.edgeObjectsToAdd or {}) - #(m.proposal.edgeObjectsToRemove or {})
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " native street: with its " .. #eoUsed .. " new stop(s)/signal(s), one build as the builder's")
+			a.eoNative, a.eoRes = nil, nil
+			G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
+				local got = G.eoCount() - objsBefore
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " edge objects here " .. got .. ", originator " .. exp .. (got == exp and "" or " EDGE OBJECT COUNT DIFFERS"))
+				if got ~= exp then replayFailed(a, "edge objects differ") end
+			end }
+		end
 		-- (diagnostic) the tool's new nodes and segments the engine did not apply here, by place
 		pcall(function()
 			local st = res.proposal.proposal
@@ -4314,6 +4528,460 @@ local function replayNativeStreet(a)
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " edges here " .. got .. ", originator " .. expected .. (got == expected and "" or " SEGMENT COUNT DIFFERS"))
 		end }
 	end)
+end
+
+-- ================================================================== edge objects in the tool's own proposal
+-- (all of it table fields: the main chunk is at the game's limit of 200 local variables)
+
+-- the stops and signals on the map (every edge object)
+G.eoCount = function()
+	local n = 0
+	pcall(function() for _ in pairs(api.engine.system.streetSystem.getEdgeObject2EdgeMap()) do n = n + 1 end end)
+	return n
+end
+
+-- A fallback of a replay: at once, or on the next frame when it comes from an engine's answer, as the other retries (the game stays
+-- held at the build's step meanwhile: G.replayQuiet, see replaySend)
+G.nowOrNext = function(fn)
+	if (G.replayOut or 0) == 0 and G.frames >= (G.replayQuiet or 0) then return fn() end
+	G.waits[#G.waits + 1] = { at = G.frames + 1, fn = fn }
+end
+
+-- The engine's own native edge objects (stops, signals) for a build that adds them on its new segments: a script cannot write a
+-- native edge object's model ("no writable member 'model'", issue #50), so they are taken from the engine's conversion of a script
+-- proposal made to be refused, the shape of test 111 (H.stopexp): every new segment of the build that carries objects TWICE, both
+-- copies between the SAME end nodes (an existing node as it is, a new node of the build once, at the tool's place), each copy
+-- with the build's new objects. The copies collide with each other (and with the segments still there), so the engine refuses it
+-- and builds nothing; its result still holds the converted proposal, whose edge objects come copy after copy in the order they
+-- were given (test 111: segments -1, -1, -2, -2; model and place unreadable, so they are matched by rank). The placeholders of the
+-- first copy are the tool's own (-400000000 - the object's rank). opts.removeE: the existing segment a stop is put on (no stop on
+-- it yet), removed as in test 111. Returns the command and the number of the build's objects (the conversion has twice as many).
+G.eoDryRun = function(m, opts)
+	opts = opts or {}
+	local st = (type(m) == "table" and m.proposal) or {}
+	local list = st.edgeObjectsToAdd or {}
+	local n = #list
+	if n == 0 then error("no new edge objects") end
+	local seg = {}
+	for _, sg in ipairs(st.addedSegments or {}) do
+		if type(sg) == "table" and type(sg.entity) == "number" and sg.entity < 0 then seg[sg.entity] = sg end
+	end
+	-- (the segments that carry them, in the order of their first object)
+	local carriers, rank = {}, {}
+	for k, o in ipairs(list) do
+		if type(o) ~= "table" or type(o.model) ~= "string" then error("object " .. k .. " without model") end
+		local sg = seg[o.segmentEntity]
+		if not sg or type(sg.comp) ~= "table" then error("object " .. k .. ": its segment " .. tostring(o.segmentEntity) .. " is not a new segment of the build") end
+		if not rank[o.segmentEntity] then carriers[#carriers + 1] = sg; rank[o.segmentEntity] = #carriers end
+	end
+	local newNode = {}
+	for _, nd in ipairs(st.addedNodes or {}) do
+		if type(nd) == "table" and type(nd.entity) == "number" then newNode[nd.entity] = nd end
+	end
+	local nodes, nodeOf, touched, touchedList = {}, {}, {}, {}
+	local function endOf(id)
+		if type(id) ~= "number" then error("segment end " .. tostring(id) .. " unresolved") end
+		if id >= 0 then
+			if not touched[id] then touched[id] = true; touchedList[#touchedList + 1] = id end
+			return id
+		end
+		if nodeOf[id] then return nodeOf[id] end
+		local p = newNode[id] and newNode[id].comp and newNode[id].comp.position
+		if type(p) ~= "table" or type(p.x) ~= "number" then error("new node " .. id .. " without a position") end
+		local ne = api.type.NodeAndEntity.new()
+		ne.entity = -(#nodes + 1)
+		local bn = ne.comp
+		bn.position = api.type.Vec3f.new(p.x, p.y, p.z)
+		ne.comp = bn
+		nodes[#nodes + 1] = ne
+		nodeOf[id] = ne.entity
+		return ne.entity
+	end
+	local nC = #carriers
+	local edges, eos = {}, {}
+	for copy = 0, 1 do
+		for ci, sg in ipairs(carriers) do
+			local s = C.deser(C.ser(sg))
+			s.entity = -(copy * nC + ci)
+			s.comp.node0 = endOf(sg.comp.node0)
+			s.comp.node1 = endOf(sg.comp.node1)
+			s.comp.objects = nil
+			local e = C.minimalSegment(s, false, false)
+			-- (the tool's own lanes: on a street without pavements the stop tool adds the platform lanes, without which the stop is
+			-- dropped, see replayStop)
+			local lanes = nil
+			if type(sg.comp.laneConfigs) == "table" and #sg.comp.laneConfigs > 0 then lanes = C.rebuildLanes(sg.comp.laneConfigs) end
+			lanes = lanes or C.templateLanes(sg.comp.roadTemplate)
+			-- (only the new objects, never the ones already on the segment: one object on two new segments)
+			local objs = {}
+			for k, o in ipairs(list) do
+				if o.segmentEntity == sg.entity then objs[#objs + 1] = { -400000000 - (copy * n + k - 1), (o.category == 2) and 2 or (o.left and 0 or 1) } end
+			end
+			local c = e.comp
+			if lanes then c.laneConfigs = lanes end
+			c.objects = objs
+			e.comp = c
+			if type(sg.streetEdge) ~= "table" then
+				pcall(function() local se = e.streetEdge; se.precedenceNode0 = 2; se.precedenceNode1 = 2; e.streetEdge = se end)
+			end
+			if type(sg.playerOwned) ~= "table" or type(sg.playerOwned.player) ~= "number" then
+				pcall(function() local po = C.newOf("PlayerOwned"); po.player = api.engine.util.getPlayer(); e.playerOwned = po end)
+			end
+			edges[#edges + 1] = e
+		end
+	end
+	for copy = 0, 1 do
+		for _, o in ipairs(list) do
+			local eo = api.type.SimpleStreetProposal.EdgeObject.new()
+			eo.edgeEntity = -(copy * nC + rank[o.segmentEntity])
+			eo.param = tonumber(o.param) or 0.5
+			eo.oneWay = o.oneWay == true
+			eo.left = o.left == true
+			eo.model = (o.model:gsub("^::/", ""))
+			eo.playerEntity = api.engine.util.getPlayer()
+			pcall(function() eo.name = o.name or "" end)
+			eos[#eos + 1] = eo
+		end
+	end
+	local sp = api.type.SimpleProposal.new()
+	local ssp = sp.streetProposal
+	if #nodes > 0 then ssp.nodesToAdd = nodes end
+	ssp.edgesToAdd = edges
+	ssp.edgeObjectsToAdd = eos
+	if type(opts.removeE) == "table" and #opts.removeE > 0 then
+		ssp.edgesToRemove = opts.removeE
+		for _, e in ipairs(opts.removeE) do
+			local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+			if be then endOf(be.node0); endOf(be.node1) end
+		end
+	end
+	-- (the configurations of the existing nodes it touches name the segments there: removed, as every script proposal that changes
+	-- a node's segments does (C.rebuildProposal); only those this game has, removing one that does not exist is an assertion)
+	local ncr = {}
+	for _, nd in ipairs(touchedList) do
+		local okn, nc = pcall(function() return api.engine.getComponent(nd, api.type.ComponentType.BASE_NODE_CONFIG) end)
+		if okn and nc then ncr[#ncr + 1] = nd end
+	end
+	if #ncr > 0 then ssp.nodeConfigsToRemove = ncr end
+	sp.streetProposal = ssp
+	local ctx = api.type.Context.new()
+	ctx.checkTerrainAlignment = false
+	ctx.cleanupStreetGraph = false
+	ctx.gatherBuildings = false
+	ctx.gatherFields = true
+	ctx.player = api.engine.util.getPlayer()
+	return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), n
+end
+
+-- A street or track build that re-creates stops or signals on its NEW segments (a track upgrade of a signalled line, the Auto
+-- Signals mod, a road joined to a street with stops, a town street rebuilt with its bus stops), MPFEVER_EOINLINE=1: replayed as
+-- ONE native street proposal that carries them (replayNativeStreet with the engine's own objects of a refused dry run, see
+-- G.eoDryRun), as the builder's game made it. The way of before was the street, then one stop build per new segment (1 + N builds
+-- where the builder made one: every later entity was numbered differently, 3 ids off from a track upgrade on 2026-10-24). Only
+-- builds whose objects are all on new segments the capture describes, and whose constructions are town buildings. Unset: as
+-- before (off by default until the game tests: a scripted street can hang the engine)
+G.eoInlineOk = function(m)
+	if os.getenv("MPFEVER_EOINLINE") ~= "1" then return false end
+	local st = type(m) == "table" and m.proposal
+	if type(st) ~= "table" or #(st.edgeObjectsToAdd or {}) == 0 then return false end
+	if hasConstructionSegments(m) then return false end
+	for _, ce in ipairs(m.toAdd or {}) do if type(ce) ~= "table" or ce.playerEntity ~= -1 then return false end end
+	local seg = {}
+	for _, sg in ipairs(st.addedSegments or {}) do
+		if type(sg) == "table" and type(sg.entity) == "number" and sg.entity < 0 then seg[sg.entity] = sg end
+	end
+	for _, o in ipairs(st.edgeObjectsToAdd) do
+		local sg = type(o) == "table" and type(o.model) == "string" and seg[o.segmentEntity] or nil
+		local c = sg and sg.comp
+		if type(c) ~= "table" or type(c.position0) ~= "table" or type(c.position1) ~= "table" or type(c.tangent0) ~= "table"
+			or type(c.tangent1) ~= "table" then return false end
+	end
+	return true
+end
+
+-- What the native proposal with the engine's objects could not do: the way of before (a.eoTried: replayNative from the start,
+-- whose stop branch then places the stops after the street), never a resynchronisation. That way numbers the entities otherwise
+-- than the builder's game: MPFEVER_EOFALLBACKRESYNC=1 asks for a resynchronisation once it is applied
+G.eoAsBefore = function(a, why)
+	log("NATIVE REPLAY " .. tostring(a.uid) .. " edge objects: " .. tostring(why) .. ": replayed as before (the stops and signals after the street: the entity ids may now differ from the builder's)")
+	-- (eoRoute cleared too: the way of before may come back to replayNativeStreet, whose own failures are then the old ones)
+	a.eoNative, a.eoRes, a.eoRoute = nil, nil, nil
+	a.eoTried = true
+	if os.getenv("MPFEVER_EOFALLBACKRESYNC") == "1" then
+		local since = G.frames
+		G.waits[#G.waits + 1] = { at = G.frames + 2, fn = function() G.eoResyncWhenQuiet(a, since) end }
+	end
+	return G.nowOrNext(function() G.replayForms(a, 1) end)
+end
+
+G.eoResyncWhenQuiet = function(a, since)
+	local quiet = (G.replayOut or 0) == 0 and G.frames >= (G.replayQuiet or 0) and G.stopsAfterBusy == nil
+	if quiet or G.frames - since > 1200 then
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " edge objects replayed as before: resynchronisation (MPFEVER_EOFALLBACKRESYNC)")
+		return replayFailed(a, "edge objects replayed as before")
+	end
+	G.waits[#G.waits + 1] = { at = G.frames + 1, fn = function() G.eoResyncWhenQuiet(a, since) end }
+end
+
+G.replayStreetWithObjects = function(a)
+	a.eoTried = true
+	local uid = tostring(a.uid)
+	local cArgs = C.deser(C.ser(a.args))
+	local miss = R.translateIn(cArgs, G.bind)
+	if #miss > 0 then return G.eoAsBefore(a, "unresolved " .. table.concat(miss, ",")) end
+	local okd, dry, n = pcall(G.eoDryRun, cArgs[1])
+	if not okd or not dry then return G.eoAsBefore(a, "dry run not made (" .. shortErr(dry) .. ")") end
+	log("NATIVE REPLAY " .. uid .. " edge objects: " .. n .. " new stop(s)/signal(s) of the build" .. C.mapSizes(cArgs[1]) .. ": their conversion by the engine (dry run)")
+	toSim("replaying", {})
+	replaySend(dry, function(res, success)
+		if success then
+			log("NATIVE REPLAY " .. uid .. " edge objects: the dry run was built instead of refused (desync)")
+			replayFailed(a, "edge object dry run built")
+			return
+		end
+		local eo = {}
+		pcall(function() local l = res.proposal.proposal.edgeObjectsToAdd; for i = 1, #l do eo[i] = l[i] end end)
+		local segs = {}
+		pcall(function() for i = 1, math.min(#eo, 8) do segs[i] = tostring(eo[i].segmentEntity) end end)
+		log("NATIVE REPLAY " .. uid .. " edge objects: the engine's conversion has " .. #eo .. ", the tool's build " .. n .. " (dry run: twice; segments " .. table.concat(segs, ",") .. ")")
+		if #eo ~= 2 * n then return G.eoAsBefore(a, "the engine's conversion has " .. #eo .. " edge object(s)") end
+		local first = {}
+		for i = 1, n do first[i] = eo[i] end
+		-- (the converted objects live in that result: kept with the replay until its build is applied)
+		a.eoNative, a.eoRes = first, res
+		return replayNativeStreet(a)
+	end)
+end
+
+-- A stop or a signal put on a bridge or in a tunnel (and the bulldozer on one), replayed as the tool's own native proposal instead
+-- of replayStop's script proposal: the tool's segment replacement (its maps new2oldSegments / old2newSegments, the segment as the
+-- tool made it), the engine's own removal of the old segment, and the new stops as the engine's own native edge objects of a dry
+-- run it refuses (G.eoDryRun). The script proposal is converted as a removed bridge plus a new one, whose ground the engine aligns
+-- again: 77.517/117.783 of terrain alignment here against the builder's 0/0 (2026-10-25), the towns drifted apart (script:towns)
+-- and the games were reloaded 30 to 140 s later. The native replays of the bridges themselves gave the builder's alignment
+-- exactly. What this way cannot make goes to replayStop as before (never to a resynchronisation); a native stop applied with
+-- another number of stops than the builder's asks for one at once. MPFEVER_NATIVESTOP=1: stops on bridges and in tunnels (the
+-- signals there too with MPFEVER_NATIVESIGNAL=1), =all: every stop and signal (tests); unset: as before (off until the game tests).
+G.nativeStopWanted = function(a, plan)
+	local sw = os.getenv("MPFEVER_NATIVESTOP")
+	if sw ~= "1" and sw ~= "all" then return false end
+	if type(plan) ~= "table" or plan.after or type(plan.E) ~= "number" or type(a.args) ~= "table" then return false end
+	if #(plan.objs or {}) == 0 and next(plan.removeIdx or {}) == nil then return false end
+	if sw == "all" then return true end
+	local okc, c = pcall(function() return api.engine.getComponent(plan.E, api.type.ComponentType.BASE_EDGE) end)
+	if not (okc and c) or ((type(c.type) == "number") and c.type or 0) == 0 then return false end
+	if plan.segType == 1 and os.getenv("MPFEVER_NATIVESIGNAL") ~= "1" then return false end
+	return true
+end
+
+G.replayNativeStop = function(a, plan)
+	local uid = tostring(a.uid)
+	local function asBefore(why)
+		log("NATIVE REPLAY " .. uid .. " native stop: " .. why .. ": replayed as before (replayStop)")
+		return G.nowOrNext(function() replayStop(a, plan) end)
+	end
+	local cArgs = C.deser(C.ser(a.args))
+	local miss = R.translateIn(cArgs, G.bind)
+	if #miss > 0 then return asBefore("unresolved " .. table.concat(miss, ",")) end
+	local m = cArgs[1]
+	local c = api.engine.getComponent(plan.E, api.type.ComponentType.BASE_EDGE)
+	if not c then return asBefore("segment " .. tostring(plan.E) .. " missing") end
+	-- (this game's segment the other way round than the builder's: the tool's segment replaces it the builder's way round, as
+	-- replayStop does; not with stops already on it, whose places count from this game's first node)
+	local sc = (type(plan.seg) == "table" and type(plan.seg.comp) == "table") and plan.seg.comp or {}
+	if #c.objects > 0 and sc.node0 == c.node1 and sc.node1 == c.node0 and c.node0 ~= c.node1 then
+		return asBefore("segment " .. plan.E .. " runs the other way round here and carries stops")
+	end
+	local okr, rm = pcall(function() return api.engine.util.proposal.makeSegmentsRemoveProposal({ plan.E }) end)
+	local nSeg, nNodes = -1, -1
+	if okr and rm then
+		pcall(function() nSeg = #rm.proposal.removedSegments end)
+		pcall(function() nNodes = #rm.proposal.removedNodes end)
+	end
+	if nSeg ~= 1 or nNodes < 0 then return asBefore("the engine's removal of segment " .. plan.E .. " (" .. (okr and (nSeg .. " segment(s)") or shortErr(rm)) .. ")") end
+	-- (the engine also removes the free end of a dead-end segment, the tool kept it: the tool's removed nodes are written instead,
+	-- as replayNativeStreet does)
+	local toolNodes = nNodes ~= #(m.proposal.removedNodes or {})
+	local nObj = #(plan.objs or {})
+	local nGone = 0
+	for _ in pairs(plan.removeIdx or {}) do nGone = nGone + 1 end
+	local kind = "type " .. tostring(c.type) .. "/" .. tostring(c.typeIndex)
+	local function build(eo, keep)
+		local ctx = sContext(a)
+		-- (priced like the tool's build, as replayStop: the replaced segment free)
+		local free = G.toolCosts(a, plan) and (sc.roadTemplate == nil or sc.roadTemplate == c.roadTemplate)
+		local okk, cmd, label = false, nil, nil
+		for _, variant in ipairs({ {}, { noConfigs = true }, { noConfigs = true, noMaps = true } }) do
+			C.errors = {}
+			variant.toolNodes = toolNodes
+			if eo then variant.withObjects = eo; variant.eoByRank = true end
+			label = (variant.noMaps and "without node configurations and id maps") or (variant.noConfigs and "without node configurations") or "complete"
+			local okp, P = pcall(C.rebuildNativeWithConstruction, m, nil, rm, variant)
+			if okp and P then
+				if free then okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true, true) end) end
+				if not (okk and cmd) then
+					free = false
+					okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true) end)
+				end
+				log("NATIVE REPLAY " .. uid .. " native stop (" .. label .. "): " .. ((okk and cmd) and "command made" or shortErr(cmd))
+					.. (#C.errors > 0 and (" [" .. table.concat(C.errors, " ; "):sub(1, 200) .. "]") or ""))
+			else
+				log("NATIVE REPLAY " .. uid .. " native stop (" .. label .. "): not rebuilt (" .. shortErr(P) .. ")")
+			end
+			if okk and cmd then break end
+		end
+		if not okk or not cmd then return asBefore("no command") end
+		local before = G.eoCount()
+		toSim("replaying", {})
+		replaySend(cmd, function(res, success)
+			if not success then
+				local why = ""
+				pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
+				log("NATIVE REPLAY " .. uid .. " native stop on segment " .. plan.E .. ": refused " .. why)
+				logRefusal(a, res)
+				-- (refused, it changed nothing)
+				return asBefore("refused")
+			end
+			log("NATIVE REPLAY " .. uid .. " native stop BUILT on segment " .. plan.E .. " (" .. kind .. ", " .. label .. ")" .. (free and ", priced like the tool's build" or ""))
+			local expected = before + nObj - nGone
+			G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
+				local after = G.eoCount()
+				if keep then keep.res = nil end
+				log("NATIVE REPLAY " .. uid .. " stops on the map " .. before .. " -> " .. after .. ((after == expected) and "" or (" (EXPECTED " .. expected .. "): resynchronisation")))
+				if after ~= expected then replayFailed(a, "native stop: stops differ") end
+			end }
+		end)
+	end
+	-- the bulldozer on a stop: nothing new, the tool's removal of the objects is written by their rank on the segment
+	if nObj == 0 then
+		log("NATIVE REPLAY " .. uid .. " native stop: " .. nGone .. " object(s) removed from segment " .. plan.E .. " (" .. kind .. ")")
+		return build(nil, nil)
+	end
+	-- the engine's own edge objects first (a dry run it refuses, nothing built); the old segment removed in it only when it carries
+	-- nothing yet (the shape of test 111)
+	local okd, dry, n = pcall(G.eoDryRun, m, { removeE = (#c.objects == 0) and { plan.E } or nil })
+	if not okd or not dry then return asBefore("dry run not made (" .. shortErr(dry) .. ")") end
+	log("NATIVE REPLAY " .. uid .. " native stop: " .. n .. " new object(s) on segment " .. plan.E .. " (" .. kind .. "): their conversion by the engine (dry run)")
+	toSim("replaying", {})
+	replaySend(dry, function(res, success)
+		if success then
+			log("NATIVE REPLAY " .. uid .. " native stop: the dry run was built instead of refused (desync)")
+			replayFailed(a, "stop conversion built")
+			return
+		end
+		local eo = {}
+		pcall(function() local l = res.proposal.proposal.edgeObjectsToAdd; for i = 1, #l do eo[i] = l[i] end end)
+		log("NATIVE REPLAY " .. uid .. " native stop: the engine's conversion has " .. #eo .. " edge object(s), the tool's build " .. n .. " (dry run: twice)")
+		if #eo ~= 2 * n then return asBefore("the engine's conversion has " .. #eo .. " edge object(s)") end
+		local first = {}
+		for i = 1, n do first[i] = eo[i] end
+		-- (the converted objects live in that result: kept until the build is applied)
+		return build(first, { res = res })
+	end)
+end
+
+-- (diagnostic, MPFEVER_STOPALIGNPROBE=1 for the stops on a bridge or in a tunnel, =all for every stop; H.bridgestopprobe) Which
+-- form of a stop's replay shapes the ground: the engine's proposal data of each form, made without building anything, and the
+-- terrain alignment the towns would count for it (api.engine.util.town.getTerrainAlignmentImpact, as the game's towns script does
+-- with every player's build). The stop tool's own build aligned nothing; replayStop's script proposal aligned 77.517/117.783 on a
+-- street bridge (2026-10-25). The forms: (a) replayStop's script proposal with its context, (b) the same with the terrain alignment
+-- asked for, (c) the tool's native proposal rebuilt with its replacement maps (C.rebuildNativeWithConstruction, without the new
+-- stops: the pure replacement of the segment), (d) the same without the maps, (e) (c) with the terrain alignment asked for.
+G.stopAlignProbe = function(a, plan, sp, mkCtx)
+	local uid = tostring(a.uid)
+	local function say(t)
+		log("STOPALIGNPROBE " .. uid .. " " .. t)
+		if plan.probeSink then pcall(plan.probeSink, uid .. " " .. t) end
+	end
+	local membersShown = false
+	local function stats(label, form, ctx)
+		local okd, pd = pcall(function() return api.engine.util.proposal.makeProposalData(form, ctx) end)
+		if not okd or not pd then say(label .. ": no proposal data (" .. shortErr(pd) .. ")") return end
+		local al, ar, an = 0, 0, 0
+		local okI, t = pcall(function() return api.engine.util.town.getTerrainAlignmentImpact(pd) end)
+		if okI and type(t) == "table" then
+			for _, v in pairs(t) do al = al + (tonumber(v[1]) or 0); ar = ar + (tonumber(v[2]) or 0); an = an + 1 end
+		end
+		local pa, pr, costs, crit = "?", "?", "?", "?"
+		pcall(function() pa = tostring(#pd.parallelProposal.toAdd) end)
+		pcall(function() pr = tostring(#pd.parallelProposal.toRemove) end)
+		pcall(function() costs = tostring(pd.costs) end)
+		pcall(function() crit = tostring(pd.errorState.critical) end)
+		say(label .. ": terrain alignment " .. (okI and string.format("%.3f/%.3f/%d", al, ar, an) or ("unreadable (" .. shortErr(t) .. ")"))
+			.. ", parallel strips +" .. pa .. " -" .. pr .. ", costs " .. costs .. ", critical " .. crit)
+		if not membersShown then
+			membersShown = true
+			pcall(function() say("proposal data members: " .. table.concat(C.members(pd) or {}, ",")) end)
+		end
+	end
+	local c = api.engine.getComponent(plan.E, api.type.ComponentType.BASE_EDGE)
+	say("segment " .. tostring(plan.E) .. " type " .. tostring(c and c.type) .. "/" .. tostring(c and c.typeIndex) .. ", " .. #(plan.objs or {}) .. " new object(s)"
+		.. ((type(a.ts) == "table") and string.format(", the builder's terrain alignment %.3f/%.3f", tonumber(a.ts.al) or -1, tonumber(a.ts.ar) or -1) or ""))
+	stats("(a) script proposal, the replay's context", sp, mkCtx())
+	local cb = mkCtx()
+	cb.checkTerrainAlignment = true
+	stats("(b) script proposal, terrain alignment asked for", sp, cb)
+	-- the tool's native proposal: the act's, its references translated; for H.bridgestopprobe (no act) and for the stops placed
+	-- again after a street build (the act is the street's), made from the script proposal as the stop tool makes it (the new
+	-- segment -1 replacing the old one, the maps saying so)
+	local m
+	if type(a.args) == "table" and not plan.after then
+		local cArgs = C.deser(C.ser(a.args))
+		local miss = R.translateIn(cArgs, G.bind)
+		if #miss > 0 then say("(c)-(e): unresolved " .. table.concat(miss, ",")) return end
+		m = cArgs[1]
+	else
+		local ssp = sp.streetProposal
+		local live = api.engine.getComponent(plan.E, api.type.ComponentType.BASE_EDGE)
+		m = { toAdd = {}, toRemove = {}, proposal = {
+			addedNodes = {}, removedNodes = {}, addedSegments = { C.marshal(ssp.edgesToAdd[1]) },
+			removedSegments = { { entity = plan.E, type = plan.segType or 0, comp = C.marshal(live) } },
+			edgeObjectsToAdd = {}, edgeObjectsToRemove = {}, nodeConfigsToAdd = {}, nodeConfigsToRemove = C.marshal(ssp.nodeConfigsToRemove) or {},
+			new2oldSegments = { [-1] = { plan.E } }, old2newSegments = { [plan.E] = { -1 } } } }
+	end
+	local okr, rm = pcall(function() return api.engine.util.proposal.makeSegmentsRemoveProposal({ plan.E }) end)
+	if not okr or not rm then say("(c)-(e): removal proposal " .. shortErr(rm)) return end
+	local nNodes = -1
+	pcall(function() nNodes = #rm.proposal.removedNodes end)
+	local toolNodes = nNodes ~= #(m.proposal.removedNodes or {})
+	for _, f in ipairs({ { "(c) native proposal with the tool's maps", {}, false }, { "(d) native proposal without maps", { noMaps = true }, false },
+		{ "(e) native proposal with the tool's maps, terrain alignment asked for", {}, true } }) do
+		C.errors = {}
+		local opts = f[2]
+		opts.toolNodes = toolNodes
+		local okp, P = pcall(C.rebuildNativeWithConstruction, m, nil, rm, opts)
+		if okp and P then
+			local ctx = mkCtx()
+			if f[3] then ctx.checkTerrainAlignment = true end
+			stats(f[1] .. (#C.errors > 0 and (" [" .. table.concat(C.errors, " ; "):sub(1, 160) .. "]") or ""), P, ctx)
+		else
+			say(f[1] .. ": not rebuilt (" .. shortErr(P) .. ")")
+		end
+	end
+end
+
+-- (see SIM.townStats) The builder's town statistics of a build this game is about to replay, to the simulation, which adds up its
+-- own replay's and compares them once the replay is applied. Each announcement carries a mark of its own: only the differences
+-- of replays announced since this game started ask for a resynchronisation (the simulation's list is kept in the savegame, a
+-- reloaded game must not ask for one again)
+G.townExpect = function(a)
+	G.tsSeq = (G.tsSeq or 0) + 1
+	local tok = string.format("%.4f-%d", os.clock(), G.tsSeq)
+	G.tsWaitN = (G.tsWaitN or 0) + 1
+	if not G.tsWait or G.tsWaitN > 64 then G.tsWait, G.tsWaitN = {}, 1 end
+	G.tsWait[tok] = tostring(a.uid)
+	toSim("replay_stats", { uid = tostring(a.uid), ts = a.ts, tok = tok })
+end
+
+G.townDiffs = function(st)
+	for _, d in ipairs(st.townDiffs or {}) do
+		local uid = G.tsWait and d.tok and G.tsWait[d.tok]
+		if uid then
+			G.tsWait[d.tok] = nil
+			log("NATIVE REPLAY " .. uid .. ": TOWN STATS DIFFER from the builder's (" .. tostring(d.why) .. "): resynchronisation asked for")
+			replayFailed({ uid = uid }, tostring(d.why))
+		end
+	end
 end
 
 function replayTwoStep(a)
@@ -4520,6 +5188,9 @@ local function replayNative(a, formIndex)
 				return
 			end
 			local okp, plan = pcall(function() return stopPlan(probe) end)
+			-- (a stop on a bridge or in a tunnel: the tool's own native proposal, see G.replayNativeStop; MPFEVER_NATIVESTOP unset: as
+			-- before)
+			if okp and plan and G.nativeStopWanted(a, plan) then return G.replayNativeStop(a, plan) end
 			if okp and plan then return replayStop(a, plan) end
 			-- a street with stops on it taken away with the bulldozer: the engine's own removal proposal removes the stops with it
 			local removal0 = (#(stp.edgeObjectsToAdd or {}) == 0) and removalPlan(probe) or nil
@@ -4533,7 +5204,16 @@ local function replayNative(a, formIndex)
 			-- given up here and the road existed on its builder's game only (C:12 in the 0.3.6 tests).
 			-- (a script proposal cannot place them in the same build: refused "Construction impossible", and without their
 			-- placeholders the engine asserts): the street build is rebuilt without them, then each new segment that carries
-			-- stops gets them back as a stop build (replayStop), which is what the tool's build amounts to
+			-- stops gets them back as a stop build (replayStop), which is what the tool's build amounts to.
+			-- That is 1 + N builds where the builder made one: every later entity was numbered differently here (a track upgrade
+			-- of a signalled line, 2026-10-24: 3 ids off from then on). MPFEVER_EOINLINE=1: ONE native street proposal that carries
+			-- the engine's own stops and signals (G.replayStreetWithObjects); if it cannot be made, the way below (a.eoTried).
+			-- Unset: as before
+			if not a.eoTried and G.eoInlineOk(probe[1]) then
+				a.eoRoute = "stop"
+				log("NATIVE REPLAY " .. tostring(a.uid) .. ": " .. #(stp.edgeObjectsToAdd or {}) .. " stop(s)/signal(s) re-created on the new segments: one native street proposal with them")
+				return replayNativeStreet(a)
+			end
 			local groups = {}
 			for _, o in ipairs(stp.edgeObjectsToAdd or {}) do
 				for j, src in ipairs(stp.addedSegments or {}) do
@@ -5745,6 +6425,11 @@ local function runNativeReplays()
 				okr = true
 			else
 				if type(a.cost) == "number" then toSim("replay_cost", { uid = a.uid, cost = a.cost, co = a.co, kind = G.costKind(a) }) end
+				-- (its builder's town statistics, compared with this replay's: see SIM.townStats; MPFEVER_ALIGNCHECK=0: off)
+				if type(a.ts) == "table" and os.getenv("MPFEVER_ALIGNCHECK") ~= "0" then
+					local okT, errT = pcall(G.townExpect, a)
+					if not okT then log("town stats of " .. tostring(a.uid) .. " not announced: " .. tostring(errT)) end
+				end
 				G.refund = a.refund
 				okr, errr = pcall(withActor, PL(a), replayNative, a, 1)
 				G.refund = nil
@@ -6231,7 +6916,7 @@ local function shipNativeBuilds(st)
 				if not oke then log("edge object enrichment failed: " .. tostring(erre)) end
 			end
 			local a = { fn = o.fn, args = o.args, at = o.at, origin = G.me, oseq = G.oseq, uid = G.me .. ":" .. G.oseq,
-				native = true, paused = o.paused, co = G.myCo, cost = o.cost }
+				native = true, paused = o.paused, co = G.myCo, cost = o.cost, ts = o.ts }
 			if G.natShipIds and #G.natShipIds > 0 then
 				-- the released build that was built at this time; the ones released before it and not shipped were refused
 				-- (BUILDLEAD: a build released at once lands at some step at or after the time it was released at, the first of
@@ -10979,6 +11664,243 @@ H.dsignal = function(from, p)
 	end
 end
 
+-- Signals re-created on several track segments in ONE build (MPFEVER_SCENARIO=dsigmulti, the host then the client as builder;
+-- MPFEVER_DSIG_ROLE=host or client: only that game builds): a chain of MPFEVER_DSIG_N (2, at most 8) consecutive plain track
+-- segments, replaced by copies that carry a signal each, as the Auto Signals mod or a track upgrade of a signalled line builds it.
+-- Held and shipped as a native build with the signal tool's flags (32): the other game replays it. As before (MPFEVER_EOINLINE
+-- unset): the track, then one signal build per segment (1 + N builds, the entity ids then differ: "stops placed again on a street
+-- build" in the replaying game's mod.log); MPFEVER_EOINLINE=1: one native proposal with the engine's own signals ("edge objects:
+-- the engine's conversion has 2N", "native street: with its N new stop(s)/signal(s)", "edge objects here N, originator N"). The
+-- "build ids t=..." line of that build must be the same in both games' mod.log (MPFEVER_ENTWATCH=1 MPFEVER_ENTLOG=1: entseq.txt too).
+H.dsigmulti = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("DSIGMULTI " .. t); AUTO.results[#AUTO.results + 1] = t end
+	local only = os.getenv("MPFEVER_DSIG_ROLE")
+	if only and only ~= "" and only ~= C.ROLE then say("only the " .. only .. " builds"); return autoFinish() end
+	local ok, err = pcall(function()
+		local k = math.max(1, math.min(8, math.floor(tonumber(os.getenv("MPFEVER_DSIG_N") or "2") or 2)))
+		local BE = api.type.ComponentType.BASE_EDGE
+		-- the segments at each node (streets and tracks)
+		local at = {}
+		local all = R.allEdges()
+		for _, e in ipairs(all) do
+			local c = api.engine.getComponent(e, BE)
+			if c then
+				for _, nd in ipairs({ c.node0, c.node1 }) do at[nd] = at[nd] or {}; at[nd][#at[nd] + 1] = e end
+			end
+		end
+		-- (a plain track segment of nobody's construction, no signal on it yet, 30 m at least)
+		local function free(e)
+			local c = api.engine.getComponent(e, BE)
+			if not c or c.type ~= 0 or #c.objects > 0 or api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) then return nil end
+			local okC, con = pcall(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForEdge(e) end)
+			if okC and type(con) == "number" and con >= 0 then return nil end
+			local a, b = nodePosition(c.node0), nodePosition(c.node1)
+			if not (a and b) or math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) < 30 then return nil end
+			return c
+		end
+		-- k segments one after the other through nodes that join only those two segments (no switch on the way)
+		local function chainFrom(e)
+			local c = free(e)
+			if not c then return nil end
+			local chain, seen, node, cur = { e }, { [e] = true }, c.node1, e
+			while #chain < k do
+				local segs = at[node] or {}
+				if #segs ~= 2 then return nil end
+				local nxt = (segs[1] == cur) and segs[2] or segs[1]
+				if seen[nxt] then return nil end
+				local cn = free(nxt)
+				if not cn then return nil end
+				chain[#chain + 1] = nxt
+				seen[nxt] = true
+				node = (cn.node0 == node) and cn.node1 or cn.node0
+				cur = nxt
+			end
+			return chain
+		end
+		local list = {}
+		for _, e in ipairs(all) do if free(e) then list[#list + 1] = e end end
+		table.sort(list)
+		if #list == 0 then say("no free track segment"); return autoFinish() end
+		local chain = nil
+		local start = ((C.ROLE == "host") and 7 or 23) % #list
+		for i = 0, #list - 1 do
+			chain = chainFrom(list[(start + i) % #list + 1])
+			if chain then break end
+		end
+		if not chain then say("no chain of " .. k .. " plain track segments"); return autoFinish() end
+		local sp = api.type.SimpleProposal.new()
+		local ssp = sp.streetProposal
+		local edges, eos, touched, ncr = {}, {}, {}, {}
+		for i, E in ipairs(chain) do
+			local c = api.engine.getComponent(E, BE)
+			local e = api.type.SegmentAndEntity.new()
+			e.entity = -i
+			e.type = 1
+			local cc = e.comp
+			cc.node0 = c.node0; cc.node1 = c.node1
+			cc.tangent0 = vec(c.tangent0); cc.tangent1 = vec(c.tangent1)
+			cc.position0 = vec(nodePosition(c.node0)); cc.position1 = vec(nodePosition(c.node1))
+			cc.type = c.type; cc.typeIndex = c.typeIndex
+			pcall(function() if c.distance ~= 0 then cc.distance = c.distance end end)
+			pcall(function() if #c.edgeDecorations > 0 then cc.edgeDecorations = c.edgeDecorations end end)
+			cc.roadTemplate = c.roadTemplate; cc.roadStyle = c.roadStyle; cc.roadType = c.roadType
+			cc.laneConfigs = c.laneConfigs
+			cc.objects = { { -400000000 - (i - 1), 2 } }
+			e.comp = cc
+			local se = e.streetEdge; se.precedenceNode0 = 2; se.precedenceNode1 = 2; e.streetEdge = se
+			local po = C.newOf("PlayerOwned"); po.player = api.engine.util.getPlayer(); e.playerOwned = po
+			edges[i] = e
+			local eo = api.type.SimpleStreetProposal.EdgeObject.new()
+			eo.edgeEntity = -i
+			eo.param = 0.5
+			eo.oneWay = false
+			eo.left = true
+			eo.model = "infrastructure/signal/signal_path_a.con"
+			eo.playerEntity = api.engine.util.getPlayer()
+			eo.name = "MPF signal " .. i
+			eos[i] = eo
+			for _, nd in ipairs({ c.node0, c.node1 }) do
+				if not touched[nd] then
+					touched[nd] = true
+					local okn, nc = pcall(function() return api.engine.getComponent(nd, api.type.ComponentType.BASE_NODE_CONFIG) end)
+					if okn and nc then ncr[#ncr + 1] = nd end
+				end
+			end
+		end
+		ssp.edgesToRemove = chain
+		ssp.edgesToAdd = edges
+		ssp.edgeObjectsToAdd = eos
+		if #ncr > 0 then ssp.nodeConfigsToRemove = ncr end
+		sp.streetProposal = ssp
+		local ctx = api.type.Context.new()
+		ctx.checkTerrainAlignment = false
+		ctx.cleanupStreetGraph = false
+		ctx.gatherBuildings = false
+		ctx.gatherFields = true
+		ctx.player = api.engine.util.getPlayer()
+		local c1 = api.engine.getComponent(chain[1], BE)
+		AUTO.points[#AUTO.points + 1] = nodePosition(c1.node0)
+		say(k .. " signal(s) on track segments " .. table.concat(chain, ",") .. " (" .. tostring(c1.roadTemplate):match("[^/]*$") .. "), "
+			.. #ncr .. " junction configuration(s) removed, edge objects on the map " .. G.eoCount())
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true), function(res, success)
+			local why = ""
+			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+			say("build: " .. (success and "BUILT" or ("refused " .. why)) .. ", edge objects on the map " .. G.eoCount())
+			G.waits[#G.waits + 1] = { at = G.frames + 300, fn = autoFinish }
+		end)
+		-- (shipped with the signal tool's flags, 32: nothing cleaned up, no terrain alignment, see pollNativeEvents)
+		G.natCtx = G.natCtx or {}
+		G.natCtx[100000 + G.autoBuildSeq] = 32
+	end)
+	if not ok then
+		say("failed " .. shortErr(err))
+		autoFinish()
+	end
+end
+
+-- Which form of a stop's replay shapes the ground on a bridge or in a tunnel (MPFEVER_SCENARIO=bridgestopprobe, on each game in
+-- turn, nothing built, nothing shipped: the games stay alike): for each segment, a two-sided stop of the stop tool as replayStop
+-- would replay it, and the native forms; their terrain alignment by the engine's proposal data, without building (G.stopAlignProbe,
+-- "STOPALIGNPROBE" lines). MPFEVER_PROBE_SEGMENT=id,id...: those segments (a track gets a signal); MPFEVER_PROBE_AT=x,y[,r]: the
+-- bridge and tunnel street segments with an end within r m (40) of x,y; else MPFEVER_PROBE_COUNT (4) bridge and tunnel street
+-- segments of the map, those at an end of a bridge first (a segment in the middle of a high bridge replayed at 0/0 even with the
+-- old way). MPFEVER_PROBE_MODEL: the stop's model (stations/street/small_stops/small_old_twosided.con).
+H.bridgestopprobe = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("BRIDGESTOPPROBE " .. t); AUTO.results[#AUTO.results + 1] = t end
+	local ok, err = pcall(function()
+		local BE = api.type.ComponentType.BASE_EDGE
+		local list = {}
+		local want = os.getenv("MPFEVER_PROBE_SEGMENT")
+		if want and want ~= "" then
+			for id in want:gmatch("%d+") do
+				local e = tonumber(id)
+				local okc, c = pcall(function() return api.engine.getComponent(e, BE) end)
+				if okc and c then list[#list + 1] = e else say("segment " .. id .. " is not here") end
+			end
+		else
+			local ax, ay, ar = nil, nil, 40
+			local pat = os.getenv("MPFEVER_PROBE_AT")
+			if pat then
+				local x, y, r = pat:match("^%s*([%-%d%.]+)%s*,%s*([%-%d%.]+)%s*,?%s*([%d%.]*)")
+				ax, ay, ar = tonumber(x), tonumber(y), tonumber(r) or 40
+			end
+			local n2s = {}
+			local all = R.allEdges()
+			for _, e in ipairs(all) do
+				local c = api.engine.getComponent(e, BE)
+				if c then
+					for _, nd in ipairs({ c.node0, c.node1 }) do n2s[nd] = n2s[nd] or {}; n2s[nd][#n2s[nd] + 1] = e end
+				end
+			end
+			local ends, mids = {}, {}
+			for _, e in ipairs(all) do
+				local c = api.engine.getComponent(e, BE)
+				local okC, con = pcall(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForEdge(e) end)
+				if c and c.type ~= 0 and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) and not (okC and type(con) == "number" and con >= 0) then
+					local near = true
+					if ax then
+						near = false
+						for _, nd in ipairs({ c.node0, c.node1 }) do
+							local q = nodePosition(nd)
+							if q and math.sqrt((q.x - ax) ^ 2 + (q.y - ay) ^ 2) <= ar then near = true end
+						end
+					end
+					if near then
+						-- (an end of the bridge: a segment on the ground at one of its nodes)
+						local isEnd = false
+						for _, nd in ipairs({ c.node0, c.node1 }) do
+							for _, s in ipairs(n2s[nd] or {}) do
+								local cs = s ~= e and api.engine.getComponent(s, BE)
+								if cs and cs.type == 0 then isEnd = true end
+							end
+						end
+						if isEnd then ends[#ends + 1] = e else mids[#mids + 1] = e end
+					end
+				end
+			end
+			table.sort(ends)
+			table.sort(mids)
+			local cap = math.max(1, tonumber(os.getenv("MPFEVER_PROBE_COUNT") or "4") or 4)
+			for _, e in ipairs(ends) do if #list < cap then list[#list + 1] = e end end
+			for _, e in ipairs(mids) do if #list < cap then list[#list + 1] = e end end
+			say(#ends + #mids .. " bridge or tunnel street segment(s)" .. (ax and string.format(" near %.1f,%.1f", ax, ay) or "") .. ", " .. #ends .. " at an end")
+		end
+		if #list == 0 then say("no segment to probe"); return autoFinish() end
+		local model = os.getenv("MPFEVER_PROBE_MODEL") or "stations/street/small_stops/small_old_twosided.con"
+		for _, E in ipairs(list) do
+			local c = api.engine.getComponent(E, BE)
+			local track = api.engine.getComponent(E, api.type.ComponentType.BASE_EDGE_STREET) == nil
+			local objs
+			if track then
+				objs = { { model = "infrastructure/signal/signal_path_a.con", category = 2, param = 0.5, left = true, oneWay = false } }
+			else
+				objs = { { model = model, category = 0, param = 0.5, left = true, oneWay = false }, { model = model, category = 0, param = 0.5, left = false, oneWay = false } }
+			end
+			local owner = R.ownerOf(E)
+			local plan = { E = E, seg = { comp = {}, playerOwned = (type(owner) == "number" and owner >= 0) and { player = owner } or nil }, objs = objs,
+				removeIdx = {}, nodeConfigs = {}, segType = track and 1 or 0, probeOnly = true, probeSink = say }
+			say("segment " .. E .. " (" .. tostring(c.roadTemplate):match("[^/]*$") .. ", type " .. tostring(c.type) .. "/" .. tostring(c.typeIndex) .. ", " .. #c.objects .. " object(s) on it)")
+			AUTO.points[#AUTO.points + 1] = nodePosition(c.node0)
+			-- (the stop tool's flags, 32: nothing cleaned up, no terrain alignment)
+			local okp, errp = pcall(replayStop, { uid = "probe:" .. E, ctx = 32 }, plan)
+			if not okp then say("segment " .. E .. ": " .. shortErr(errp)) end
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 30, fn = autoFinish }
+	end)
+	if not ok then
+		say("failed " .. shortErr(err))
+		autoFinish()
+	end
+end
+
 -- Road junctions of the street tool (MPFEVER_SCENARIO=streetcon, issue #72): roundabout, T, trumpet and diamond junctions
 -- (street_construction/*.con, their parameters at the game's defaults) built by each game on open ground next to a dead end, held
 -- and shipped as a native build: the other games replay them. MPFEVER_STREETCON_FILES=names separated by commas.
@@ -12632,6 +13554,8 @@ local function guiUpdate(userParams, state, guiState)
 			G.reportResult(r)
 		end
 	end
+	-- replays of this game whose town statistics differ from their builders' (see SIM.townStats)
+	if st.townDiffs and G.tsWait then pcall(G.townDiffs, st) end
 
 	if #G.waits > 0 then
 		local current = G.waits

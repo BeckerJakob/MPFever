@@ -1171,7 +1171,11 @@ end
 -- conversion of the construction: a script cannot write a native object's model), matched by model, place and side, each
 -- put on its segment by the tool's native id. A missing one is an error: the caller then replays without them
 -- (and resynchronises)
-function C.nativeEdgeObjects(list, native)
+-- how (nil: as for the airports): how.byRank, the engine's objects of a dry run that lists the tool's objects in the tool's order,
+-- copy after copy (G.eoDryRun in the bridge): the i-th is the tool's i-th (their model and place cannot be read, and the tests below
+-- could take an object of the second copy); how.keepResult: the tool's placeholder of each new object (-400000000 - k, which the new
+-- segment's list of objects names) as its result entity, else -1 as before
+function C.nativeEdgeObjects(list, native, how)
 	local out = {}
 	-- Matched, in this order: same segment id (the conversion of the first copy numbers its segments as the tool did) and
 	-- model; same model, place and side; same model; else by rank within the first copy (the conversion lists each copy's
@@ -1187,6 +1191,10 @@ function C.nativeEdgeObjects(list, native)
 		function(x, o) return norm(field(x, "model")) == norm(o.model) end,
 	}
 	local function find(o, i)
+		if type(how) == "table" and how.byRank then
+			if native[i] ~= nil and not used[i] then used[i] = true return native[i] end
+			return nil
+		end
 		for _, t in ipairs(tests) do
 			for j, x in ipairs(native) do
 				if not used[j] then
@@ -1213,7 +1221,9 @@ function C.nativeEdgeObjects(list, native)
 		local pl = o.playerEntity
 		if type(pl) ~= "number" or pl < 0 then pl = api.engine.util.getPlayer() end
 		pcall(function() eo.playerEntity = pl end)
-		pcall(function() eo.resultEntity = -1 end)
+		local re = -1
+		if type(how) == "table" and how.keepResult and type(o.resultEntity) == "number" and o.resultEntity <= -400000000 then re = o.resultEntity end
+		pcall(function() eo.resultEntity = re end)
 		out[i] = eo
 	end
 	return out
@@ -1368,9 +1378,12 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 			if not oko then C.errors[#C.errors + 1] = "edgeObjectsToRemove: " .. tostring(eo):sub(1, 100) end
 		end
 	end
-	-- the tool's new edge objects (an airport's signs on its own runways and taxiways), as the tool's proposal has them
+	-- the tool's new edge objects (an airport's signs on its own runways and taxiways), as the tool's proposal has them (opts.eoByRank:
+	-- the stops and signals a street build re-creates, from a dry run, see C.nativeEdgeObjects; MPFEVER_EORESULT=-1: their result
+	-- entity -1, as the airports' signs)
 	if opts.withObjects and #(st.edgeObjectsToAdd or {}) > 0 then
-		local okn, en = pcall(function() sp.edgeObjectsToAdd = C.nativeEdgeObjects(st.edgeObjectsToAdd, opts.withObjects) end)
+		local how = opts.eoByRank and { byRank = true, keepResult = os.getenv("MPFEVER_EORESULT") ~= "-1" } or nil
+		local okn, en = pcall(function() sp.edgeObjectsToAdd = C.nativeEdgeObjects(st.edgeObjectsToAdd, opts.withObjects, how) end)
 		if not okn then error("edge objects: " .. tostring(en):gsub("^.-:%d+: ", ""):sub(1, 700)) end
 	end
 	-- the node configurations (lane connections...) the tool removed: only those this game has (removing one that does not
@@ -1427,6 +1440,27 @@ function C.rebuildNativeWithConstruction(m, conv, rm, opts)
 		if mm then
 			local okm, errm = pcall(function() sp[k] = mm end)
 			if not okm then C.errors[#C.errors + 1] = k .. ": " .. tostring(errm):sub(1, 100) end
+		end
+	end
+	-- (opts.eoMaps, with the engine's own objects of a street build: the tool's maps of the objects it re-created, the old ones by
+	-- this game's ids (their rank on the removed segments), the new ones by the tool's placeholders, as the tool had them: a track
+	-- upgrade said that its new signal -400000000 replaces the old one)
+	if opts.eoMaps and opts.withObjects and not opts.noMaps then
+		local function tr(id) if type(id) == "number" and id >= 0 then return objIds[id] or id end return id end
+		for _, k in ipairs({ "new2oldEdgeObjects", "old2newEdgeObjects" }) do
+			local mm = idMap(st[k])
+			if mm and next(mm) ~= nil then
+				local okm, errm = pcall(function()
+					local out = {}
+					for key, list in pairs(mm) do
+						local l = {}
+						for i, v in ipairs(list) do l[i] = tr(v) end
+						out[tr(key)] = l
+					end
+					sp[k] = out
+				end)
+				if not okm then C.errors[#C.errors + 1] = k .. ": " .. tostring(errm):sub(1, 100) end
+			end
 		end
 	end
 	P.proposal = sp
