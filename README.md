@@ -62,8 +62,7 @@ Players can also join a game already running, and a lost connection reconnects b
 - **One company per player**: each player has their own money, network, vehicles, lines, loans, contracts and Company window.
   - Each player picks their company's colour in the lobby; the map's icons show who owns what.
   - What belongs to another company can't be sold, edited or used.
-  - Stations are shared: other companies' lines can stop there and pay a fee set by the owner.
-  - Tracks and depots too, if their owner wants: private, open, or open with a toll per passage.
+  - Tracks, stations and depots are open to the other companies by default. Each company sets its rules in the MPFever window: private, open, or with a toll (per passage, per stop, per vehicle).
   - Several players can run one company together: ask to join another company (its chief accepts), leave yours, or merge two companies.
   - A company in debt for too long (3 to 24 months, set by the host in the lobby) goes bankrupt: its lines, stations and depots are auctioned to the others, and its players start again.
   - Fees and tolls show in the finance window. Companies can give each other money, and the MPFever window ranks them.

@@ -6291,6 +6291,49 @@ G.assetsStanding = function(assets)
 	return #pts, here
 end
 
+-- (replayAssets) the tree groups removed one after the other by the engine's own removal proposal, then the trees the builder kept
+-- (cons, the mod's constructions) in one build. The removals free their ids at the end of each build, as the builder's single
+-- build did, so the trees built after them take the same ids from the queue of freed ids as on the builder's game (unless that
+-- queue was empty).
+G.assetEngineRemoval = function(a, uid, rm, cons, ctx, strict)
+	local function fail(why)
+		log("ASSET REPLAY " .. uid .. ": " .. why)
+		if strict then replayFailed(a, ("asset removal: " .. why):sub(1, 100)) end
+	end
+	local function step(i)
+		if i > #rm then
+			if #cons == 0 then log("ASSET REPLAY " .. uid .. ": " .. #rm .. " tree group(s) removed by the engine's removal: BUILT") return end
+			local sp = api.type.SimpleProposal.new()
+			sp.constructionsToAdd = cons
+			local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, ctx, true, false) end)
+			if not okc or not cmd then fail("the kept trees: command " .. shortErr(cmd)) return end
+			toSim("replaying", {})
+			replaySend(cmd, function(res, success)
+				local why = ""
+				if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+				if success then log("ASSET REPLAY " .. uid .. ": " .. #rm .. " tree group(s) removed by the engine's removal, " .. #cons .. " construction(s) of kept trees: BUILT")
+				else fail("the kept trees refused " .. why) end
+			end)
+			return
+		end
+		local okP, P = pcall(api.engine.util.proposal.createProposalRemove, rm[i], ctx)
+		if not okP or not P then fail("no engine removal for group " .. rm[i] .. " (" .. shortErr(P) .. ")") return end
+		local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, true, false) end)
+		if not okc or not cmd then fail("the engine's removal of group " .. rm[i] .. ": command " .. shortErr(cmd)) return end
+		toSim("replaying", {})
+		replaySend(cmd, function(res, success)
+			if not success then
+				local why = ""
+				pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
+				fail("the engine's removal of group " .. rm[i] .. " refused " .. why)
+				return
+			end
+			step(i + 1)
+		end)
+	end
+	step(1)
+end
+
 local function replayAssets(a)
 	local args = C.deser(C.ser(a.args or {}))
 	local miss = R.translateIn(args, G.bind)
@@ -6341,6 +6384,14 @@ local function replayAssets(a)
 	ctx.gatherFields = false
 	ctx.player = api.engine.util.getPlayer()
 	local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, ctx, true, false) end)
+	-- A script proposal with a group of trees in constructionsToRemove is refused by the factory ("Unknown exception", treeerase
+	-- 2026-10-25): every group is then removed with the engine's own removal proposal (createProposalRemove, what the game's scripts
+	-- use for an industry), one after the other, and the trees it keeps are built after them, all at the build's step.
+	-- MPFEVER_ASSETENGINERM=0: as before (not reproduced, see below)
+	if (not okc or not cmd) and #rm > 0 and os.getenv("MPFEVER_ASSETENGINERM") ~= "0" then
+		log("ASSET REPLAY " .. uid .. ": the factory does not take the tree group(s) " .. table.concat(rm, ","):sub(1, 80) .. " for removal (" .. shortErr(cmd) .. "): the engine's removal instead")
+		return G.assetEngineRemoval(a, uid, rm, cons, ctx, strict)
+	end
 	if not okc or not cmd then
 		-- (a group of trees the factory does not take for removal: not reproduced. No native proposal with the removal alone: such
 		-- partial native proposals have hung the engine's factory)
@@ -11053,6 +11104,49 @@ end
 -- BUILT" and "removed tree group(s) gone here: yes"; nowhere "asset removal not found" nor a resync; the newroad after it prints the
 -- same "build ids" on both games. As 0.5.1 (MPFEVER_ASSETREF=0, MPFEVER_ASSETCAPTURE=0, MPFEVER_ASSETSTRICT=0): "0 removed" and the
 -- build ids shifted by one, expected.
+-- (autotest treeremove) The engine's own removal proposal for a group of trees (api.engine.util.proposal.createProposalRemove,
+-- what the game's scripts use to demolish an industry): built by this game as a player's build, the other games replay it.
+-- A script proposal with a group of trees in constructionsToRemove is refused ("Unknown exception", treeerase 2026-10-25).
+H.treeremove = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("AUTOTEST treeremove " .. t) AUTO.results[#AUTO.results + 1] = t end
+	local ok, sent = pcall(function()
+		local ends = deadEnds()
+		local best = nil
+		for j = 0, math.min(5, #ends - 1) do
+			local q = nodePosition(ends[((p.offset or 0) * 13 + 5 + j * 7) % #ends + 1])
+			for _, e in ipairs(q and R.assetsNear(q, 300, "ASSET_GROUP") or {}) do
+				if R.isTreeGroup(e) and (best == nil or e < best) then best = e end
+			end
+		end
+		local g = best
+		if not g then say("no group of trees near the street network's dead ends") return false end
+		local d = R.describe("con", g)
+		if d and d.p then AUTO.points[#AUTO.points + 1] = { x = d.p.x, y = d.p.y, z = d.p.z or 0 } end
+		local okP, P = pcall(api.engine.util.proposal.createProposalRemove, g, playerContext())
+		if not okP or not P then say("group " .. g .. ": createProposalRemove " .. shortErr(P)) return false end
+		local nr = -1
+		pcall(function() nr = P.toRemove_native:size() end)
+		if nr < 0 then pcall(function() nr = #P.toRemove end) end
+		say("group " .. g .. " (" .. R.assetComponents(g) .. "): the engine's removal proposal removes " .. tostring(nr))
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res, success)
+			local why = ""
+			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+			say("removal of group " .. g .. ": " .. (success and "BUILT" or ("refused " .. why)))
+			G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function()
+				say("group " .. g .. " here after the build: " .. (R.isTreeGroup(g) and "STILL HERE" or "gone"))
+				G.waits[#G.waits + 1] = { at = G.frames + 60, fn = autoFinish }
+			end }
+		end)
+		return true
+	end)
+	if not ok then say("error " .. shortErr(sent)) end
+	if not (ok and sent) then autoFinish() end
+end
+
 H.treeerase = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
 	AUTO.running = true

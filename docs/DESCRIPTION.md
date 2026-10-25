@@ -12,7 +12,7 @@
     - A player finds their company again after a reconnection: it belongs to their Steam account.
     - Every company has its own loans and contracts.
     - The windows show who owns what.
-    - Stations are shared with the other companies for a fee per stop.
+    - Tracks, stations and depots are open to the other companies by default; each company can make them private or charge a toll.
 
   The "one company per player" mode is still in development and many bugs remain: use it mainly to test it and help the development of the mod.
 - **Real-time sync of what you build.** Every game applies it at the same game time:

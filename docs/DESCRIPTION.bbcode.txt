@@ -24,7 +24,7 @@
 [*][b]Your network, your rules:[/b] shared stations, tracks and depots: private, open, or with a fee or toll that shows in the finances.
 [/list]
 [*][b]Your colour, picked in the lobby.[/b] Each player chooses their company's colour before the game starts, and the map's icons show at a glance which company owns which station, depot or vehicle.
-[*][b]Shared stations with a fee.[/b] Let other companies' lines stop at your stations, for a fee per stop that you set. Shared stations show in the line tool like your own.
+[*][b]Open by default.[/b] Your tracks, stations and depots are open to the other companies for free, until your company makes them private or charges a toll (per passage, per stop, per vehicle). Other companies' stations show in the line tool like your own.
 [*][b]Money between companies.[/b] Give money to another company in two clicks, and follow the ranking of the companies (money, rank, lines, vehicles) in the MPFever window.
 [*][b]Games that stay identical.[/b] Every 10 seconds the games compare their state. Money is corrected at once, and if anything else differs, MPFever resynchronises every game by itself.
 [*][b]Smooth play.[/b] The game keeps a steady pace, without stops, for smooth vehicle movement.

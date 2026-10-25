@@ -34,11 +34,13 @@ WHAT WORKS
     company that accepts it (only its own vehicles count for it, the reward goes to it) and
     each player only sees their own contracts and the offers they did not decline.
   - Loans: every company has its own loans (offers, loans taken, monthly payments).
-  - Shared stations: every station or stop is shared with the other companies from the start,
-    for $100 per stop. In the station's window, its owner chooses the fee in a list
-    ("Not shared", or $100 to $50,000 per stop). The other companies' lines may only stop at stations that are
-    shared; each time one of their vehicles stops there, they pay the fee to the owner. The
-    line windows show the fee next to the name of every other company's station.
+  - Rules for the others: every company sets, in the Rules tab of the MPFever window, a rule
+    for its tracks, for its stations and stops and for its depots: private, open (free, the
+    default), or with a toll (per passage, per stop, per vehicle bought or sent there). A
+    station's or a depot's own window can give it a setting of its own. The other companies'
+    lines may only stop at stations that are not private; each time one of their vehicles stops
+    at a toll station, they pay the fee to the owner. The line windows show the fee next to the
+    name of every other company's station.
 - Start from the game itself: MPFever.exe starts Transport Fever 3, and a
   "MULTIJOUEUR / MPFever" button in the main menu opens the multiplayer window.
   - Host: pick one of your savegames (any of them, even one made without MPFever: the mod

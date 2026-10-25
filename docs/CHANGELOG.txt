@@ -76,9 +76,6 @@ MPFever - Changelog
   - FIX: the stops the street tool places again on a road joined to their street lost the junctions' settings of their
     segment on the other games (one node configuration more or less: a resync after a while). They are kept.
     MPFEVER_AFTERNC=0: as before.
-  - FIX: a bus stop placed on a bridge or in a tunnel shaped the ground around the bridge on the other games (the towns
-    drifted apart). The stop is now replayed without terrain alignment there, as the stop tool does. MPFEVER_BRIDGESTOPALIGN=1:
-    as before.
   - NEW: personal mods. A mod that only changes its player's interface (windows, overlays, icons, styles: no game script,
     no script at load, no command, nothing of the game's world) no longer needs to be installed by everybody: the host's are
     left out of the others' loads of its game, and each player's own are added to them. The lobby says which mods are
