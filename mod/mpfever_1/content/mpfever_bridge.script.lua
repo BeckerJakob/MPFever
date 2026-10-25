@@ -3378,17 +3378,69 @@ local function replayStop(a, plan, variant)
 	-- places count from this game's first node. MPFEVER_STOPREVERSE=0: as before
 	local rev = not plan.after and #c.objects == 0 and os.getenv("MPFEVER_STOPREVERSE") ~= "0" and type(sc.node0) == "number"
 		and sc.node0 == c.node1 and sc.node1 == c.node0 and c.node0 ~= c.node1
+	-- The segment's own ends (BASE_EDGE position0/1), exactly as the stop tool keeps them: on town streets an end may lie off
+	-- its node (0.55 m, 0.08 m, down to one float step, 0.0005 m, in the session of 2026-10-24), and a copy whose ends differ
+	-- at all is laid on the ground again by the engine, whatever the Context says: the terrain aligned, town buildings taken
+	-- away and put back, on the replaying games only (the resyncs of 23:35 and 23:38, stops 177, 183 and 187). Rebuilt with its
+	-- own ends, an offset segment stays where it is (the native street replays copy the ends: 8 of them rebuilt offset segments
+	-- in that session, none laid one again).
+	-- An end more than 2 m from its node on any axis is taken for a bad read: the node's position then, logged once.
+	-- MPFEVER_STOPNODEPOS=1: the nodes' positions, as before
+	local function segEnd(k)
+		local np = sNodePos((k == 0) and c.node0 or c.node1)
+		if os.getenv("MPFEVER_STOPNODEPOS") ~= "1" then
+			local okp, q = pcall(function() local v = (k == 0) and c.position0 or c.position1; return { x = v.x, y = v.y, z = v.z } end)
+			if okp and type(q) == "table" and type(q.x) == "number" and type(q.y) == "number" and type(q.z) == "number" then
+				if not np and q.x == q.x and q.y == q.y and q.z == q.z then return sVec(q) end
+				if np and math.abs(q.x - np.x) < 2 and math.abs(q.y - np.y) < 2 and math.abs(q.z - np.z) < 2 then return sVec(q) end
+			end
+			if not plan.endLogged then
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: segment " .. plan.E .. " end " .. k .. " not usable ("
+					.. (okp and "far from its node" or shortErr(q)) .. "): its node's position")
+			end
+			plan.endLogged = true
+		end
+		return sVec(np)
+	end
 	if rev then
 		if not plan.revLogged then log("NATIVE REPLAY " .. tostring(a.uid) .. " stop: segment " .. plan.E .. " runs the other way round here: rebuilt the builder's way round") end
 		plan.revLogged = true
 		cc.node0 = c.node1; cc.node1 = c.node0
 		cc.tangent0 = api.type.Vec3f.new(-c.tangent1.x, -c.tangent1.y, -c.tangent1.z)
 		cc.tangent1 = api.type.Vec3f.new(-c.tangent0.x, -c.tangent0.y, -c.tangent0.z)
-		cc.position0 = sVec(sNodePos(c.node1)); cc.position1 = sVec(sNodePos(c.node0))
+		-- (the new segment starts at this game's second node, whose end is this segment's position1)
+		cc.position0 = segEnd(1); cc.position1 = segEnd(0)
 	else
 		cc.node0 = c.node0; cc.node1 = c.node1
 		cc.tangent0 = sVec(c.tangent0); cc.tangent1 = sVec(c.tangent1)
-		cc.position0 = sVec(sNodePos(c.node0)); cc.position1 = sVec(sNodePos(c.node1))
+		cc.position0 = segEnd(0); cc.position1 = segEnd(1)
+	end
+	-- (once per build, when the segment's ends lie off its nodes here or the ends sent differ from the builder's segment: how
+	-- far, for the reports, see tools/stopacts.py. With plan.after the builder's segment may run the other way round: the
+	-- nearer way is measured)
+	if not plan.endsLogged then
+		plan.endsLogged = true
+		pcall(function()
+			local function d(p, q)
+				if type(p) ~= "table" or type(q) ~= "table" or type(q.x) ~= "number" then return -1 end
+				return math.sqrt((p.x - q.x) ^ 2 + (p.y - q.y) ^ 2 + (p.z - q.z) ^ 2)
+			end
+			local okO, o0, o1 = pcall(function()
+				return { x = c.position0.x, y = c.position0.y, z = c.position0.z }, { x = c.position1.x, y = c.position1.y, z = c.position1.z }
+			end)
+			local n0 = okO and d(o0, sNodePos(c.node0)) or -1
+			local n1 = okO and d(o1, sNodePos(c.node1)) or -1
+			local p0 = { x = cc.position0.x, y = cc.position0.y, z = cc.position0.z }
+			local p1 = { x = cc.position1.x, y = cc.position1.y, z = cc.position1.z }
+			local b0, b1 = d(p0, sc.position0), d(p1, sc.position1)
+			local r0, r1 = d(p0, sc.position1), d(p1, sc.position0)
+			if plan.after and r0 >= 0 and r1 >= 0 and (b0 < 0 or b1 < 0 or r0 + r1 < b0 + b1) then b0, b1 = r0, r1 end
+			if n0 > 0 or n1 > 0 or b0 > 0 or b1 > 0 then
+				log(string.format("NATIVE REPLAY %s stop: segment %s ends off its nodes here by %.5f/%.5f m, the ends sent off the builder's by %.5f/%.5f m (%s)",
+					tostring(a.uid), tostring(plan.E), n0, n1, b0, b1,
+					(os.getenv("MPFEVER_STOPNODEPOS") == "1") and "its nodes' positions, MPFEVER_STOPNODEPOS=1" or "its own ends kept"))
+			end
+		end)
 	end
 	-- the segment as it is (a stop or a signal changes none of these): a tunnel or a bridge stays one (type 2 / 1 and its
 	-- index; written 0 / -1, a signal turned the tunnel into track dug in the ground), and a track keeps its distance
@@ -3407,6 +3459,10 @@ local function replayStop(a, plan, variant)
 	cc.roadTemplate = sc.roadTemplate or c.roadTemplate
 	cc.roadStyle = sc.roadStyle or c.roadStyle
 	cc.roadType = c.roadType
+	-- whether the town may develop the street, kept as the stop tool keeps it: a locked street replayed unlocked would be
+	-- upgraded by its town on the replaying games only (false in every stop of the 2026-10-24 session: not yet seen to differ).
+	-- MPFEVER_STOPDEVLOCK=0: as before (the new segment's default)
+	if os.getenv("MPFEVER_STOPDEVLOCK") ~= "0" then pcall(function() cc.roadDevelopmentLocked = c.roadDevelopmentLocked == true end) end
 	-- lanes as the stop tool computed them: on a street without sidewalks it adds the platform lanes, without which
 	-- the engine accepts the build but silently drops the stop
 	local capLanes = sc.laneConfigs
@@ -3974,14 +4030,36 @@ G.placeStopsAfter = function(a)
 		local g = groups[k]
 		if not g then G.stopsAfterBusy = nil; return end
 		local c = g.seg.comp or {}
-		local found, reversed = nil, false
-		for _, e in ipairs(R.allEdges()) do
-			local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
-			if be then
-				local a0, a1 = sNodePos(be.node0), sNodePos(be.node1)
-				if near(a0, c.position0) and near(a1, c.position1) then found = e break end
-				if near(a0, c.position1) and near(a1, c.position0) then found, reversed = e, true break end
+		-- The new segment is found by its own ends (BASE_EDGE position0/1) first: the builder's segment ends, which the street
+		-- build's replay copies exactly (C.minimalSegment). Its nodes' positions may lie further from them than the 0.5 m
+		-- allowed (0.53 m in y on the street of stop 177, 2026-10-24): the stops were then given up ("stops' segment not
+		-- found") and everybody reloaded. The nodes' positions are tried next, as before. MPFEVER_AFTERENDS=0: the nodes'
+		-- positions only, as before
+		local function search(own)
+			for _, e in ipairs(R.allEdges()) do
+				local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+				if be then
+					local a0, a1 = nil, nil
+					if own then
+						local okE, e0, e1 = pcall(function()
+							return { x = be.position0.x, y = be.position0.y, z = be.position0.z }, { x = be.position1.x, y = be.position1.y, z = be.position1.z }
+						end)
+						if okE then a0, a1 = e0, e1 end
+					else
+						a0, a1 = sNodePos(be.node0), sNodePos(be.node1)
+					end
+					if near(a0, c.position0) and near(a1, c.position1) then return e, false end
+					if near(a0, c.position1) and near(a1, c.position0) then return e, true end
+				end
 			end
+			return nil, false
+		end
+		local found, reversed = nil, false
+		local byEnds = os.getenv("MPFEVER_AFTERENDS") ~= "0"
+		if byEnds then found, reversed = search(true) end
+		if not found then
+			found, reversed = search(false)
+			if found and byEnds then log("NATIVE REPLAY " .. tostring(a.uid) .. " stops: segment " .. found .. " found by its nodes' positions, not by its own ends") end
 		end
 		if not found then
 			G.stopsAfterBusy = nil
@@ -7910,6 +7988,33 @@ H.stops = function(from, p)
 	end
 end
 
+-- The ends of an autotest builder's copy of segment c (its BASE_EDGE), as the stop and signal tools copy a segment: its own
+-- ends (position0/1), which may lie off its nodes; rev: the copy runs the other way round. The other games replay such a
+-- copy with their segment's own ends (replayStop): a builder that put the ends on the nodes laid an offset segment on the
+-- ground again on its own game only, a desync the test itself made (tramstop, dsignal, dstop). MPFEVER_DSTOPNODEPOS=1: the
+-- nodes' positions, as before
+G.autoSegEnds = function(c, rev)
+	local p0, p1
+	if os.getenv("MPFEVER_DSTOPNODEPOS") == "1" then
+		p0, p1 = vec(nodePosition(c.node0)), vec(nodePosition(c.node1))
+	else
+		p0, p1 = vec(c.position0), vec(c.position1)
+	end
+	if rev then return p1, p0 end
+	return p0, p1
+end
+
+-- How far the ends of segment c (its BASE_EDGE) lie off its nodes, in metres (nil, nil if not readable): for the autotests' logs
+G.autoEndsOff = function(c)
+	local ok, d0, d1 = pcall(function()
+		local a, b = nodePosition(c.node0), nodePosition(c.node1)
+		local function d(p, q) return math.sqrt((p.x - q.x) ^ 2 + (p.y - q.y) ^ 2 + (p.z - q.z) ^ 2) end
+		return d(c.position0, a), d(c.position1, b)
+	end)
+	if ok then return d0, d1 end
+	return nil, nil
+end
+
 -- Stop on a street without sidewalks (what the stop tool does there: it adds two platform lanes to the segment)
 local function runTramStop(p)
 	AUTO.running = true
@@ -8098,7 +8203,8 @@ local function runTramStop(p)
 		local cc = e.comp
 		cc.node0 = c.node0; cc.node1 = c.node1
 		cc.tangent0 = vec(c.tangent0); cc.tangent1 = vec(c.tangent1)
-		cc.position0 = vec(nodePosition(c.node0)); cc.position1 = vec(nodePosition(c.node1))
+		-- (the segment's own ends, as the stop tool copies them, see G.autoSegEnds)
+		cc.position0, cc.position1 = G.autoSegEnds(c)
 		cc.type = 0; cc.typeIndex = -1
 		cc.roadTemplate = c.roadTemplate; cc.roadStyle = c.roadStyle; cc.roadType = c.roadType
 		if v == "platformLanes" then
@@ -10292,7 +10398,8 @@ H.dsignal = function(from, p)
 		local cc = e.comp
 		cc.node0 = c.node0; cc.node1 = c.node1
 		cc.tangent0 = vec(c.tangent0); cc.tangent1 = vec(c.tangent1)
-		cc.position0 = vec(nodePosition(c.node0)); cc.position1 = vec(nodePosition(c.node1))
+		-- (the segment's own ends, as the signal tool copies them, see G.autoSegEnds)
+		cc.position0, cc.position1 = G.autoSegEnds(c)
 		cc.type = c.type; cc.typeIndex = c.typeIndex
 		pcall(function() if c.distance ~= 0 then cc.distance = c.distance end end)
 		cc.roadTemplate = c.roadTemplate; cc.roadStyle = c.roadStyle; cc.roadType = c.roadType
@@ -10321,7 +10428,9 @@ H.dsignal = function(from, p)
 		ctx.player = api.engine.util.getPlayer()
 		local p0 = nodePosition(c.node0)
 		AUTO.points[#AUTO.points + 1] = p0
-		log("DSIGNAL on track segment " .. E .. " (" .. tostring(c.roadTemplate) .. ")")
+		local off0, off1 = G.autoEndsOff(c)
+		log("DSIGNAL on track segment " .. E .. " (" .. tostring(c.roadTemplate) .. ")"
+			.. (off0 and string.format(", its ends off its nodes by %.5f/%.5f m", off0, off1) or ""))
 		local cmd = api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true)
 		-- MPFEVER_SPLITMAPS=1: the command's own native proposal (the engine's conversion), with the map of the replaced segment
 		-- added, as the signal tool's build has it
@@ -10563,7 +10672,10 @@ end
 -- them back; this does not), sent as a script's command marked like a replayed stop (doDust: the native module prices it like the
 -- tool's build, the replaced segment free), held and shipped as a native build: the other games replay it and must pay what this one
 -- did. MPFEVER_DSTOP_COUNT stops (3), each on a segment of its own. MPFEVER_STOPTOOL=0 or MPFEVER_REPLACEFREE=0: not marked (the
--- segment is paid for, the replay then pays it too).
+-- segment is paid for, the replay then pays it too). The copy keeps the segment's own ends, as the tool does (G.autoSegEnds).
+-- MPFEVER_DSTOPOFFSET=1: segments with an end off its node are taken first (town streets: about 3 % of the ends), to see that
+-- the replay keeps them (no terrain alignment, no town building taken away on the replaying game; with MPFEVER_STOPNODEPOS=1 on
+-- the replaying game, MPFEVER_ENV_CLIENT for the host's stops, the bug of 2026-10-24 comes back: the segment laid again there).
 H.dstop = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
 	AUTO.running = true
@@ -10572,7 +10684,7 @@ H.dstop = function(from, p)
 	local function say(t) log("DSTOP " .. t); AUTO.results[#AUTO.results + 1] = t end
 	local ok, err = pcall(function()
 		local want = tonumber(os.getenv("MPFEVER_DSTOP_COUNT") or "3") or 3
-		local list = {}
+		local list, offList = {}, {}
 		for _, e in ipairs(R.allEdges()) do
 			local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
 			local okC, con = pcall(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForEdge(e) end)
@@ -10580,19 +10692,28 @@ H.dstop = function(from, p)
 				and tostring(c.roadTemplate):find("/town/", 1, true) and not (okC and type(con) == "number" and con >= 0) then
 				local a, b = nodePosition(c.node0), nodePosition(c.node1)
 				local len = a and b and math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) or 0
-				if len > 40 and len < 120 then list[#list + 1] = e end
+				if len > 40 and len < 120 then
+					list[#list + 1] = e
+					local d0, d1 = G.autoEndsOff(c)
+					if d0 and (d0 > 0 or d1 > 0) then offList[#offList + 1] = e end
+				end
 			end
 		end
 		if #list < want then say("dstop: only " .. #list .. " free town street segments"); return autoFinish() end
+		local offFirst = os.getenv("MPFEVER_DSTOPOFFSET") == "1"
+		say("dstop: " .. #offList .. " of " .. #list .. " free town street segments have an end off its node" .. (offFirst and " (taken first)" or ""))
 		local used, n, step = {}, 0, ((C.ROLE == "host") and 7 or 23)
 		local nextOne
 		nextOne = function()
 			if n >= want then G.waits[#G.waits + 1] = { at = G.frames + 90, fn = autoFinish }; return end
 			local E
-			for k = 1, #list do
-				local cand = list[(step * (n + 1) + k) % #list + 1]
-				local cc0 = api.engine.getComponent(cand, api.type.ComponentType.BASE_EDGE)
-				if cc0 and #cc0.objects == 0 and not used[cc0.node0] and not used[cc0.node1] then E = cand; break end
+			for _, pool in ipairs((offFirst and #offList > 0) and { offList, list } or { list }) do
+				for k = 1, #pool do
+					local cand = pool[(step * (n + 1) + k) % #pool + 1]
+					local cc0 = api.engine.getComponent(cand, api.type.ComponentType.BASE_EDGE)
+					if cc0 and #cc0.objects == 0 and not used[cc0.node0] and not used[cc0.node1] then E = cand; break end
+				end
+				if E then break end
 			end
 			if not E then say("dstop: no segment left"); return autoFinish() end
 			n = n + 1
@@ -10611,11 +10732,11 @@ H.dstop = function(from, p)
 				cc.node0 = c.node1; cc.node1 = c.node0
 				cc.tangent0 = api.type.Vec3f.new(-c.tangent1.x, -c.tangent1.y, -c.tangent1.z)
 				cc.tangent1 = api.type.Vec3f.new(-c.tangent0.x, -c.tangent0.y, -c.tangent0.z)
-				cc.position0 = vec(nodePosition(c.node1)); cc.position1 = vec(nodePosition(c.node0))
+				cc.position0, cc.position1 = G.autoSegEnds(c, true)
 			else
 				cc.node0 = c.node0; cc.node1 = c.node1
 				cc.tangent0 = vec(c.tangent0); cc.tangent1 = vec(c.tangent1)
-				cc.position0 = vec(nodePosition(c.node0)); cc.position1 = vec(nodePosition(c.node1))
+				cc.position0, cc.position1 = G.autoSegEnds(c)
 			end
 			cc.type = c.type; cc.typeIndex = c.typeIndex
 			cc.roadTemplate = c.roadTemplate; cc.roadStyle = c.roadStyle; cc.roadType = c.roadType
@@ -10663,8 +10784,10 @@ H.dstop = function(from, p)
 			local tool = os.getenv("MPFEVER_STOPTOOL") ~= "0" and os.getenv("MPFEVER_REPLACEFREE") ~= "0"
 			local p0, p1 = nodePosition(c.node0), nodePosition(c.node1)
 			AUTO.points[#AUTO.points + 1] = p0
+			local off0, off1 = G.autoEndsOff(c)
 			say("stop " .. n .. " on segment " .. E .. " (" .. tostring(c.roadTemplate):match("[^/]+$") .. ", chord "
-				.. string.format("%.2f", math.sqrt((p0.x - p1.x) ^ 2 + (p0.y - p1.y) ^ 2 + (p0.z - p1.z) ^ 2)) .. (tool and ", priced like the tool's build" or ", priced as a script's") .. ")")
+				.. string.format("%.2f", math.sqrt((p0.x - p1.x) ^ 2 + (p0.y - p1.y) ^ 2 + (p0.z - p1.z) ^ 2)) .. (tool and ", priced like the tool's build" or ", priced as a script's")
+				.. (off0 and string.format(", ends off its nodes by %.5f/%.5f m", off0, off1) or "") .. ")")
 			-- (doDust set: the native module turns that into the tool's terms)
 			local cmd = tool and api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true, true) or api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true)
 			deferredSend(cmd, function(res, success)
