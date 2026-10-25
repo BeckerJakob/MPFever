@@ -2,6 +2,12 @@ MPFever - Changelog
 ===================
 
 0.5.3 - (in progress)
+  - NEW: join through Steam, with no port to open on the router: the host's game listens on Steam (Steam's own peer to
+    peer connections and its relays), and an invitation or « Join game » in the Steam friends list gives the host's Steam
+    account first, then its addresses as before. A player's MPFever tries both at the same time and keeps a direct
+    connection when there is one (it has no rate limit). Through Steam, a player opens 4 more Steam connections, and the
+    host sends its game over all of them at once (Steam limits each connection's rate). MPFEVER_STEAMNET=0: off;
+    MPFEVER_STEAMBULK=<0 to 8>: how many more connections.
   - NEW: a player whose connection drops for a moment (Wi-Fi, a router) comes back into the same game: the host waits for
     them up to 60 s (every game stops where that player's game stopped, the others see « lost the connection: the game
     waits for them »), and back in time they get every message they missed, in order, and the game goes on, with no

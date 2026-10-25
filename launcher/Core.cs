@@ -1574,8 +1574,9 @@ namespace MPFever
         {
             usedText = null; readerOut = null; cidOut = null;
             if (!SteamNet.WaitReady(SteamDir, 120, out _, out string why)) throw new IOException(why);
+            // (tests on one PC: the module's IP mode, once, by the main connection; a bulk one asking it again cut another's)
             int ipPort = SteamNet.TestIpPort;
-            if (ipPort > 0) SteamNet.Cmd(SteamDir, "ipmode connect 127.0.0.1:" + ipPort);
+            if (ipPort > 0 && kind == "main") SteamNet.Cmd(SteamDir, "ipmode connect 127.0.0.1:" + ipPort);
             var listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
             try
