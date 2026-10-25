@@ -136,6 +136,42 @@ check(lua("return R.resolve({ k = 'asset', id = -1, p = { x = 105, y = 110.5, z 
       "a group described by its bounding box")
 check(lua("return R.resolve({ k = 'asset', id = 101 })") == 101, "a group described without a place: its id while it is a group")
 
+print("one tree taken out of a group (the bulldozer): described by the felled tree")
+L.execute('''
+  group(110, {}, { THIN(7, 1000, 1000, 5), THIN(7, 1002, 1001, 5), THIN(8, 1004, 1000, 5) }, true)
+  -- the trees the same build adds back: the first and the third, in one construction at (1000, 1000, 0)
+  KEPT = R.keptGrid({ { transf = MAT(1000, 1000, 0), models = { { id = "assets/trees/a.mdl", transf = MAT(0, 0, 5) },
+    { id = "::/assets/trees/b.mdl", transf = MAT(4, 0, 5) } } } })
+  KEPT_ALL = R.keptGrid({ { transf = MAT(0, 0, 0), models = { { id = "assets/trees/a.mdl", transf = MAT(1000, 1000, 5) },
+    { id = "assets/trees/a.mdl", transf = MAT(1002, 1001, 5) }, { id = "assets/trees/b.mdl", transf = MAT(1004, 1000, 5) } } } })
+  FELLED = R.describe('con', 110, KEPT)
+  FIRST = R.describe('con', 110)
+''')
+d = lua("return FELLED")
+check(d is not None and abs(d.p.x - 1002) < 1e-9 and abs(d.p.y - 1001) < 1e-9 and d.m == "assets/trees/a.mdl" and d.n == 3,
+      "the tree the build takes away, not its first (which it keeps)")
+check(lua("return R.resolve(FELLED)") == 110, "found by its id while the group stands (the normal replay)")
+check(lua("return FIRST.p.x == 1000 and FIRST.p.y == 1000"), "without the trees kept: its first tree, as before")
+check(lua("local d = R.describe('con', 110, KEPT_ALL) return d.p.x == 1000 and d.p.y == 1000"), "every tree kept (a reforestation): its first")
+check(lua("return R.keptGrid({}) == nil and R.keptGrid({ { transf = MAT(0, 0, 0), models = {} } }) == nil"), "a build that adds no tree keeps none")
+L.execute('''
+  -- the savegame of a game that already applied the build: group 110 gone, the kept trees in a group of their own (its id taken again)
+  W[110] = nil
+  group(110, { FAT(7, 1000, 1000, 5), FAT(8, 1004, 1000, 5) }, {}, true)
+''')
+check(lua("return R.resolve(FELLED)") is None, "the build already applied here: the felled tree is found nowhere (replayAssets sees it made)")
+check(lua("return R.resolve(FIRST)") == 110, "described by its first tree, what is left of the group was taken for it (the bug)")
+
+print("a construction at its place (G.alreadyBuilt)")
+L.execute('''
+  W[300] = { con = { fileName = "hq.con", transf = MAT(500, 500, 10) }, bv = { bbox = { min = { x = 495, y = 495, z = 0 }, max = { x = 505, y = 505, z = 20 } } } }
+  W[301] = { con = { fileName = "depot.con", transf = MAT(520, 500, 10) }, bv = { bbox = { min = { x = 515, y = 495, z = 0 }, max = { x = 525, y = 505, z = 20 } } } }
+''')
+check(lua("local e, l = R.conNear('hq.con', { x = 500, y = 500, z = 10 }, 0.1) return e == 300 and l == true"), "found around its place (the octree, no scan of the map)")
+check(lua("local e, l = R.conNear('hq.con', { x = 500.5, y = 500, z = 10 }, 0.1) return e == nil and l == true"), "half a metre off: not the same")
+check(lua("local e, l = R.conNear('station.con', { x = 520, y = 500, z = 10 }, 0.1) return e == nil and l == true"), "another file at the place: not the same")
+check(lua("local e, l = R.conNear('hq.con', { x = 3000, y = 3000, z = 0 }, 0.1) return e == nil and l == false"), "no construction around: none listed")
+
 print("as before (MPFEVER_ASSETREF=0)")
 L.execute("ENVV.MPFEVER_ASSETREF = '0'")
 L.execute("group(100, {}, { THIN(7, 10, 20, 5) }, true)")

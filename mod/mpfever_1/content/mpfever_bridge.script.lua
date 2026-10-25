@@ -1822,8 +1822,16 @@ end
 -- the money (a replay's cost may differ, REFUND books that), nor the town buildings taken away (town streets: the engine puts them
 -- back itself). MPFEVER_ALIGNCHECK=0: off (nothing shipped, nothing compared). Never part of the simulation: only a message to
 -- the host.
+-- Only the proposals of the announced replay are added up: each of its "replaying" events carries the mark of its announcement
+-- (tok, see G.townExpect), and the simulation adds a proposal to the open record only when the last "replaying" event before it
+-- carried that record's mark. Before, every proposal taken as a replay at the record's game time was added: in a pause (the same
+-- game time for minutes) a terrain edit near a town replayed after a road counted its brush volume into the road's record, and
+-- the host reloaded every game although both builds were made exactly (a false "TOWN STATS DIFFER"). The replays that announce
+-- nothing (terrain, trees, the edits from a window, the paused actions of scripts) are never added. MPFEVER_TOWNTAG=0: as before
+-- (every replay at that game time added to the last record).
 SIM.TOWNKEYS = { "al", "ar", "tr", "rk", "ba", "br", "tv" }
 SIM.alignShip = os.getenv("MPFEVER_ALIGNCHECK") ~= "0"
+SIM.townTag = os.getenv("MPFEVER_TOWNTAG") ~= "0"
 SIM.townStats = function(proposal, data, pi)
 	local t = { al = 0, ar = 0, tr = 0, rk = 0, ba = 0, br = 0, tv = 0 }
 	-- (a build not initiated by a player: the towns script takes nothing from it)
@@ -1912,10 +1920,12 @@ SIM.townExpect = function(st, p)
 	while #st.rstats > 8 do table.remove(st.rstats, 1) end
 end
 
--- (captureNativeBuild) one proposal applied here for the replay announced last, at its time
-SIM.townAdd = function(st, now, ts)
+-- (captureNativeBuild) one proposal applied here for the replay announced last, at its time; tok: the mark of the last "replaying"
+-- event, which must be that replay's (see SIM.townTag)
+SIM.townAdd = function(st, now, ts, tok)
 	local rs = st.rstats and st.rstats[#st.rstats]
 	if not rs or rs.at ~= now or type(ts) ~= "table" then return end
+	if SIM.townTag and (rs.tok == nil or tok ~= rs.tok) then return end
 	rs.n = rs.n + 1
 	for _, k in ipairs(SIM.TOWNKEYS) do
 		if rs.got[k] ~= nil and type(ts[k]) == "number" then rs.got[k] = rs.got[k] + ts[k] else rs.got[k] = nil end
@@ -2027,8 +2037,8 @@ local function captureNativeBuild(state, param)
 		local rc = st.rcost and st.rcost[#st.rcost]
 		local cl = REFUND.costOf(param)
 		if rc and rc.at == now and cl then rc.got = (rc.got or 0) + cl; rc.n = (rc.n or 0) + 1 end
-		-- (and its town statistics, against the builder's: see SIM.townStats)
-		if tstats then pcall(SIM.townAdd, st, now, tstats) end
+		-- (and its town statistics, against the builder's: see SIM.townStats; only for the replay announced, SIM.townTag)
+		if tstats then pcall(SIM.townAdd, st, now, tstats, st.replay.tok) end
 		-- (BUILDLEAD: a build this game released at once may land at this step too: taken for the replay, it would never be
 		-- shipped. The interface avoids it (buildLeadState); this says when it happened anyway)
 		if st.leadOut and #st.leadOut > 0 then
@@ -2151,10 +2161,17 @@ local function captureNativeBuild(state, param)
 			-- the other games resync at once instead of keeping it, see replayAssets. 0.5.1 dropped it without a word)
 			local nrm = 0
 			pcall(function() nrm = #proposal.toRemove end)
+			-- (a group of trees described by a tree this build takes away, not by one it adds back: see R.describe's kept.
+			-- MPFEVER_ASSETFELLED=0: as before, by its first tree)
+			local kept = nil
+			if nrm > 0 and os.getenv("MPFEVER_ASSETFELLED") ~= "0" then
+				local okK, g = pcall(R.keptGrid, assets)
+				if okK then kept = g else log("assets: the trees kept not read: " .. tostring(g):sub(1, 120)) end
+			end
 			for i = 1, nrm do
 				local e = nil
 				pcall(function() e = proposal.toRemove[i] end)
-				local okd, d = pcall(R.describe, "con", e)
+				local okd, d = pcall(R.describe, "con", e, kept)
 				if okd and type(d) == "table" then
 					d.__ref = true
 					removed[#removed + 1] = d
@@ -2582,7 +2599,10 @@ local function handleEvent(userParams, state, src, id, name, param)
 				log("replay refused here: " .. st.replay.n .. " build(s) still expected at t=" .. tostring(st.replay.at))
 			end
 		elseif name == "replaying" then
-			st.replay = { at = gameTime(), n = ((st.replay and st.replay.at == gameTime()) and st.replay.n or 0) + 1 }
+			-- (tok: the mark of the replay announced with its town statistics, whose next command this event precedes; none for a
+			-- replay without statistics of its own (nots), see SIM.townTag)
+			local tok = (type(param) == "table" and param.nots ~= true and type(param.tok) == "string") and param.tok or nil
+			st.replay = { at = gameTime(), n = ((st.replay and st.replay.at == gameTime()) and st.replay.n or 0) + 1, tok = tok }
 			-- (what it builds, when known: see C.buildSig)
 			if type(param) == "table" and type(param.sig) == "string" then
 				if not (st.replaySigs and st.replaySigs.at == gameTime()) then st.replaySigs = { at = gameTime(), list = {} } end
@@ -3395,7 +3415,7 @@ local function replayUpgrade(a, plan, i)
 	ctx.gatherFields = true
 	ctx.player = api.engine.util.getPlayer()
 	G.refundInto(ctx)
-	toSim("replaying", {})
+	toSim("replaying", { tok = a.tsTok })
 	replaySend(api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true), function(res, success)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
@@ -3465,7 +3485,7 @@ G.replayMergedUpgrade = function(a, plan, probe)
 	local okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true) end)
 	if not okk or not cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " merged upgrade: command " .. shortErr(cmd)) return false end
 	log("NATIVE REPLAY " .. tostring(a.uid) .. ": an upgrade of " .. #plan .. " segments at once, merged")
-	toSim("replaying", {})
+	toSim("replaying", { tok = a.tsTok })
 	replaySend(cmd, function(res, success)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
@@ -3537,7 +3557,7 @@ local function engineReplay(a, what, makeP, cons)
 	ctx.gatherFields = true
 	ctx.player = api.engine.util.getPlayer()
 	G.refundInto(ctx)
-	toSim("replaying", {})
+	toSim("replaying", { tok = a.tsTok })
 	replaySend(api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true), function(res, success)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
@@ -3819,7 +3839,7 @@ local function replayStop(a, plan, variant)
 		return n
 	end
 	local before = stopCount()
-	toSim("replaying", {})
+	toSim("replaying", { tok = a.tsTok })
 	replaySend(cmd, function(res, success)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
@@ -4087,7 +4107,7 @@ local function replayNativeConstruction(a)
 	G.refundInto(ctx)
 	local okc, dry = pcall(function() return api.cmd.makeWorldBuildProposalCmd(spCon, ctx, false, true) end)
 	if not okc or not dry then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: conversion command " .. shortErr(dry)) return false end
-	toSim("replaying", {})
+	toSim("replaying", { tok = a.tsTok })
 	local edgesBefore = #R.allEdges()
 	local objsBefore = 0
 	pcall(function() for _ in pairs(api.engine.system.streetSystem.getEdgeObject2EdgeMap()) do objsBefore = objsBefore + 1 end end)
@@ -4213,7 +4233,7 @@ local function replayNativeConstruction(a)
 			if not replayTwoStep(a) then replayFailed(a, "native command") end
 			return
 		end
-		toSim("replaying", {})
+		toSim("replaying", { tok = a.tsTok })
 		replaySend(cmd, function(res2, success2)
 			if not success2 then
 				local why = ""
@@ -4399,8 +4419,8 @@ G.keptNodeConfigs = function(a, E, seg)
 end
 
 local function replayNativeStreet(a)
-	-- (a build that re-creates stops or signals on its new segments, MPFEVER_EOINLINE=1: the engine's own edge objects first,
-	-- taken from a refused dry run, then this proposal with them, see G.replayStreetWithObjects)
+	-- (a build that re-creates stops or signals on its new segments: the engine's own edge objects first, taken from a refused dry
+	-- run, then this proposal with them, see G.replayStreetWithObjects; MPFEVER_EOINLINE=0: as before)
 	if not a.eoTried and G.eoInlineOk(a.args and a.args[1]) then return G.replayStreetWithObjects(a) end
 	-- (a plain new street of the tool, see replayNative: when the tool's proposal cannot be made or is refused here, the
 	-- script forms are tried, as before 0.4.0)
@@ -4484,7 +4504,7 @@ local function replayNativeStreet(a)
 	if not okk or not cmd then failed("native street command") return end
 	local edgesBefore = #R.allEdges()
 	local objsBefore = eoUsed and G.eoCount() or nil
-	toSim("replaying", {})
+	toSim("replaying", { tok = a.tsTok })
 	replaySend(cmd, function(res, success)
 		if not success then
 			local why = ""
@@ -4676,14 +4696,15 @@ G.eoDryRun = function(m, opts)
 end
 
 -- A street or track build that re-creates stops or signals on its NEW segments (a track upgrade of a signalled line, the Auto
--- Signals mod, a road joined to a street with stops, a town street rebuilt with its bus stops), MPFEVER_EOINLINE=1: replayed as
--- ONE native street proposal that carries them (replayNativeStreet with the engine's own objects of a refused dry run, see
--- G.eoDryRun), as the builder's game made it. The way of before was the street, then one stop build per new segment (1 + N builds
--- where the builder made one: every later entity was numbered differently, 3 ids off from a track upgrade on 2026-10-24). Only
--- builds whose objects are all on new segments the capture describes, and whose constructions are town buildings. Unset: as
--- before (off by default until the game tests: a scripted street can hang the engine)
+-- Signals mod, a road joined to a street with stops, a town street rebuilt with its bus stops): replayed as ONE native street
+-- proposal that carries them (replayNativeStreet with the engine's own objects of a refused dry run, see G.eoDryRun), as the
+-- builder's game made it. The way of before was the street, then one stop build per new segment (1 + N builds where the builder
+-- made one: every later entity was numbered differently, 3 ids off from a track upgrade on 2026-10-24). Only builds whose objects
+-- are all on new segments the capture describes, and whose constructions are town buildings; what it cannot make still goes the
+-- way of before (G.eoAsBefore). On by default since the game test of 2026-10-25 (149: the signals re-created inline gave the same
+-- build ids on both games); off until then (a scripted street can hang the engine). MPFEVER_EOINLINE=0: as before
 G.eoInlineOk = function(m)
-	if os.getenv("MPFEVER_EOINLINE") ~= "1" then return false end
+	if os.getenv("MPFEVER_EOINLINE") == "0" then return false end
 	local st = type(m) == "table" and m.proposal
 	if type(st) ~= "table" or #(st.edgeObjectsToAdd or {}) == 0 then return false end
 	if hasConstructionSegments(m) then return false end
@@ -4734,7 +4755,7 @@ G.replayStreetWithObjects = function(a)
 	local okd, dry, n = pcall(G.eoDryRun, cArgs[1])
 	if not okd or not dry then return G.eoAsBefore(a, "dry run not made (" .. shortErr(dry) .. ")") end
 	log("NATIVE REPLAY " .. uid .. " edge objects: " .. n .. " new stop(s)/signal(s) of the build" .. C.mapSizes(cArgs[1]) .. ": their conversion by the engine (dry run)")
-	toSim("replaying", {})
+	toSim("replaying", { tok = a.tsTok })
 	replaySend(dry, function(res, success)
 		if success then
 			log("NATIVE REPLAY " .. uid .. " edge objects: the dry run was built instead of refused (desync)")
@@ -4762,11 +4783,13 @@ end
 -- again: 77.517/117.783 of terrain alignment here against the builder's 0/0 (2026-10-25), the towns drifted apart (script:towns)
 -- and the games were reloaded 30 to 140 s later. The native replays of the bridges themselves gave the builder's alignment
 -- exactly. What this way cannot make goes to replayStop as before (never to a resynchronisation); a native stop applied with
--- another number of stops than the builder's asks for one at once. MPFEVER_NATIVESTOP=1: stops on bridges and in tunnels (the
--- signals there too with MPFEVER_NATIVESIGNAL=1), =all: every stop and signal (tests); unset: as before (off until the game tests).
+-- another number of stops than the builder's asks for one at once. On by default for the stops on bridges and in tunnels since the
+-- game test of 2026-10-25 (132: the native stops on bridge segments built, and their town statistics were the builder's): the
+-- signals there too with MPFEVER_NATIVESIGNAL=1; MPFEVER_NATIVESTOP=all: every stop and signal (tests); MPFEVER_NATIVESTOP=0: as
+-- before (replayStop for every stop).
 G.nativeStopWanted = function(a, plan)
 	local sw = os.getenv("MPFEVER_NATIVESTOP")
-	if sw ~= "1" and sw ~= "all" then return false end
+	if sw == "0" then return false end
 	if type(plan) ~= "table" or plan.after or type(plan.E) ~= "number" or type(a.args) ~= "table" then return false end
 	if #(plan.objs or {}) == 0 and next(plan.removeIdx or {}) == nil then return false end
 	if sw == "all" then return true end
@@ -4834,7 +4857,7 @@ G.replayNativeStop = function(a, plan)
 		end
 		if not okk or not cmd then return asBefore("no command") end
 		local before = G.eoCount()
-		toSim("replaying", {})
+		toSim("replaying", { tok = a.tsTok })
 		replaySend(cmd, function(res, success)
 			if not success then
 				local why = ""
@@ -4864,7 +4887,7 @@ G.replayNativeStop = function(a, plan)
 	local okd, dry, n = pcall(G.eoDryRun, m, { removeE = (#c.objects == 0) and { plan.E } or nil })
 	if not okd or not dry then return asBefore("dry run not made (" .. shortErr(dry) .. ")") end
 	log("NATIVE REPLAY " .. uid .. " native stop: " .. n .. " new object(s) on segment " .. plan.E .. " (" .. kind .. "): their conversion by the engine (dry run)")
-	toSim("replaying", {})
+	toSim("replaying", { tok = a.tsTok })
 	replaySend(dry, function(res, success)
 		if success then
 			log("NATIVE REPLAY " .. uid .. " native stop: the dry run was built instead of refused (desync)")
@@ -4965,13 +4988,27 @@ end
 -- (see SIM.townStats) The builder's town statistics of a build this game is about to replay, to the simulation, which adds up its
 -- own replay's and compares them once the replay is applied. Each announcement carries a mark of its own: only the differences
 -- of replays announced since this game started ask for a resynchronisation (the simulation's list is kept in the savegame, a
--- reloaded game must not ask for one again)
+-- reloaded game must not ask for one again). The mark goes with the replay (a.tsTok): each of its "replaying" events carries it,
+-- and only the proposals they count are added up (see SIM.townTag).
+-- The marks are forgotten one at a time, the oldest first, once 64 are kept: the record of the replay announced before stays open
+-- until this announcement closes it (in a pause, or at the same step), and a difference found then is still acted on. Before, the
+-- 65th announcement emptied the whole list first, and that replay's difference asked for nothing (the towns then drifted until
+-- the next checks). MPFEVER_TSWAITWIPE=1: as before (the list emptied every 64 announcements)
 G.townExpect = function(a)
 	G.tsSeq = (G.tsSeq or 0) + 1
 	local tok = string.format("%.4f-%d", os.clock(), G.tsSeq)
-	G.tsWaitN = (G.tsWaitN or 0) + 1
-	if not G.tsWait or G.tsWaitN > 64 then G.tsWait, G.tsWaitN = {}, 1 end
-	G.tsWait[tok] = tostring(a.uid)
+	if os.getenv("MPFEVER_TSWAITWIPE") == "1" then
+		G.tsWaitN = (G.tsWaitN or 0) + 1
+		if not G.tsWait or G.tsWaitN > 64 then G.tsWait, G.tsWaitN = {}, 1 end
+		G.tsWait[tok] = tostring(a.uid)
+	else
+		G.tsWait = G.tsWait or {}
+		G.tsOrder = G.tsOrder or {}
+		G.tsWait[tok] = tostring(a.uid)
+		G.tsOrder[#G.tsOrder + 1] = tok
+		while #G.tsOrder > 64 do G.tsWait[table.remove(G.tsOrder, 1)] = nil end
+	end
+	a.tsTok = tok
 	toSim("replay_stats", { uid = tostring(a.uid), ts = a.ts, tok = tok })
 end
 
@@ -5000,7 +5037,7 @@ function replayTwoStep(a)
 		args[3] = true args[4] = false   -- (non-critical collision with its own street connection: ignored)
 		local okk, cmd2 = pcall(function() return api.cmd[a.fn](table.unpack(args, 1, n)) end)
 		if not okk or not cmd2 then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: construction command " .. shortErr(cmd2)) replayFailed(a, "construction command") return end
-		toSim("replaying", {})
+		toSim("replaying", { tok = a.tsTok })
 		replaySend(cmd2, function(res2, success2)
 			local why = ""
 			if not success2 then pcall(function() why = C.ser(C.marshal(res2.resultProposalData.errorState.messages)) end) end
@@ -5055,7 +5092,7 @@ function replayTwoStep(a)
 		if together then args[3] = true args[4] = false end
 		local okc, cmd = pcall(function() return api.cmd[a.fn](table.unpack(args, 1, n)) end)
 		if not okc or not cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street " .. label .. " command " .. shortErr(cmd)) return streetStep(k + 1, together) end
-		toSim("replaying", {})
+		toSim("replaying", { tok = a.tsTok })
 		replaySend(cmd, function(res, success)
 			if not success then
 				local why = ""
@@ -5190,7 +5227,7 @@ local function replayNative(a, formIndex)
 				return
 			end
 			local okp, plan = pcall(function() return stopPlan(probe) end)
-			-- (a stop on a bridge or in a tunnel: the tool's own native proposal, see G.replayNativeStop; MPFEVER_NATIVESTOP unset: as
+			-- (a stop on a bridge or in a tunnel: the tool's own native proposal, see G.replayNativeStop; MPFEVER_NATIVESTOP=0: as
 			-- before)
 			if okp and plan and G.nativeStopWanted(a, plan) then return G.replayNativeStop(a, plan) end
 			if okp and plan then return replayStop(a, plan) end
@@ -5208,9 +5245,9 @@ local function replayNative(a, formIndex)
 			-- placeholders the engine asserts): the street build is rebuilt without them, then each new segment that carries
 			-- stops gets them back as a stop build (replayStop), which is what the tool's build amounts to.
 			-- That is 1 + N builds where the builder made one: every later entity was numbered differently here (a track upgrade
-			-- of a signalled line, 2026-10-24: 3 ids off from then on). MPFEVER_EOINLINE=1: ONE native street proposal that carries
-			-- the engine's own stops and signals (G.replayStreetWithObjects); if it cannot be made, the way below (a.eoTried).
-			-- Unset: as before
+			-- of a signalled line, 2026-10-24: 3 ids off from then on). Now ONE native street proposal that carries the engine's
+			-- own stops and signals (G.replayStreetWithObjects, see G.eoInlineOk); if it cannot be made, the way below (a.eoTried).
+			-- MPFEVER_EOINLINE=0: as before
 			if not a.eoTried and G.eoInlineOk(probe[1]) then
 				a.eoRoute = "stop"
 				log("NATIVE REPLAY " .. tostring(a.uid) .. ": " .. #(stp.edgeObjectsToAdd or {}) .. " stop(s)/signal(s) re-created on the new segments: one native street proposal with them")
@@ -5365,7 +5402,7 @@ local function replayNative(a, formIndex)
 	end
 	do
 		local okg, sig = pcall(C.buildSig, type(a.args) == "table" and a.args[1] or nil)
-		toSim("replaying", { sig = okg and sig or nil })
+		toSim("replaying", { sig = okg and sig or nil, tok = a.tsTok })
 	end
 	local expected = nil
 	pcall(function()
@@ -6099,7 +6136,8 @@ local function sendTerrainCarrier(busy)
 	if not okc or not cmd then return terrainFail(a, "command not made (" .. shortErr(cmd) .. ")") end
 	busy.phase = "inject"
 	busy.frame = G.frames
-	toSim("replaying", {})
+	-- (a replay without town statistics of its own: its brush volume is never added to another build's, see SIM.townTag)
+	toSim("replaying", { nots = true })
 	toSim("terrain_note", { v = tonumber(tostring(t.fnv):sub(-8), 16) or 0, at = a.at })
 	local hx, hy = (t.x0 + math.floor(t.w / 2)) * 4 + 2, (t.y0 + math.floor(t.h / 2)) * 4 + 2
 	local h0 = nil
@@ -6291,11 +6329,20 @@ G.assetsStanding = function(assets)
 	return #pts, here
 end
 
+-- Whether a replay of trees is sent as a player's build, as the builder's brush or bulldozer build was: the game's towns script
+-- counts the trees of a player's build only (town_util.getProposalStats: the groups removed, less the trees built again). Sent as
+-- a script's build before, the bulldozer on one tree near a town lowered that town's score on the builder's game only, and the games
+-- were reloaded at the next checks of script:towns. Its town statistics are never added to another build's (its "replaying"
+-- events say so, see SIM.townTag): a replay of trees carries none of its own. MPFEVER_ASSETPI=0: as before (a script's build)
+G.assetPI = function() return os.getenv("MPFEVER_ASSETPI") ~= "0" end
+
 -- (replayAssets) the tree groups removed one after the other by the engine's own removal proposal, then the trees the builder kept
 -- (cons, the mod's constructions) in one build. The removals free their ids at the end of each build, as the builder's single
 -- build did, so the trees built after them take the same ids from the queue of freed ids as on the builder's game (unless that
--- queue was empty).
+-- queue was empty). Player-initiated as replayAssets' build (G.assetPI): the towns count the groups removed, then the trees built
+-- again, which adds up to the builder's one tree taken away (their penalty is linear in the trees).
 G.assetEngineRemoval = function(a, uid, rm, cons, ctx, strict)
+	local pi = G.assetPI()
 	local function fail(why)
 		log("ASSET REPLAY " .. uid .. ": " .. why)
 		if strict then replayFailed(a, ("asset removal: " .. why):sub(1, 100)) end
@@ -6305,9 +6352,9 @@ G.assetEngineRemoval = function(a, uid, rm, cons, ctx, strict)
 			if #cons == 0 then log("ASSET REPLAY " .. uid .. ": " .. #rm .. " tree group(s) removed by the engine's removal: BUILT") return end
 			local sp = api.type.SimpleProposal.new()
 			sp.constructionsToAdd = cons
-			local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, ctx, true, false) end)
+			local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, ctx, true, pi) end)
 			if not okc or not cmd then fail("the kept trees: command " .. shortErr(cmd)) return end
-			toSim("replaying", {})
+			toSim("replaying", { nots = true })
 			replaySend(cmd, function(res, success)
 				local why = ""
 				if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
@@ -6318,9 +6365,9 @@ G.assetEngineRemoval = function(a, uid, rm, cons, ctx, strict)
 		end
 		local okP, P = pcall(api.engine.util.proposal.createProposalRemove, rm[i], ctx)
 		if not okP or not P then fail("no engine removal for group " .. rm[i] .. " (" .. shortErr(P) .. ")") return end
-		local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, true, false) end)
+		local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, true, pi) end)
 		if not okc or not cmd then fail("the engine's removal of group " .. rm[i] .. ": command " .. shortErr(cmd)) return end
-		toSim("replaying", {})
+		toSim("replaying", { nots = true })
 		replaySend(cmd, function(res, success)
 			if not success then
 				local why = ""
@@ -6383,7 +6430,9 @@ local function replayAssets(a)
 	ctx.gatherBuildings = false
 	ctx.gatherFields = false
 	ctx.player = api.engine.util.getPlayer()
-	local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, ctx, true, false) end)
+	-- (a player's build, as the builder's: see G.assetPI)
+	local pi = G.assetPI()
+	local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, ctx, true, pi) end)
 	-- A script proposal with a group of trees in constructionsToRemove is refused by the factory ("Unknown exception", treeerase
 	-- 2026-10-25): every group is then removed with the engine's own removal proposal (createProposalRemove, what the game's scripts
 	-- use for an industry), one after the other, and the trees it keeps are built after them, all at the build's step.
@@ -6399,7 +6448,7 @@ local function replayAssets(a)
 		replayFailed(a, "assets not rebuilt")
 		return
 	end
-	toSim("replaying", {})
+	toSim("replaying", { nots = true })
 	replaySend(cmd, function(res, success)
 		local why = ""
 		if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
@@ -6446,8 +6495,16 @@ end
 -- at the same place: the savegame this game loaded had it (the host built it during the pause of a resynchronisation, saved it,
 -- then shipped it to the game that was loading). Built again, it stood twice on this game only (the collision refused every form
 -- but the last), then the companies got other entity ids here and the game stopped at the next load. MPFEVER_ALREADYBUILT=0: as before
+-- Only an act that savegame can hold is looked at: one stamped at or before the game time this game loaded (G.loadT, the savegame's
+-- time: the host applies an act at its time, so what it saved is stamped no later); a later act cannot be in it and is built as
+-- usual. And the constructions are looked for around their place (R.conNear, the octree) instead of among every construction of
+-- the map. Before, every construction-only build of another player was checked (a full read of the map's constructions in the
+-- interface, about 0.1 s each on a large map), and the same mod construction placed twice at one spot was built once here and
+-- twice on the builder's game (a resynchronisation). MPFEVER_ALREADYBUILT=all: as before (every act, the whole map)
 G.alreadyBuilt = function(a)
-	if a.fn ~= "makeWorldBuildProposalCmd" or os.getenv("MPFEVER_ALREADYBUILT") == "0" then return false end
+	local sw = os.getenv("MPFEVER_ALREADYBUILT")
+	if a.fn ~= "makeWorldBuildProposalCmd" or sw == "0" then return false end
+	if sw ~= "all" and not (type(G.loadT) == "number" and type(a.at) == "number" and a.at <= G.loadT) then return false end
 	local m = type(a.args) == "table" and a.args[1]
 	if type(m) ~= "table" or #(m.toAdd or {}) == 0 or #(m.toRemove or {}) > 0 then return false end
 	local st = m.proposal or {}
@@ -6456,7 +6513,10 @@ G.alreadyBuilt = function(a)
 		local t = ce.transf
 		if type(t) ~= "table" or type(t[13]) ~= "number" then return false end
 		local p = { x = t[13], y = t[14], z = t[15] }
-		local e = R.resolve({ k = "con", id = -1, f = ce.fileName, p = p })
+		local e, listed = nil, false
+		if sw ~= "all" then e, listed = R.conNear(ce.fileName, p, 0.1) end
+		-- (the octree listed no construction around the place: looked for the old way, once in a while only, see above)
+		if not e and not listed then e = R.resolve({ k = "con", id = -1, f = ce.fileName, p = p }) end
 		local c = type(e) == "number" and api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
 		local q = c and R.matPos(c.transf)
 		if not q or (q.x - p.x) ^ 2 + (q.y - p.y) ^ 2 + (q.z - p.z) ^ 2 > 0.01 then return false end
@@ -6502,7 +6562,9 @@ local function runNativeReplays()
 				okr = true
 			else
 				if type(a.cost) == "number" then toSim("replay_cost", { uid = a.uid, cost = a.cost, co = a.co, kind = G.costKind(a) }) end
-				-- (its builder's town statistics, compared with this replay's: see SIM.townStats; MPFEVER_ALIGNCHECK=0: off)
+				-- (its builder's town statistics, compared with this replay's: see SIM.townStats; MPFEVER_ALIGNCHECK=0: off. The mark of
+				-- the announcement, a.tsTok, goes with every "replaying" event of this replay; none without one)
+				a.tsTok = nil
 				if type(a.ts) == "table" and os.getenv("MPFEVER_ALIGNCHECK") ~= "0" then
 					local okT, errT = pcall(G.townExpect, a)
 					if not okT then log("town stats of " .. tostring(a.uid) .. " not announced: " .. tostring(errT)) end
@@ -7081,7 +7143,7 @@ local function runPausedActions()
 			else
 				if C.makesProposal(a.fn) then
 					local okg, sig = pcall(C.buildSig, a.fn == "makeWorldBuildProposalCmd" and type(a.args) == "table" and a.args[1] or nil)
-					toSim("replaying", { sig = okg and sig or nil })
+					toSim("replaying", { sig = okg and sig or nil, nots = true })
 				end
 				-- paused: the engine answers in a callback, a frame later; the result is reported then
 				local creates = (a.fn == "makeVehicleBuyCmd" or a.fn == "makeLineCreateCmd") and os.getenv("MPFEVER_OLDPAUSED") ~= "1"
@@ -11098,7 +11160,8 @@ end
 -- file). The group is a small forest of thin models when there is one near the street network (the kind 0.5.1 could not describe).
 -- MPFEVER_TREEERASE=whole removes the whole group (the bulldozer on a group of one tree: nothing added, a build 0.5.1 replayed
 -- nowhere); =reforest sends the engine's own reforestation proposal (groups recycled into constructions without a file, as the tree
--- brush does) when it has groups to recycle, else one tree as by default.
+-- brush does) when it has groups to recycle, else one tree as by default; =lasttree takes the group's last tree out instead of its
+-- first (the removal is then described by that tree, not by the first one the build keeps: the same checks as by default).
 -- Check: this game logs "assets placed ... N removed, 0 not described" and "AUTOTEST treeerase ...: BUILT", then the group gone
 -- ("here after the build: exists false", or its id taken again by the new trees); the other game "ASSET REPLAY ...: N removed (G):
 -- BUILT" and "removed tree group(s) gone here: yes"; nowhere "asset removal not found" nor a resync; the newroad after it prints the
@@ -11227,14 +11290,19 @@ H.treeerase = function(from, p)
 			local sp = api.type.SimpleProposal.new()
 			sp.constructionsToRemove = { g }
 			if mode ~= "whole" and #inst >= 2 then
-				-- (the first tree out, the others kept, relative to the first kept one)
-				local b = { x = inst[2].tf[13], y = inst[2].tf[14], z = inst[2].tf[15] }
+				-- (the first tree out, the others kept, relative to the first kept one; MPFEVER_TREEERASE=lasttree: the last tree out,
+				-- the group's first kept: the removal must then be described by the felled tree, see R.describe's kept)
+				local out = (mode == "lasttree") and #inst or 1
+				local b = nil
 				local models = {}
-				for k = 2, #inst do
-					local t = {}
-					for q = 1, 16 do t[q] = inst[k].tf[q] end
-					t[13], t[14], t[15] = t[13] - b.x, t[14] - b.y, t[15] - b.z
-					models[#models + 1] = { id = loadable(inst[k].id), transf = t }
+				for k = 1, #inst do
+					if k ~= out then
+						b = b or { x = inst[k].tf[13], y = inst[k].tf[14], z = inst[k].tf[15] }
+						local t = {}
+						for q = 1, 16 do t[q] = inst[k].tf[q] end
+						t[13], t[14], t[15] = t[13] - b.x, t[14] - b.y, t[15] - b.z
+						models[#models + 1] = { id = loadable(inst[k].id), transf = t }
+					end
 				end
 				local V = api.type.Vec4f.new
 				local ce = api.type.SimpleProposal.ConstructionEntity.new()
@@ -12001,10 +12069,10 @@ end
 -- Signals re-created on several track segments in ONE build (MPFEVER_SCENARIO=dsigmulti, the host then the client as builder;
 -- MPFEVER_DSIG_ROLE=host or client: only that game builds): a chain of MPFEVER_DSIG_N (2, at most 8) consecutive plain track
 -- segments, replaced by copies that carry a signal each, as the Auto Signals mod or a track upgrade of a signalled line builds it.
--- Held and shipped as a native build with the signal tool's flags (32): the other game replays it. As before (MPFEVER_EOINLINE
--- unset): the track, then one signal build per segment (1 + N builds, the entity ids then differ: "stops placed again on a street
--- build" in the replaying game's mod.log); MPFEVER_EOINLINE=1: one native proposal with the engine's own signals ("edge objects:
--- the engine's conversion has 2N", "native street: with its N new stop(s)/signal(s)", "edge objects here N, originator N"). The
+-- Held and shipped as a native build with the signal tool's flags (32): the other game replays it. As before (MPFEVER_EOINLINE=0
+-- on the replaying game): the track, then one signal build per segment (1 + N builds, the entity ids then differ: "stops placed
+-- again on a street build" in the replaying game's mod.log); by default: one native proposal with the engine's own signals ("edge
+-- objects: the engine's conversion has 2N", "native street: with its N new stop(s)/signal(s)", "edge objects here N, originator N"). The
 -- "build ids t=..." line of that build must be the same in both games' mod.log (MPFEVER_ENTWATCH=1 MPFEVER_ENTLOG=1: entseq.txt too).
 H.dsigmulti = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
@@ -12527,6 +12595,15 @@ H.dstop = function(from, p)
 			local left = n % 2 == 0
 			cc.objects = { { -400000000, left and 0 or 1 } }
 			e.comp = cc
+			-- (the segment's owner, as the stop tool keeps it and as the replays copy it: a bridge built by a company is owned. Without
+			-- it the copy belonged to nobody on this game and to the bridge's company on the replaying game, which keeps the owner of
+			-- the segment it replaces: with MPFEVER_DSTOPBRIDGE=1 the "owners" differed. MPFEVER_DSTOPOWNER=0: as before, no owner)
+			if os.getenv("MPFEVER_DSTOPOWNER") ~= "0" then
+				local owner = R.ownerOf(E)
+				if type(owner) == "number" and owner >= 0 then
+					pcall(function() local po = C.newOf("PlayerOwned"); po.player = owner; e.playerOwned = po end)
+				end
+			end
 			local se = e.streetEdge; se.precedenceNode0 = 2; se.precedenceNode1 = 2; e.streetEdge = se
 			local eo = api.type.SimpleStreetProposal.EdgeObject.new()
 			eo.edgeEntity = -1
@@ -13049,6 +13126,9 @@ end
 -- This GUI half starts with the game, and again after a resynchronisation (the host's savegame loaded here): what the
 -- files already hold belongs to the previous game state, and the savegame's script state holds the host's records.
 local function resumeAfterLoad(state)
+	-- the game time of the savegame loaded now (the session's start, or the host's game of a resynchronisation): the acts stamped
+	-- later cannot be in it (see G.alreadyBuilt)
+	pcall(function() G.loadT = gameTime() end)
 	-- records of the savegame's script state (an earlier session, or the host's): never shipped or reported again
 	local st = state:get() or {}
 	for _, o in ipairs(st.out or {}) do if o.n > G.outSent then G.outSent = o.n end end
@@ -13606,6 +13686,11 @@ end
 -- tracks or the open companies changed, or every 1800 frames (a sale or a merger changes owners without changing the number).
 -- When the engine refuses to list the tracks, every segment as before; when listing them takes long, every 1800 frames instead of
 -- 300 (G.openNetEvery). MPFEVER_OPENNETFAST=0: as before.
+-- TF3 has no track component (api.type.ComponentType has BASE_EDGE and BASE_EDGE_STREET only): R.entitiesWith("BASE_EDGE_TRACK")
+-- failed in every session and the component read of the fallback failed for every segment, so the list stayed empty and no company
+-- could ever connect to another's open tracks (open_net.txt held nothing, "0 entities" in native.log). A track is a segment without
+-- a street component, as the scenarios already tell them (see G.openTracks, which also keeps each segment's owner from one look to
+-- the next instead of reading every segment again). MPFEVER_TRACKTYPE=0: as before (BASE_EDGE_TRACK, MPFEVER_OPENNETFAST read).
 G.openNet = function(reg, me)
 	local E = C.eco()
 	if not E then return end
@@ -13616,50 +13701,54 @@ G.openNet = function(reg, me)
 			if r.rule == "open" or r.rule == "toll" then open[co.ent] = true; sig[#sig + 1] = co.ent end
 		end
 	end
-	local fast = os.getenv("MPFEVER_OPENNETFAST") ~= "0" and not G.openNetAll
-	local edges = {}
-	if #sig > 0 then
-		if fast then
-			local t0 = os.clock()
-			edges = R.entitiesWith("BASE_EDGE_TRACK")
-			local ms = math.floor((os.clock() - t0) * 1000 + 0.5)
-			if #edges == 0 and R.loopErrors.BASE_EDGE_TRACK then
-				G.openNetAll = true
-				fast = false
-				log("companies: open tracks: the engine does not list the tracks (" .. tostring(R.loopErrors.BASE_EDGE_TRACK) .. "): every segment is looked at")
-				edges = R.allEdges()
-			else
-				G.openNetEvery = ms > 100 and 1800 or 300
-				G.openNetLogs = (G.openNetLogs or 0) + 1
-				if G.openNetLogs <= 5 then log("companies: open tracks: " .. #edges .. " track segment(s) listed in " .. ms .. " ms") end
-			end
-		else
-			edges = R.allEdges()
-		end
-	end
-	if fast then
-		local key = me.id .. "|" .. table.concat(sig, " ") .. "|" .. #edges
-		if key == G.openNetKey and G.frames - (G.openNetFull or -100000) < 1800 then return end
-		G.openNetKey = key
-		G.openNetFull = G.frames
-	end
 	local ids, seen = {}, {}
 	local function add(e) if type(e) == "number" and e >= 0 and not seen[e] then seen[e] = true; ids[#ids + 1] = e end end
-	for _, e in ipairs(edges) do
-		local okc, po = pcall(api.engine.getComponent, e, api.type.ComponentType.PLAYER_OWNED)
-		if okc and po and open[po.player] then
-			local isTrack = fast
-			if not isTrack then
-				local okt, tr = pcall(api.engine.getComponent, e, api.type.ComponentType.BASE_EDGE_TRACK)
-				isTrack = okt and tr ~= nil
+	if os.getenv("MPFEVER_TRACKTYPE") ~= "0" then
+		G.openTracks(open, sig, me, add)
+	else
+		local fast = os.getenv("MPFEVER_OPENNETFAST") ~= "0" and not G.openNetAll
+		local edges = {}
+		if #sig > 0 then
+			if fast then
+				local t0 = os.clock()
+				edges = R.entitiesWith("BASE_EDGE_TRACK")
+				local ms = math.floor((os.clock() - t0) * 1000 + 0.5)
+				if #edges == 0 and R.loopErrors.BASE_EDGE_TRACK then
+					G.openNetAll = true
+					fast = false
+					log("companies: open tracks: the engine does not list the tracks (" .. tostring(R.loopErrors.BASE_EDGE_TRACK) .. "): every segment is looked at")
+					edges = R.allEdges()
+				else
+					G.openNetEvery = ms > 100 and 1800 or 300
+					G.openNetLogs = (G.openNetLogs or 0) + 1
+					if G.openNetLogs <= 5 then log("companies: open tracks: " .. #edges .. " track segment(s) listed in " .. ms .. " ms") end
+				end
+			else
+				edges = R.allEdges()
 			end
-			if isTrack then
-				add(e)
-				pcall(function()
-					local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
-					add(be.node0)
-					add(be.node1)
-				end)
+		end
+		if fast then
+			local key = me.id .. "|" .. table.concat(sig, " ") .. "|" .. #edges
+			if key == G.openNetKey and G.frames - (G.openNetFull or -100000) < 1800 then return end
+			G.openNetKey = key
+			G.openNetFull = G.frames
+		end
+		for _, e in ipairs(edges) do
+			local okc, po = pcall(api.engine.getComponent, e, api.type.ComponentType.PLAYER_OWNED)
+			if okc and po and open[po.player] then
+				local isTrack = fast
+				if not isTrack then
+					local okt, tr = pcall(api.engine.getComponent, e, api.type.ComponentType.BASE_EDGE_TRACK)
+					isTrack = okt and tr ~= nil
+				end
+				if isTrack then
+					add(e)
+					pcall(function()
+						local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+						add(be.node0)
+						add(be.node1)
+					end)
+				end
 			end
 		end
 	end
@@ -13675,6 +13764,69 @@ G.openNet = function(reg, me)
 	local okT, tm = pcall(os.time)
 	nativeCtl("opennet " .. (((okT and tm or 0) % 1000000) * 100 + K.coCtlSeq % 100))
 	log("companies: " .. #ids .. " entities of the tracks the other companies opened")
+end
+
+-- (G.openNet) the track segments of the open companies (open: their player entities) and their nodes, through add. Every segment of
+-- the street graph is listed by its map of nodes to segments, which also gives each segment's nodes (no segment is read for them).
+-- Each segment's owner is read once and kept (G.openNetCache) while the segment has the same nodes (an id the engine gives again to
+-- another segment has other nodes); every owner is read again when the open companies change and every 1800 frames (a sale or a
+-- merger changes owners without changing the segments). Whether a segment is a track (no street component) is read only for the
+-- segments of an open company, once. The whole look is timed: over 100 ms, G.openNet runs every 1800 frames instead of 300.
+G.openTracks = function(open, sig, me, add)
+	local t0 = os.clock()
+	if #sig == 0 then G.openNetCache = nil; return end
+	local key = me.id .. "|" .. table.concat(sig, " ")
+	if key ~= G.openNetSig or not G.openNetCache or G.frames - (G.openNetFull or -100000) >= 1800 then
+		G.openNetSig, G.openNetFull, G.openNetCache = key, G.frames, {}
+	end
+	local cache = G.openNetCache
+	local map = {}
+	pcall(function() map = api.engine.system.streetSystem.getNode2SegmentMap() end)
+	local ends, list = {}, {}
+	for n, segs in pairs(map) do
+		local k = 0
+		pcall(function() k = #segs end)
+		for i = 1, k do
+			local e = segs[i]
+			if type(e) == "number" and type(n) == "number" then
+				local p = ends[e]
+				if not p then p = {}; ends[e] = p; list[#list + 1] = e end
+				p[#p + 1] = n
+			end
+		end
+	end
+	local PO, ST = api.type.ComponentType.PLAYER_OWNED, api.type.ComponentType.BASE_EDGE_STREET
+	local reads, tracks = 0, 0
+	for _, e in ipairs(list) do
+		local p = ends[e]
+		local a, b = p[1], p[2] or p[1]
+		if a > b then a, b = b, a end
+		local c = cache[e]
+		if not c or c.a ~= a or c.b ~= b then
+			reads = reads + 1
+			local okc, po = pcall(api.engine.getComponent, e, PO)
+			c = { a = a, b = b, o = (okc and po and po.player) or false }
+			cache[e] = c
+		end
+		if c.o and open[c.o] then
+			if c.t == nil then
+				local okS, s = pcall(api.engine.getComponent, e, ST)
+				c.t = okS and s == nil
+			end
+			if c.t then
+				tracks = tracks + 1
+				add(e)
+				for _, n in ipairs(p) do add(n) end
+			end
+		end
+	end
+	for e in pairs(cache) do if not ends[e] then cache[e] = nil end end
+	local ms = math.floor((os.clock() - t0) * 1000 + 0.5)
+	G.openNetEvery = ms > 100 and 1800 or 300
+	G.openNetLogs = (G.openNetLogs or 0) + 1
+	if G.openNetLogs <= 5 then
+		log("companies: open tracks: " .. tracks .. " track segment(s) of the open companies, " .. #list .. " segment(s) looked at, " .. reads .. " owner(s) read, " .. ms .. " ms")
+	end
 end
 
 -- The finance window's line of a shipped native build (JournalEntry.Construction key), where its builder's game booked it and

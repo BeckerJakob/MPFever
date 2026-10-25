@@ -94,6 +94,48 @@ local function modelName(id)
 end
 R.normModel, R.modelName = normModel, modelName
 
+-- The trees a build adds (the asset capture's list: each construction's matrix and its models, a name and a matrix relative to
+-- it), by their place on the map, in cells of 1 m: what R.isKept looks in. nil when it adds none.
+function R.keptGrid(assets)
+	local grid, n = {}, 0
+	for _, as in ipairs(assets or {}) do
+		local t = as.transf
+		if type(t) == "table" and type(t[13]) == "number" then
+			for _, m in ipairs(as.models or {}) do
+				local mt = m.transf
+				if type(mt) == "table" and type(mt[13]) == "number" then
+					local x, y, z = mt[13], mt[14], mt[15]
+					local q = { m = normModel(m.id), x = t[1] * x + t[5] * y + t[9] * z + t[13], y = t[2] * x + t[6] * y + t[10] * z + t[14] }
+					local key = math.floor(q.x) .. ":" .. math.floor(q.y)
+					grid[key] = grid[key] or {}
+					local cell = grid[key]
+					cell[#cell + 1] = q
+					n = n + 1
+				end
+			end
+		end
+	end
+	return n > 0 and grid or nil
+end
+
+-- Whether the tree id at q is one the build adds back (kept: R.keptGrid): the same model less than 5 cm away (across)
+function R.isKept(kept, id, q)
+	if not kept or not q then return false end
+	local name = nil
+	local fx, fy = math.floor(q.x), math.floor(q.y)
+	for dx = -1, 1 do
+		for dy = -1, 1 do
+			for _, it in ipairs(kept[(fx + dx) .. ":" .. (fy + dy)] or {}) do
+				if (it.x - q.x) ^ 2 + (it.y - q.y) ^ 2 < 0.0025 then
+					name = name or modelName(id)
+					if it.m == name then return true end
+				end
+			end
+		end
+	end
+	return false
+end
+
 -- The fat models (a full matrix) and the thin ones (a position, an angle and a scale: the forests of a map are made of them) of
 -- a model list, as two lists with :size() and :at(i) from 1: the native vectors (the converted tables copy a whole forest at
 -- each read), else those tables.
@@ -171,11 +213,24 @@ end
 -- place, and dropped the removal of such a group without a word (the bulldozer on one tree of a forest: the builder's game freed
 -- one entity more than the others, every later id differed, a resync minutes later). Without a readable model, the centre of its
 -- bounding box (bb). MPFEVER_ASSETREF=0: as before
-local function assetPlace(e)
+-- kept (the bulldozer on one tree: the trees the same build adds back, see R.keptGrid): a tree of the group that is NOT among them,
+-- the one taken away. Described by its first tree (one the build keeps), a game whose loaded savegame already held the build found
+-- that tree in what was left of the group, took the build for not applied and removed and built the trees once more there only
+-- (other ids, a resynchronisation minutes later). The felled tree stands nowhere once the build is applied: the removal is then not
+-- found, and replayAssets sees the build already made. Every tree kept (a reforestation, a whole group): its first, as before.
+local function assetPlace(e, kept)
 	local p, m = nil, nil
-	local nf, nt = eachInstance(e, function(id, q)
-		if q then p, m = q, modelName(id) return true end
-	end)
+	local nf, nt = 0, 0
+	if kept then
+		nf, nt = eachInstance(e, function(id, q)
+			if q and not R.isKept(kept, id, q) then p, m = q, modelName(id) return true end
+		end)
+	end
+	if not p then
+		nf, nt = eachInstance(e, function(id, q)
+			if q then p, m = q, modelName(id) return true end
+		end)
+	end
 	local bb = false
 	if not p then
 		p = bboxCentre(e)
@@ -192,14 +247,14 @@ function R.describeAssetOld(e)
 	return nil
 end
 
-local function describeCon(e)
+local function describeCon(e, kept)
 	local c = comp(e, "CONSTRUCTION")
 	if not c then
 		if os.getenv("MPFEVER_ASSETREF") == "0" then return R.describeAssetOld(e) end
 		-- (a group of trees is always described, even without a place: dropped, its removal was lost on the other games)
 		local ag = comp(e, "ASSET_GROUP") ~= nil
 		if not ag and not comp(e, "MODEL_INSTANCE_LIST") then return nil end
-		local p, m, n, bb = assetPlace(e)
+		local p, m, n, bb = assetPlace(e, kept)
 		return { k = "asset", id = e, p = p, m = m, n = n, ag = ag, bb = bb or nil }
 	end
 	return { k = "con", id = e, f = c.fileName, p = matPos(c.transf) }
@@ -211,9 +266,10 @@ local function describeEdge(e)
 	return { k = "edge", id = e, p0 = nodePos(c.node0), p1 = nodePos(c.node1) }
 end
 
-describe = function(kind, e)
+-- (kept: for a group of trees, the trees the same build adds back, see assetPlace)
+describe = function(kind, e, kept)
 	if type(e) ~= "number" or e < 0 then return nil end
-	if kind == "con" then return describeCon(e) end
+	if kind == "con" then return describeCon(e, kept) end
 	if kind == "node" then
 		local p = nodePos(e)
 		return p and { k = "node", id = e, p = p } or nil
@@ -357,6 +413,23 @@ local function resolveCon(r)
 	end)
 	if e and d < 3 then return e end
 	return nil
+end
+
+-- A construction of file f standing at p (within tol metres), looked for among the constructions around p only (the octree, 50 m)
+-- instead of every construction of the map (resolveCon's way, a tenth of a second on a large map): the nearest, nil when none.
+-- Second result: whether the octree listed any construction around p at all (when it lists none, the caller may look the old way).
+function R.conNear(f, p, tol)
+	if not p then return nil, false end
+	local list = R.assetsNear(p, 50, "CONSTRUCTION")
+	local best, bestD = nil, math.huge
+	for _, e in ipairs(list) do
+		local c = comp(e, "CONSTRUCTION")
+		if c and sameFile(c.fileName, f) then
+			local d = dist(matPos(c.transf), p)
+			if d <= tol and d < bestD then best, bestD = e, d end
+		end
+	end
+	return best, #list > 0
 end
 
 -- The entities with this component around p (octree, radius in metres), by id.

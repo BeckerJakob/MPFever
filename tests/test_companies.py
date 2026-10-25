@@ -26,6 +26,8 @@ SGS = {}           -- the station groups (R.entitiesWith("STATION_GROUP"))
 LINELIST = {}      -- the lines (R.entitiesWith("LINE"))
 STOPS = {}         -- line -> { station groups of its stops }
 TV = {}            -- vehicle -> { stopIndex, carrier }
+SEGS = {}          -- segment -> "track" or "street"
+PATHS = {}         -- vehicle -> the segment it is on
 local function rec(kind, a, b, c) SENT[#SENT + 1] = { kind = kind, a = a, b = b, c = c } end
 api = {
   type = {
@@ -33,7 +35,9 @@ api = {
       Type = { OTHER = 1, CONSTRUCTION = 2, ACQUISITION = 3, MAINTENANCE = 4, INCOME = 5, LOAN = 6 },
       Construction = { STATION = 1, TRACK = 2, DEPOT = 3 }, Maintenance = { INFRASTRUCTURE = 1 }, Carrier = { RAIL = 1, OTHER = 2 } },
     Vec3f = { new = function() return {} end },
-    ComponentType = { PLAYER_OWNED = "po", NAME = "name", LINE = "line", CONSTRUCTION = "con", STATION_GROUP = "sg", MOVE_PATH = "mp", BASE_EDGE_TRACK = "bet", TRANSPORT_VEHICLE = "tv" },
+    -- (as the game's api.type.ComponentType: BASE_EDGE and BASE_EDGE_STREET, no track component)
+    ComponentType = { PLAYER_OWNED = "po", NAME = "name", LINE = "line", CONSTRUCTION = "con", STATION_GROUP = "sg", MOVE_PATH = "mp",
+      BASE_EDGE = "be", BASE_EDGE_STREET = "bes", TRANSPORT_VEHICLE = "tv", GAME_SCRIPT = "gs", PLAYER = "player" },
     SimpleProposal = { new = function() return {} end }, Context = { new = function() return {} end },
   },
   util = { getDefaultMonthDuration = function() return 1000 end },
@@ -55,8 +59,15 @@ api = {
         return { stops = s }
       end
       if ct == "tv" then return TV[e] end
+      if ct == "be" then return SEGS[e] and {} or nil end
+      if ct == "bes" then return SEGS[e] == "street" and {} or nil end
+      if ct == "mp" then
+        return PATHS[e] and { path = { edges = { { edgeId = { entity = PATHS[e], index = 0 } } } }, dyn = { pathPos = { edgeIndex = 0 } } } or nil
+      end
+      if ct == nil then error("Error decoding argument #3: The lua object can't be cast to desired type") end
       return nil
     end,
+    entityExists = function(e) return SEGS[e] ~= nil or OWN[e] ~= nil end,
     forEachEntityWithComponent = function(fn, ct) if ct == "po" then local ks = {} for e in pairs(OWN) do ks[#ks + 1] = e end table.sort(ks) for _, e in ipairs(ks) do fn(e) end end end,
     util = { finance = { getPlayersBalance = function(p) return BAL[p] or 0 end } },
     system = {
@@ -431,6 +442,34 @@ check(run('return #E.stationFees(st, ENV, HOLD)') == 0, "toll again: the first l
 run('E.PRIVATE_FEE = true; st.co.stops[tostring(DAVE)] = { rule = "private", fee = 500 }; TV[7101].stopIndex = 1')
 check(run('local owed = E.stationFees(st, ENV, HOLD); return #owed .. " " .. (owed[1] and owed[1].fee or 0)') == "1 100",
       "a private station the line already stops at: 100 per stop")
+
+print("rules: track tolls")
+# company 1 (entity 100) asks a toll of 2500 on its tracks; Tim's train (company 9, entity 900) is on segment 6001, a track of
+# company 1 (a segment without a street component: the game has no track component), then on 6002, a street of company 1
+run('''
+TST = { co = CO.new("separate", 100, 2000000) }
+CO.join(TST.co, "host", "Host", true, "Host Co", "s1", 1)
+local t9 = CO.join(TST.co, "tim", "Tim", false, "Tim Co", "s9", 9)
+t9.ent = 900
+TST.co.track = { [tostring(CO.match(TST.co, "host", "s1", true).id)] = { rule = "toll", toll = 2500 } }
+BAL[100], BAL[900] = 1000000, 1000000
+SEGS[6001], SEGS[6002] = "track", "street"
+OWN[6001], OWN[6002] = 100, 100
+OWN[9001] = 900; VEH[9001] = { 9101 }; OWN[9101] = 900
+TV[9101] = { stopIndex = 0, carrier = 1 }
+PATHS[9101] = 6001
+TIME = 0
+''')
+check(run('return E.tolls(TST, ENV)') is True, "a train on another company's track: looked at")
+check(run('return BAL[900] .. " " .. BAL[100]') == "997500 1002500", "the train's company pays the toll, the tracks' company gets it")
+run('E.tolls(TST, ENV)')
+check(run('return BAL[900]') == 997500, "still on the same tracks: no second toll")
+run('PATHS[9101] = 6002; E.tolls(TST, ENV); PATHS[9101] = 6001; E.tolls(TST, ENV)')
+check(run('return BAL[900]') == 997500 - 2500, "left them for a street, then entered them again: one more toll")
+run('PATHS[9101] = 6002; TST.co.tollOn = nil; E.tolls(TST, ENV)')
+check(run('return BAL[900]') == 995000, "a street of that company: no toll")
+run('E.TRACK_STREET = false; PATHS[9101] = 6001; TST.co.tollOn = nil; E.tolls(TST, ENV); E.TRACK_STREET = true')
+check(run('return BAL[900]') == 995000, "MPFEVER_TRACKTYPE=0: as before (no track recognised, no toll)")
 
 print()
 print("FAILED: %d" % len(failures) if failures else "all passed")

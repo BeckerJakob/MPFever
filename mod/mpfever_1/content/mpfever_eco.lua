@@ -57,6 +57,10 @@ E.OPEN_DEFAULT = os.getenv("MPFEVER_OPENDEFAULT") ~= "0"
 -- E.STOP_FEE_DEFAULT per stop there until their company takes the stop out (before, they stopped there for free, a way around
 -- every fee). MPFEVER_PRIVATEFEE=0: as before.
 E.PRIVATE_FEE = os.getenv("MPFEVER_PRIVATEFEE") ~= "0"
+-- A track segment, for the tolls (E.tolls): a segment (BASE_EDGE) without a street component. TF3 has no BASE_EDGE_TRACK component
+-- type: reading it failed for every segment, so no train ever paid a toll. Read once, every game is started with the same value
+-- (MPFEVER_TRACKTYPE=0: as before)
+E.TRACK_STREET = os.getenv("MPFEVER_TRACKTYPE") ~= "0"
 E.RESERVE = { line = 50000, vehicle = 50000, station = 100000, depot = 50000 }
 
 -- (the game time and the bridge's helpers, given by the bridge at every call: see E.event and E.tick)
@@ -638,13 +642,22 @@ function E.tolls(st, env)
 		return false
 	end
 	local ownerCache = {}
+	local CT = api.type.ComponentType
 	local function ownerOfEdge(e)
 		local o = ownerCache[e]
 		if o == nil then
 			o = false
 			pcall(function()
-				if api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_TRACK) then
-					local po = api.engine.getComponent(e, api.type.ComponentType.PLAYER_OWNED)
+				-- (a track: a segment without a street component, see E.TRACK_STREET)
+				local track
+				if E.TRACK_STREET then
+					track = api.engine.entityExists(e) and api.engine.getComponent(e, CT.BASE_EDGE) ~= nil
+						and api.engine.getComponent(e, CT.BASE_EDGE_STREET) == nil
+				else
+					track = api.engine.getComponent(e, CT.BASE_EDGE_TRACK) ~= nil
+				end
+				if track then
+					local po = api.engine.getComponent(e, CT.PLAYER_OWNED)
 					if po then o = po.player end
 				end
 			end)
