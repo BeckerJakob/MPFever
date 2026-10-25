@@ -268,6 +268,34 @@ U.pollEco = function()
 	U.eco = e
 end
 
+-- The companies' rules for their stations and depots (0.5.2: the "stops", "depotco" and "gone" lines of eco.txt, see the bridge's
+-- G.coEco), for the station and depot windows and the line tool: U.rules = { stops = { [co] = { rule, fee, own } },
+-- depotCo = { [co] = { rule, toll } }, gone = { [co] = true } } (own: how many of the company's stations have a setting of
+-- their own). Read at most twice a second, apart from U.pollEco (the MPFever window's view of the same file).
+U.pollRules = function(force)
+	local now = os.clock()
+	if not force and U.rulesAt and now - U.rulesAt < 0.5 then return end
+	U.rulesAt = now
+	local f = C.IO.open(C.DIR .. C.BS .. "eco.txt", "rb")
+	if not f then return end
+	local txt = f:read("*a") or ""
+	f:close()
+	if txt == U.rulesTxt then return end
+	U.rulesTxt = txt
+	local r = { stops = {}, depotCo = {}, gone = {} }
+	local TAB = C.TAB
+	for line in txt:gmatch("[^" .. C.NL .. "]+") do
+		local f1 = {}
+		for x in (line .. TAB):gmatch("([^" .. TAB .. "]*)" .. TAB) do f1[#f1 + 1] = x end
+		local id = tonumber(f1[2])
+		if id and f1[1] == "stops" then r.stops[id] = { rule = f1[3], fee = tonumber(f1[4]) or 0, own = tonumber(f1[5]) or 0 }
+		elseif id and f1[1] == "depotco" then r.depotCo[id] = { rule = f1[3], toll = tonumber(f1[4]) or 0 }
+		elseif id and f1[1] == "gone" then r.gone[id] = true end
+	end
+	U.rules = r
+	U.rulesVersion = (U.rulesVersion or 0) + 1
+end
+
 -- an MPFever event of the interface (applied by every game at the same step: see mpfever_eco.lua)
 U.coSend = function(name, param)
 	local ok, err = pcall(function() api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd("mpfever", "mpfever", name, param or {})) end)
@@ -341,7 +369,8 @@ local function companyName(ent)
 	return name
 end
 
--- the stations shared by their company (shares.txt, written by the game-script bridge): station key -> fee per stop
+-- the stations with a setting of their own (shares.txt, written by the game-script bridge): station key -> { rule, fee per stop }
+-- (0.5.2: "key TAB rule TAB fee" lines; a line "key TAB fee" of an older file: fee 0 private, else that toll)
 local function pollShares()
 	local f = C.IO.open(C.DIR .. C.BS .. "shares.txt", "rb")
 	if not f then return end
@@ -351,52 +380,105 @@ local function pollShares()
 	U.shareTxt = txt
 	local t = {}
 	for line in txt:gmatch("[^" .. C.NL .. "]+") do
-		local k, fee = line:match("^(.-)" .. C.TAB .. "(%d+)$")
-		if k then t[k] = tonumber(fee) end
+		local k, rule, fee = line:match("^(.-)" .. C.TAB .. "(%a+)" .. C.TAB .. "(%d+)$")
+		if k then
+			t[k] = { rule = rule, fee = tonumber(fee) or 0 }
+		else
+			local k2, fee2 = line:match("^(.-)" .. C.TAB .. "(%d+)$")
+			local n = tonumber(fee2) or 0
+			if k2 then t[k2] = { rule = n > 0 and "toll" or "private", fee = n } end
+		end
 	end
-	U.shares = t
+	U.stationRules = t
 	U.shareVersion = (U.shareVersion or 0) + 1
 end
 
-local SHARE_FEES = { 0, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000 }
+-- the tolls per stop the station window offers
+local SHARE_FEES = { 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000 }
 
 local function money(n)
 	local ok, s = pcall(api.util.formatMoney, n)
 	return ok and tostring(s) or tostring(n)
 end
 
--- what the share line of a station window says, for the fee in force (nil or 0: not shared)
-local function shareText(mine, fee)
-	if fee == 0 then fee = nil end
-	if mine then
-		return fee and (T("Partagée avec les autres entreprises : ", "Shared with the other companies: ") .. money(fee) .. T(" par arrêt", " per stop"))
-			or T("Non partagée (les autres entreprises ne peuvent pas s'y arrêter)", "Not shared (the other companies cannot stop here)")
+-- The rule of a station (its key, nil when no station has a setting of its own) of company `co` for the other companies, read as
+-- mpfever_eco.lua's stationRule reads it in the game (from shares.txt and eco.txt): rule ("private" | "open" | "toll"), fee per
+-- stop, and whether it is the station's own setting (else its company's rule). nil when no company owns it.
+U.stationRuleOf = function(key, co)
+	if not co then return nil, 0, false end
+	local openDefault = os.getenv("MPFEVER_OPENDEFAULT") ~= "0"
+	local rs = U.rules or {}
+	if openDefault and rs.gone and rs.gone[co] then return "open", 0, false end
+	local function norm(rule, fee)
+		fee = math.floor(tonumber(fee) or 0)
+		if rule == "toll" then
+			if fee > 0 then return "toll", fee end
+			return "open", 0
+		end
+		if rule == "private" then return "private", 0 end
+		return "open", 0
 	end
-	return fee and (T("Partagée : ", "Shared: ") .. money(fee) .. T(" par arrêt de vos véhicules", " per stop of your vehicles"))
-		or T("Non partagée : vos lignes ne peuvent pas s'y arrêter", "Not shared: your lines cannot stop here")
+	local o = key and U.stationRules and U.stationRules[key]
+	if o then
+		local r, f = norm(o.rule, o.fee)
+		return r, f, true
+	end
+	local s = rs.stops and rs.stops[co]
+	if s then
+		local r, f = norm(s.rule, s.fee)
+		return r, f, false
+	end
+	if openDefault then return "open", 0, false end
+	return "toll", C.SHARE_DEFAULT, false
 end
 
--- the share line of a station window: what it costs the other companies to stop there (nil when not a station)
+-- a station's choice in its window: "co" (no setting of its own), "open", "private" or "toll:<fee>"
+U.stationChoice = function(key)
+	local o = key and U.stationRules and U.stationRules[key]
+	if not o then return "co" end
+	if o.rule == "toll" then return (tonumber(o.fee) or 0) > 0 and ("toll:" .. math.floor(o.fee)) or "open" end
+	if o.rule == "private" then return "private" end
+	return "open"
+end
+
+-- (the lines of other companies that already stop at a private station pay this per stop there, see mpfever_eco.lua)
+U.privateFee = function() return os.getenv("MPFEVER_PRIVATEFEE") ~= "0" and C.SHARE_DEFAULT or nil end
+
+-- what the rule line of a station window says: for its company (mine) or for the others; own: the station's own setting, else
+-- its company's rule
+local function shareText(mine, rule, fee, own)
+	local t
+	if mine then
+		if rule == "toll" then t = T("Péage pour les autres entreprises : ", "Toll for the other companies: ") .. money(fee) .. T(" par arrêt", " per stop")
+		elseif rule == "private" then t = T("Privée (les autres entreprises ne peuvent pas l'ajouter à leurs lignes)", "Private (the other companies cannot add it to their lines)")
+		else t = T("Ouverte aux autres entreprises, sans péage", "Open to the other companies, no toll") end
+	else
+		if rule == "toll" then t = T("Péage : ", "Toll: ") .. money(fee) .. T(" par arrêt de vos véhicules", " per stop of your vehicles")
+		elseif rule == "private" then
+			local pf = U.privateFee()
+			t = pf and C.Tf("Privée : vos lignes ne peuvent pas l'ajouter, celles qui s'y arrêtent déjà paient %s par arrêt", "Private: your lines cannot add it, those already stopping here pay %s per stop", money(pf))
+				or T("Privée : vos lignes ne peuvent pas s'y arrêter", "Private: your lines cannot stop here")
+		else t = T("Ouverte : vos véhicules s'y arrêtent sans péage", "Open: your vehicles stop here without a toll") end
+	end
+	if not own then t = t .. T(" (règle de l'entreprise)", " (company rule)") end
+	return t
+end
+
+-- the rule line of a station window: what a stop there costs the other companies (nil when not a station)
 local function shareInfo(e, owner)
 	local okg, sg = pcall(R.stationGroupOf, e)
 	if not (okg and sg) then return nil end
 	local okk, key = pcall(R.sgKey, sg)
-	if not okk then return nil end
-	local fee = C.shareFee(U.shares, key)
-	if fee <= 0 then fee = nil end
-	local mine = U.myCo ~= nil and U.coMap and U.coMap[owner] == U.myCo
-	return { key = key, fee = fee or 0, text = shareText(mine, fee), canEdit = mine }
-end
-
--- the choices of the share list: not shared, then the usual fees (and the fee in force, when it is another one)
-local function shareChoices(current)
-	local fees, listed = {}, false
-	for _, f in ipairs(SHARE_FEES) do
-		fees[#fees + 1] = f
-		if f == current then listed = true end
-	end
-	if not listed and type(current) == "number" and current > 0 then fees[#fees + 1] = current; table.sort(fees) end
-	return fees
+	if not (okk and type(key) == "string") then return nil end
+	local co = U.coMap and U.coMap[owner]
+	pcall(U.pollRules)
+	local rule, fee, own = U.stationRuleOf(key, co)
+	if not rule then return nil end
+	local mine = U.myCo ~= nil and co == U.myCo
+	-- (a station known by its entity id only, which may be another station on another game: no setting of its own for it, the
+	-- bridge refuses it, see its 'share' event. MPFEVER_IDKEYCHECK=0: as before)
+	local idKey = key:sub(1, 3) == "id:" and os.getenv("MPFEVER_IDKEYCHECK") ~= "0"
+	return { key = key, co = co, rule = rule, fee = fee, own = own, mine = mine, text = shareText(mine, rule, fee, own), canEdit = mine and not idKey }
 end
 
 -- the station group of what the line tool points at (a station, its construction, its group, or the street of a street stop)
@@ -417,18 +499,23 @@ local function sharedGroupOf(e)
 	return found
 end
 
--- the fee another company's station costs this machine's company per stop: nil when the station is not another company's,
--- 0 when it is not shared
-local function foreignFee(sg)
+-- the rule of another company's station for this machine's company: rule, fee per stop, whether it is the station's own setting;
+-- nil when the station is not another company's (its key is read only when some station has a setting of its own)
+local function foreignRule(sg)
 	if not (U.coMap and type(sg) == "number") then return nil end
 	local owner = ownerOf(sg)
-	if not (owner and U.coMap[owner]) or U.coMap[owner] == U.myCo then return nil end
-	local okk, key = pcall(R.sgKey, sg)
-	if not okk then return nil end
-	return C.shareFee(U.shares, key)
+	local co = owner and U.coMap[owner]
+	if not co or co == U.myCo then return nil end
+	local key = nil
+	if U.stationRules and next(U.stationRules) ~= nil then
+		local okk, k = pcall(R.sgKey, sg)
+		if okk then key = k end
+	end
+	return U.stationRuleOf(key, co)
 end
 
--- The line windows and tooltips name the stations: another company's station shows what a stop there costs
+-- The line windows and tooltips name the stations: another company's station shows its rule (0.5.2: open, a toll per stop, or
+-- private; before, its fee or "not shared")
 local function installStopFees()
 	if U.stopFeesInstalled then return end
 	U.stopFeesInstalled = true
@@ -438,10 +525,11 @@ local function installStopFees()
 			if type(name) ~= "string" or type(e) ~= "number" then return name end
 			local okc, isSg = pcall(function() return api.engine.getComponent(e, api.type.ComponentType.STATION_GROUP) ~= nil end)
 			if not (okc and isSg) then return name end
-			local okf, fee = pcall(foreignFee, e)
-			if not okf or fee == nil then return name end
-			if fee > 0 then return name .. T("  [partagée : ", "  [shared: ") .. money(fee) .. T(" par arrêt]", " per stop]") end
-			return name .. T("  [non partagée]", "  [not shared]")
+			local okf, rule, fee = pcall(foreignRule, e)
+			if not okf or rule == nil then return name end
+			if rule == "toll" then return name .. T("  [péage : ", "  [toll: ") .. money(fee) .. T(" par arrêt]", " per stop]") end
+			if rule == "private" then return name .. T("  [privée]", "  [private]") end
+			return name .. T("  [ouverte]", "  [open]")
 		end
 	end
 	local okE, eu = pcall(ug_require, "/scripts/entity_util.tl")
@@ -488,9 +576,9 @@ local function installTerrainWatch()
 	log("terrain tools: watched (the other games stay behind this one while a terrain tool is in hand)")
 end
 
--- The line tool lets a company pick only its own stations (entity_util.isOwnedByPlayerOrNotOwned): a station another company
--- shares (every player's station is shared at the smallest fee unless its company stops sharing it) can be picked too. The fee
--- is booked by the game-script bridge at every stop.
+-- The line tool lets a company pick only its own stations (entity_util.isOwnedByPlayerOrNotOwned): a station of another company
+-- that is not private (0.5.2: open by default, or a toll per stop; its own setting or its company's rule) can be picked too. The
+-- toll is booked by the game-script bridge at every stop.
 local function installShareSelect()
 	if U.shareSelectInstalled then return end
 	local okE, eu = pcall(ug_require, "/scripts/entity_util.tl")
@@ -514,23 +602,38 @@ local function installShareSelect()
 			v = false
 			local sg = sharedGroupOf(entity)
 			if sg then
-				local fee = foreignFee(sg)
-				v = fee ~= nil and fee > 0
+				local rule = foreignRule(sg)
+				v = rule ~= nil and rule ~= "private"
 			end
-			-- a street the tool points at: a shared stop by that street (its key starts with the street's ends)
+			-- a street the tool points at: a stop by that street of another company that is not private (0.5.2: every stop on it,
+			-- by its rule; before, only those with a fee of their own), or one whose setting's key starts with the street's ends
 			if not v then
 				pcall(function()
 					local edge = api.engine.getComponent(entity, api.type.ComponentType.BASE_EDGE)
 					if not edge then return end
+					-- (copied at once: a component read is only valid until the next one)
+					local n0, n1, objs = edge.node0, edge.node1, {}
+					for _, o in ipairs(edge.objects or {}) do objs[#objs + 1] = o[1] or o.entity end
+					for _, oe in ipairs(objs) do
+						if not v and type(oe) == "number" and api.engine.getComponent(oe, api.type.ComponentType.STATION) then
+							local g = R.stationGroupOf(oe)
+							local rule = g and foreignRule(g)
+							if rule and rule ~= "private" then v = true end
+						end
+					end
+					if v then return end
 					local function r(x) return string.format("%.0f", x or 0) end
 					local function np(n) local c = api.engine.getComponent(n, api.type.ComponentType.BASE_NODE); return c and c.position end
-					local p0, p1 = np(edge.node0), np(edge.node1)
-					if not (p0 and p1) then return end
-					local a, b = r(p0.x) .. "," .. r(p0.y), r(p1.x) .. "," .. r(p1.y)
+					local p0 = np(n0)
+					local q0 = p0 and { x = p0.x, y = p0.y }
+					local p1 = np(n1)
+					local q1 = p1 and { x = p1.x, y = p1.y }
+					if not (q0 and q1) then return end
+					local a, b = r(q0.x) .. "," .. r(q0.y), r(q1.x) .. "," .. r(q1.y)
 					if a > b then a, b = b, a end
 					local prefix = "e:" .. a .. "-" .. b .. ":"
-					for k, fee in pairs(U.shares or {}) do
-						if fee > 0 and k:sub(1, #prefix) == prefix then v = true end
+					for k, o in pairs(U.stationRules or {}) do
+						if o.rule ~= "private" and k:sub(1, #prefix) == prefix then v = true end
 					end
 				end)
 			end
@@ -556,12 +659,14 @@ U.depotInfo = function(e, owner)
 	end)
 	if not (ok and key) then return nil end
 	local mine = U.myCo ~= nil and owner ~= nil and U.coMap and U.coMap[owner] == U.myCo
-	return { key = key, canEdit = mine }
+	-- (co: the depot's company, whose rule for its depots applies when the depot has no setting of its own, 0.5.2)
+	return { key = key, canEdit = mine, co = owner ~= nil and U.coMap and U.coMap[owner] or nil }
 end
 
-local function sendShare(key, fee)
+-- a station's setting (the bridge's 'share' event, 0.5.2): rule "co" (its company's rule), "open", "private" or "toll" (fee)
+local function sendShare(key, rule, fee)
 	local ok, err = pcall(function()
-		api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd("mpfever", "mpfever", "share", { key = key, fee = fee }))
+		api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd("mpfever", "mpfever", "share", { key = key, rule = rule, fee = fee or 0 }))
 	end)
 	if not ok then log("companies: share request failed: " .. tostring(err)) end
 end
@@ -640,22 +745,27 @@ local function installOwnerLine(react, builtin)
 		return
 	end
 	local Wrap = react.RegisterRecipe("MPFeverOwnerLine", function(p)
-		-- the fee changes while the window is open (this player's choice, or the owner's): read again from shares.txt
+		-- the station's rule changes while the window is open (this player's choice, the owner's, its company's rule): read again
+		-- from shares.txt and eco.txt
 		local ver = react.useState(U.shareVersion or 0)
-		local pending = react.useState(nil)   -- the fee just chosen, until every game has applied it: { fee, at }
+		local rver = react.useState(U.rulesVersion or 0)
+		local pending = react.useState(nil)   -- the choice just made, until every game has applied it: { v, at }
 		react.onStepTimer(function()
 			local v = U.shareVersion or 0
 			if ver:old() ~= v then ver:set(v) end
+			if p.shareKey or p.depotKey then pcall(U.pollRules) end
+			local rv = U.rulesVersion or 0
+			if rver:old() ~= rv then rver:set(rv) end
 			local pd = pending:old()
-			if pd and (C.shareFee(U.shares, p.shareKey) == pd.fee or os.clock() - pd.at > 10) then pending:set(nil) end
+			if pd and (U.stationChoice(p.shareKey) == pd.v or os.clock() - pd.at > 10) then pending:set(nil) end
 		end, 0.5)
-		-- a depot's rule: private, open, open for a toll per vehicle (mpfever_eco.lua)
+		-- a depot's rule: its company's rule (0.5.2), private, open, open for a toll per vehicle (mpfever_eco.lua)
 		local depotNow = react.useState(nil)
 		react.onStepTimer(function()
 			if not p.depotKey then return end
 			pcall(U.pollEco)
 			local d = U.eco and U.eco.depots and U.eco.depots[p.depotKey]
-			local v = d and (d.rule == "toll" and ("toll:" .. tostring(d.toll)) or d.rule) or "private"
+			local v = d and (d.rule == "toll" and ("toll:" .. tostring(d.toll)) or d.rule) or "co"
 			if depotNow:old() ~= v then depotNow:set(v) end
 		end, 1)
 		local inner = nil
@@ -663,45 +773,69 @@ local function installOwnerLine(react, builtin)
 		elseif p.innerBuiltin then inner = p.innerBuiltin({ entity = p.innerParam and p.innerParam.keyEntity }) end
 		local children = { builtin.TextView { meta = { class = "font-scale-body" }, text = p.ownerText } }
 		if p.shareKey then
-			local fee = C.shareFee(U.shares, p.shareKey)  -- (absent from the list: shared at the default fee)
-			if p.shareEdit then
-				-- the owner chooses the fee per stop of the other companies' vehicles (0: not shared)
+			local rule, fee, own = U.stationRuleOf(p.shareKey, p.shareCo)
+			if rule and p.shareEdit then
+				-- the owner chooses the station's setting for the other companies' vehicles (0.5.2): its company's rule (shown
+				-- in the item), open, private, or a toll per stop
 				local pd = pending:old()
-				local shown = pd and pd.fee or fee
+				local shown = pd and pd.v or U.stationChoice(p.shareKey)
+				local cr, cf = U.stationRuleOf(nil, p.shareCo)
+				local function itemText(v)
+					if v == "co" then return C.Tf("Règle de l'entreprise : %s", "Company rule: %s", itemText(cr == "toll" and ("toll:" .. cf) or cr)) end
+					if v == "open" then return T("Ouverte, sans péage", "Open, no toll") end
+					if v == "private" then return T("Privée (vos lignes seulement)", "Private (your lines only)") end
+					return money(tonumber(tostring(v):match("^toll:(%d+)$")) or 0) .. T(" par arrêt", " per stop")
+				end
+				local choices = { "co", "open", "private" }
+				local listed = false
+				for _, f in ipairs(SHARE_FEES) do
+					choices[#choices + 1] = "toll:" .. f
+					if shown == "toll:" .. f then listed = true end
+				end
+				-- (a toll set before, not in the list: shown too)
+				if not listed and tostring(shown):find("^toll:") then choices[#choices + 1] = shown end
 				local items = {}
-				for _, f in ipairs(shareChoices(shown)) do
-					items[#items + 1] = builtin.ComboBoxItem {
-						value = f,
-						content = builtin.TextView { meta = { class = "font-scale-body" },
-							text = f == 0 and T("Non partagée", "Not shared") or (money(f) .. T(" par arrêt", " per stop")) },
-					}
+				for _, v in ipairs(choices) do
+					items[#items + 1] = builtin.ComboBoxItem { value = v, content = builtin.TextView { meta = { class = "font-scale-body" }, text = itemText(v) } }
 				end
 				local key = p.shareKey
 				children[#children + 1] = builtin.BoxLayout { orientation = builtin.type.Orientation.Horizontal, children = {
-					builtin.TextView { meta = { class = "font-scale-body" }, text = T("Partage avec les autres entreprises :  ", "Sharing with the other companies:  ") },
+					builtin.TextView { meta = { class = "font-scale-body" }, text = T("Autres entreprises :  ", "Other companies:  ") },
 					builtin.ComboBox {
 						value = shown,
 						items = items,
 						onValueChange = function(v)
-							v = tonumber(v)
 							if v == nil or v == shown then return end
-							sendShare(key, v)
-							pending:set({ fee = v, at = os.clock() })
+							local n = tonumber(tostring(v):match("^toll:(%d+)$"))
+							sendShare(key, n and "toll" or tostring(v), n or 0)
+							pending:set({ v = v, at = os.clock() })
 						end,
 					},
 				} }
 				local note
 				if pd then note = T("Modification en cours pour tous les joueurs…", "Applying for every player…")
-				elseif shown > 0 then note = T("Leurs véhicules paient ce montant à chaque arrêt ici ; vos lignes s'y arrêtent gratuitement.", "Their vehicles pay this at every stop here; your own lines stop for free.")
-				else note = T("Les autres entreprises ne peuvent pas s'arrêter ici.", "The other companies cannot stop here.") end
+				elseif rule == "toll" then note = T("Leurs véhicules paient ce montant à chaque arrêt ici ; vos lignes s'y arrêtent gratuitement.", "Their vehicles pay this at every stop here; your own lines stop for free.")
+				elseif rule == "private" then
+					local pf = U.privateFee()
+					note = pf and C.Tf("Les autres entreprises ne peuvent pas l'ajouter à leurs lignes ; celles qui s'y arrêtent déjà paient %s par arrêt.", "The other companies cannot add it to their lines; those already stopping here pay %s per stop.", money(pf))
+						or T("Les autres entreprises ne peuvent pas s'arrêter ici.", "The other companies cannot stop here.")
+				else note = T("Les autres entreprises peuvent s'y arrêter sans péage.", "The other companies may stop here without a toll.") end
 				children[#children + 1] = builtin.TextView { meta = { class = "font-scale-body" .. (pd and ", info" or "") }, text = note }
-			else
-				children[#children + 1] = builtin.TextView { meta = { class = "font-scale-body" }, text = shareText(false, fee) }
+			elseif rule then
+				children[#children + 1] = builtin.TextView { meta = { class = "font-scale-body" }, text = shareText(p.shareMine, rule, fee, own) }
 			end
 		end
 		if p.depotKey then
-			local cur = depotNow:old() or "private"
+			local cur = depotNow:old() or "co"
 			local function label(v)
+				if v == "co" then
+					-- (the depot's company's rule for its depots, 0.5.2)
+					local dc = U.rules and U.rules.depotCo and U.rules.depotCo[p.depotCo]
+					local r = dc and (dc.rule == "toll" and ("toll:" .. tostring(dc.toll)) or dc.rule)
+						or (os.getenv("MPFEVER_OPENDEFAULT") ~= "0" and "open" or "private")
+					if r == "co" then r = "open" end
+					return C.Tf("Règle de l'entreprise : %s", "Company rule: %s", label(r))
+				end
 				if v == "private" then return T("Privé : vos véhicules seulement", "Private: your vehicles only") end
 				if v == "open" then return T("Ouvert aux autres entreprises, gratuit", "Open to the other companies, free") end
 				local n = tonumber(v:match("^toll:(%d+)$"))
@@ -709,7 +843,7 @@ local function installOwnerLine(react, builtin)
 			end
 			if p.depotEdit then
 				local items = {}
-				for _, v in ipairs({ "private", "open", "toll:500", "toll:1000", "toll:2000", "toll:5000", "toll:10000" }) do
+				for _, v in ipairs({ "co", "private", "open", "toll:500", "toll:1000", "toll:2000", "toll:5000", "toll:10000" }) do
 					items[#items + 1] = builtin.ComboBoxItem { value = v, content = builtin.TextView { meta = { class = "font-scale-body" }, text = label(v) } }
 				end
 				local key = p.depotKey
@@ -749,8 +883,8 @@ local function installOwnerLine(react, builtin)
 		w.builtin = nil
 		w.param = { innerRecipe = r.recipe, innerBuiltin = r.builtin, innerParam = r.param, ownerText = txt,
 			shareText = share and share.text or nil, shareKey = share and share.key or nil, shareFee = share and share.fee or nil,
-			shareEdit = share and share.canEdit or nil,
-			depotKey = depot and depot.key or nil, depotEdit = depot and depot.canEdit or nil,
+			shareEdit = share and share.canEdit or nil, shareCo = share and share.co or nil, shareMine = share and share.mine or nil,
+			depotKey = depot and depot.key or nil, depotEdit = depot and depot.canEdit or nil, depotCo = depot and depot.co or nil,
 			keyEntity = type(r.param) == "table" and r.param.keyEntity or nil, meta = type(r.param) == "table" and r.param.meta or nil }
 		return w
 	end
@@ -2224,6 +2358,8 @@ local function tick(pendingState)
 		if not okt then U.terrainWatch = true; log("terrain tools: not watched: " .. tostring(errt)) end
 	end
 	pcall(pollShares)
+	-- (the companies' rules for their stations and depots: the line tool's pick and the names of the stations, twice a second)
+	if U.coMap then pcall(U.pollRules) end
 	if U.coMap and not U.shareSelectInstalled then
 		local oks, errs = pcall(installShareSelect)
 		if not oks then U.shareSelectInstalled = true; log("companies: share pick not installed: " .. tostring(errs)) end

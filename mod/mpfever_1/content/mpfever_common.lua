@@ -1702,8 +1702,9 @@ C.OWNER_ARGS = {
 	makeLineUpdateCmd = { 1 }, makeLineDestroyCmd = { 1 }, makeEntitySetNameCmd = { 1 }, makeEntitySetColorCmd = { 1 },
 }
 
--- Companies mode: a station built by a player is shared with the other companies from the start, at the smallest fee; its
--- company may change the fee or stop sharing it (fee 0, kept in the registry: a station absent from it is shared by default)
+-- Companies mode: the smallest toll per stop of a station (the rules of the stations are read by mpfever_eco.lua's stationRule
+-- since 0.5.2: open by default, a toll or private by its company's rule or its own setting). C.shareFee is how 0.5.1 read them
+-- (a station absent from reg.shares shared for this fee, 0 = not shared): kept for the bridge when mpfever_eco.lua is missing.
 C.SHARE_DEFAULT = 100
 function C.shareFee(shares, key)
 	local f = shares and key and shares[key]

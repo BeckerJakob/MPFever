@@ -476,9 +476,12 @@ static void LoadHudShare()
     CloseHandle(f);
     long next = 1 - g_hudShareCur;
     long n = 0;
-    for (DWORD k = 0; k < got && n < 4096; ) {
+    // (0.5.2: a list longer than the table, or than the buffer, is said in the log: the stations past it stayed hidden silently)
+    bool truncated = got >= sizeof(buf) - 1;
+    for (DWORD k = 0; k < got; ) {
         while (k < got && (buf[k] < '0' || buf[k] > '9')) k++;
         if (k >= got) break;
+        if (n >= 4096) { truncated = true; break; }
         long v = 0;
         while (k < got && buf[k] >= '0' && buf[k] <= '9') v = v * 10 + (buf[k++] - '0');
         g_hudShare[next][n++] = (i32)v;
@@ -488,13 +491,17 @@ static void LoadHudShare()
     g_hudShareN[next] = n;
     _InterlockedExchange(&g_hudShareCur, next);
     static long shown = 0;
-    if (shown++ < 20) { Buf b; b.str("shared stations shown on the map: ").dec(n).str(" entities"); LogLine(b); }
+    if (shown++ < 20 || truncated) { Buf b; b.str("shared stations shown on the map: ").dec(n).str(" entities").str(truncated ? " (TRUNCATED: the list is longer)" : ""); LogLine(b); }
 }
 
 // Open tracks (one company per player, 0.5.0): the tracks a company opened to the others (its rule "open" or "toll", or a gone
 // company's) are listed by the mod in open_net.txt, their segments and nodes as this game's entities ("opennet <token>" in the
 // control file); the builders' owner filter (IsOwnedByOtherPlayer, see IsOwnedDetour) lets the other companies connect to them.
-static i32 g_openNet[2][32768];
+// 0.5.2: tracks are open when their company set nothing, so the list holds every other company's tracks in every companies game:
+// room for 131072 entities (32768 before) and the file read in a buffer that holds them, and a list cut short is said in the log
+// (before, it was cut silently, and a number cut in the middle of the buffer made the list unsorted, so ignored as a whole).
+#define OPEN_NET_MAX 131072
+static i32 g_openNet[2][OPEN_NET_MAX];
 static volatile long g_openNetN[2] = { 0, 0 };
 static volatile long g_openNetCur = 0;
 static long g_openNetTok = 0;
@@ -505,15 +512,19 @@ static void LoadOpenNet()
     PathOf(path, "open_net.txt");
     HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
     if (f == INVALID_HANDLE_VALUE) return;
-    static char buf[400000];
+    static char buf[OPEN_NET_MAX * 12];
     DWORD got = 0;
     ReadFile(f, buf, sizeof(buf) - 1, &got, 0);
     CloseHandle(f);
     long next = 1 - g_openNetCur;
     long n = 0;
-    for (DWORD k = 0; k < got && n < 32768; ) {
+    bool truncated = got >= sizeof(buf) - 1;
+    // (a buffer filled up may end in the middle of a number: that last one is left out)
+    if (truncated) while (got > 0 && buf[got - 1] >= '0' && buf[got - 1] <= '9') got--;
+    for (DWORD k = 0; k < got; ) {
         while (k < got && (buf[k] < '0' || buf[k] > '9')) k++;
         if (k >= got) break;
+        if (n >= OPEN_NET_MAX) { truncated = true; break; }
         long v = 0;
         while (k < got && buf[k] >= '0' && buf[k] <= '9') v = v * 10 + (buf[k++] - '0');
         g_openNet[next][n++] = (i32)v;
@@ -525,7 +536,7 @@ static void LoadOpenNet()
     g_openNetN[next] = n;
     _InterlockedExchange(&g_openNetCur, next);
     static long shown = 0;
-    if (shown++ < 20) { Buf b; b.str("open tracks of the other companies: ").dec(n).str(" entities").str(sorted ? "" : " (NOT SORTED: ignored)"); LogLine(b); }
+    if (shown++ < 20 || truncated) { Buf b; b.str("open tracks of the other companies: ").dec(n).str(" entities").str(sorted ? "" : " (NOT SORTED: ignored)").str(truncated ? " (TRUNCATED: the list is longer)" : ""); LogLine(b); }
 }
 static bool InOpenNet(i32 e)
 {

@@ -1,6 +1,6 @@
 -- MPFever companies' economy (0.5.0), in the "one company per player" mode: several players in a company (mixed modes),
 -- joining, leaving and merging companies, bankruptcy with an auction of the bankrupt company's assets, and the owners' rules
--- for their tracks and depots (private, open, open with a toll).
+-- for their tracks, stations and stops, and depots (private, open, open with a toll).
 --
 -- Everything here runs in the simulation half of the bridge, on every game at the same game time, from the state saved with
 -- the game (the companies registry st.co, see mpfever_co.lua) and the stamped events of the players (handleEvent "mpfever"):
@@ -17,7 +17,17 @@
 --   co_month        {month, debt}        the host's look at a new month: the companies in debt (their money below zero on the
 --                                        host's game, which every game's money follows: a game's own balance may lag a step)
 --   co_track_rule   {rule, toll}         a company's rule for its tracks: "private", "open", "toll"
---   co_depot_rule   {key, rule, toll}    a company's rule for one of its depots
+--   co_depot_rule   {key, rule, toll}    a company's rule for one of its depots (its own setting; "co": its company's rule)
+--   co_depot_default {rule, toll}        a company's rule for its depots, the depots without a setting of their own (0.5.2)
+--   co_stop_rule    {rule, fee, reset}   a company's rule for its stations and stops (0.5.2); reset: its stations' own settings
+--                                        go, every one of them follows the company's rule
+--
+-- The rules (0.5.2): tracks, stations and stops, depots are open to the other companies when their company set nothing (free:
+-- before, tracks and depots were private and a station without a setting was shared for $100 per stop). A station's or a
+-- depot's own setting (its window, the 'share' event of the bridge for a station) comes before its company's rule. Any member
+-- of a company may change its rules. What a savegame already holds is kept: a station's fee of 0.5.1 (reg.shares) is its own
+-- setting, 0 = private. MPFEVER_OPENDEFAULT=0: as before (tracks and depots private, a station shared for $100 when nothing
+-- is set).
 --
 -- param.mpfCo is the sender's company and param.mpfFrom the sender (its name, "#n" for a player who joined), both added by the
 -- bridge when the event is applied. What happens in the game's world (owners, money, demolitions) goes through commands sent from
@@ -28,6 +38,7 @@ local E = {}
 E.EVENTS = {
 	co_rules = true, co_join_ask = true, co_join_answer = true, co_leave = true, co_cancel = true, co_merge_ask = true,
 	co_merge_answer = true, co_bid = true, co_lot_close = true, co_track_rule = true, co_depot_rule = true, co_test = true, co_month = true,
+	co_stop_rule = true, co_depot_default = true,
 }
 E.BANKRUPT_DEFAULT = 12        -- months in debt
 E.BANKRUPT_CHOICES = { 0, 3, 6, 12, 24 }
@@ -35,6 +46,17 @@ E.LOT_SECONDS = tonumber(os.getenv("MPFEVER_LOTSECONDS") or "") or 60   -- a lot
 E.LAST_BID_SECONDS = math.min(15, E.LOT_SECONDS)                         -- and that long after its last bid
 E.MIN_RAISE = 0.05             -- a bid beats the best one by 5 % at least
 E.TOLL_DEFAULT = 1000
+-- (a station's toll per stop when its company chooses one without an amount: the smallest of the station window, as
+-- C.SHARE_DEFAULT in mpfever_common.lua)
+E.STOP_FEE_DEFAULT = 100
+-- what nothing set means (see the header): read once, every game is started with the same value (MPFEVER_OPENDEFAULT=0: as
+-- before)
+E.OPEN_DEFAULT = os.getenv("MPFEVER_OPENDEFAULT") ~= "0"
+-- A station its company makes private while the lines of other companies already stop there: the engine keeps their stops (the
+-- owner's choice cannot take them out of another company's lines), and the line check only refuses new ones. Those lines pay
+-- E.STOP_FEE_DEFAULT per stop there until their company takes the stop out (before, they stopped there for free, a way around
+-- every fee). MPFEVER_PRIVATEFEE=0: as before.
+E.PRIVATE_FEE = os.getenv("MPFEVER_PRIVATEFEE") ~= "0"
 E.RESERVE = { line = 50000, vehicle = 50000, station = 100000, depot = 50000 }
 
 -- (the game time and the bridge's helpers, given by the bridge at every call: see E.event and E.tick)
@@ -77,6 +99,12 @@ local function news(reg, t)
 end
 
 local function live(c) return c and not c.gone end
+
+-- (the registry's company by its number, without env: the rules are also read by the interface's half of the bridge)
+local function findCo(reg, id)
+	for _, c in ipairs(reg and reg.list or {}) do if c.id == id then return c end end
+	return nil
+end
 
 -- ---------------------------------------------------------------- what a company owns
 -- every entity a player entity owns (PlayerOwned), sorted (the same set on every game; the ids may differ)
@@ -285,6 +313,19 @@ local function demolish(env, c, lot)
 		.. #vehicles .. " vehicle(s) sold, " .. #cons .. " construction(s) demolished")
 end
 
+-- A station or a depot sold at the auction (or demolished) loses its own setting: a station the buyer gets follows the buyer's
+-- rule, not the rule the bankrupt company chose for it (and a demolished one leaves no setting behind under its key).
+-- MPFEVER_LOTRULES=0: as before (the setting stayed with the key).
+local function dropLotRule(reg, lot)
+	if os.getenv("MPFEVER_LOTRULES") == "0" or not lot then return end
+	if lot.kind == "station" then
+		if reg.stationRule then reg.stationRule[lot.key] = nil end
+		if reg.shares then reg.shares[lot.key] = nil end
+	elseif lot.kind == "depot" then
+		if reg.depots then reg.depots[lot.key] = nil end
+	end
+end
+
 local function sell(env, c, lot, winner, amount)
 	local ents, vehicles = lotEntities(env, c, lot)
 	local all = {}
@@ -343,6 +384,7 @@ local function closeLot(st, env)
 			demolish(env, c, lot)
 			news(reg, { kind = "lot_unsold", co = au.co, lot = au.idx, label = lot.label })
 		end
+		dropLotRule(reg, lot)
 	end
 	au.best, au.bidder, au.lastBidAt = nil, nil, nil
 	au.idx = au.idx + 1
@@ -377,18 +419,205 @@ function E.tick(st, env)
 	return changed
 end
 
--- the rule of a company for its tracks: { rule = "private" | "open" | "toll", toll = n }; a gone company's tracks are open
+-- ---------------------------------------------------------------- the rules (tracks, stations and stops, depots)
+-- Read the same way by the simulation (fees, tolls, the bridge's checks of the commands) and by the interface's half of the
+-- bridge (eco.txt, shares.txt, the map's icons, the open tracks): what nothing set means is decided here, when read, so that no
+-- savegame needs to be changed and every game reads the same.
+
+-- the rule of a company for its tracks: { rule = "private" | "open" | "toll", toll = n }; a gone company's tracks are open, and
+-- so are those of a company that set nothing (0.5.2; MPFEVER_OPENDEFAULT=0: private as before)
 function E.trackRule(reg, c)
-	if not c then return { rule = "private" } end
-	if c.gone then return { rule = "open" } end
+	local default = E.OPEN_DEFAULT and { rule = "open", toll = E.TOLL_DEFAULT } or { rule = "private" }
+	if not c then return default end
+	if c.gone then return { rule = "open", toll = E.TOLL_DEFAULT } end
 	local r = reg.track and reg.track[tostring(c.id)]
-	return r or { rule = "private" }
+	return r or default
 end
 
--- the rule of a depot (its key, see depotKey): the same three; private when nothing was set
-function E.depotRule(reg, key)
+-- the rule of a company for its depots without a setting of their own (co_depot_default): { rule, toll }; open when nothing
+-- was set (0.5.2; MPFEVER_OPENDEFAULT=0: private as before), a gone company's depots are open
+function E.depotCoRule(reg, c)
+	if E.OPEN_DEFAULT and c and c.gone then return { rule = "open", toll = E.TOLL_DEFAULT } end
+	local r = c and reg and reg.depotCo and reg.depotCo[tostring(c.id)]
+	if r then return r end
+	return E.OPEN_DEFAULT and { rule = "open", toll = E.TOLL_DEFAULT } or { rule = "private", toll = E.TOLL_DEFAULT }
+end
+
+-- the rule of a depot (its key, see depotKey) of company ownerCo: its own setting (its window: reg.depots, private included since
+-- 0.5.2), else its company's rule
+function E.depotRule(reg, key, ownerCo)
+	local c = ownerCo and findCo(reg, ownerCo) or nil
+	if E.OPEN_DEFAULT and c and c.gone then return { rule = "open", toll = E.TOLL_DEFAULT } end
 	local r = reg and reg.depots and reg.depots[key]
-	return r or { rule = "private" }
+	if r then return r end
+	return E.depotCoRule(reg, c)
+end
+
+-- the rule of a company for its stations and stops (co_stop_rule): { rule, fee per stop }; open when nothing was set (0.5.2;
+-- MPFEVER_OPENDEFAULT=0: a toll of $100 per stop as before), a gone company's stations are open. The fee is kept when the rule
+-- is not a toll: the amount the interface proposes when the toll is chosen again.
+function E.stopRule(reg, c)
+	if E.OPEN_DEFAULT and c and c.gone then return { rule = "open", fee = E.STOP_FEE_DEFAULT } end
+	local r = c and reg and reg.stops and reg.stops[tostring(c.id)]
+	if r then return r end
+	return E.OPEN_DEFAULT and { rule = "open", fee = E.STOP_FEE_DEFAULT } or { rule = "toll", fee = E.STOP_FEE_DEFAULT }
+end
+
+-- (a rule as the fees read it: a toll of 0 is open, anything unknown is open)
+local function stopNorm(rule, fee)
+	fee = math.floor(tonumber(fee) or 0)
+	if rule == "toll" then
+		if fee > 0 then return "toll", fee end
+		return "open", 0
+	end
+	if rule == "private" then return "private", 0 end
+	return "open", 0
+end
+
+-- The rule of a station (its key, see R.sgKey) of company ownerCo for the other companies: rule ("private" | "open" | "toll"),
+-- fee per stop, and whether it is the station's own setting (else its company's rule). nil when the station belongs to no company
+-- (a town's stop: free for everyone). In this order: a gone company's stations are open; the station's own setting (its window:
+-- reg.stationRule, or the fee of 0.5.1 and before in reg.shares, 0 = private); its company's rule (E.stopRule). key may be nil
+-- when no station has a setting of its own (the caller then needs not read it).
+function E.stationRule(reg, key, ownerCo)
+	if not ownerCo then return nil, 0, false end
+	local c = findCo(reg, ownerCo)
+	if E.OPEN_DEFAULT and (not c or c.gone) then return "open", 0, false end
+	local o = key and reg.stationRule and reg.stationRule[key]
+	if type(o) == "table" then
+		local rule, fee = stopNorm(o.rule, o.fee)
+		return rule, fee, true
+	end
+	local n = key and reg.shares and tonumber(reg.shares[key])
+	if n then
+		if n > 0 then return "toll", math.floor(n), true end
+		return "private", 0, true
+	end
+	local r = E.stopRule(reg, c)
+	local rule, fee = stopNorm(r.rule, r.fee)
+	return rule, fee, false
+end
+
+-- what a stop of a vehicle of company lineCo at a station of company ownerCo costs: nil when nothing (its own company's
+-- station, a town's, an open one); a private one its line already stops at costs E.STOP_FEE_DEFAULT (see E.PRIVATE_FEE)
+function E.stopFee(reg, key, ownerCo, lineCo)
+	if not ownerCo or ownerCo == lineCo then return nil end
+	local rule, fee = E.stationRule(reg, key, ownerCo)
+	if rule == "toll" then return fee end
+	if rule == "private" and E.PRIVATE_FEE then return E.STOP_FEE_DEFAULT end
+	return nil
+end
+
+-- whether a stop at some company's station may cost something (a company's rule or a station's own setting that is a toll, or
+-- private when those stops pay): when none does, the fees look at no line
+function E.anyStopFee(reg)
+	local function costs(rule, fee)
+		if rule == "toll" then return (tonumber(fee) or 0) > 0 end
+		return rule == "private" and E.PRIVATE_FEE
+	end
+	for _, c in ipairs(reg.list or {}) do
+		local r = E.stopRule(reg, c)
+		if costs(r.rule, r.fee) then return true end
+	end
+	for _, o in pairs(reg.stationRule or {}) do
+		if type(o) == "table" and costs(o.rule, o.fee) then return true end
+	end
+	for _, n in pairs(reg.shares or {}) do
+		if (tonumber(n) or 0) > 0 or E.PRIVATE_FEE then return true end
+	end
+	return false
+end
+
+-- The stops of the other companies' vehicles at a company's stations, every 5 steps on the game time (the bridge's
+-- chargeShares books them): each line's stops at another company's station that cost something (E.stopFee), and each of its
+-- vehicles' next stop (a vehicle whose next stop moved on has left the stops in between). Returns the stops owed
+-- ({ from, to, fee, carrier }) and whether the saved state changed (reg.vstop: each vehicle's next stop at the last look).
+-- holder: a table kept between the calls (the bridge's SIM).
+-- 0.5.2 (MPFEVER_FEESCAN=0: as before, the same rules):
+--  * when no station of any company may cost anything (the usual case now, every station open), no line is looked at and
+--    reg.vstop is forgotten. Before, every stop of every line was read every 5 steps for nothing;
+--  * reg.vstop holds only the vehicles of the lines looked at, as they are now. Before, a vehicle sold stayed in it, and so
+--    did one whose line no longer stopped at a paying station: its next stop of long ago stayed, and when a station became
+--    paying again, its first look charged every stop between that old one and the present one, up to a whole round of the line;
+--  * a station's key (R.sgKey) is read at each look, and only when some station has a setting of its own. Before, it was kept
+--    for the whole game: a street stop's key changes when its street is split, the fees kept the old key while the line check
+--    and the windows read the new one, and a game that read it at another time (loaded later, or in another Lua state of the
+--    simulation) could charge differently.
+function E.stationFees(st, env, holder)
+	local reg = st.co
+	local fresh = os.getenv("MPFEVER_FEESCAN") ~= "0"
+	if fresh and not E.anyStopFee(reg) then
+		if reg.vstop ~= nil then reg.vstop = nil; return {}, true end
+		return {}, false
+	end
+	local needKey = not fresh or next(reg.stationRule or {}) ~= nil or next(reg.shares or {}) ~= nil
+	local keys = {}
+	if not fresh then
+		holder.sgKeys = holder.sgKeys or {}
+		keys = holder.sgKeys
+	end
+	local list = {}
+	for _, line in ipairs(env.R.entitiesWith("LINE")) do
+		-- (the stops' station groups copied at once: a component read is only valid until the next one)
+		local sgs = nil
+		pcall(function()
+			local lc = api.engine.getComponent(line, api.type.ComponentType.LINE)
+			if lc then
+				sgs = {}
+				for i = 1, #lc.stops do sgs[i] = lc.stops[i].stationGroup end
+			end
+		end)
+		local lineCo = sgs and env.CO.idOfEntity(reg, env.R.ownerOf(line))
+		if lineCo then
+			local stops, n = {}, #sgs
+			for i = 1, n do
+				local sg = sgs[i]
+				local ownerCo = env.CO.idOfEntity(reg, env.R.ownerOf(sg))
+				if ownerCo and ownerCo ~= lineCo then
+					local key = nil
+					if needKey then
+						key = keys[sg]
+						if not key then key = env.R.sgKey(sg); keys[sg] = key end
+					end
+					local fee = E.stopFee(reg, key, ownerCo, lineCo)
+					if fee then stops[i - 1] = { co = ownerCo, fee = fee } end
+				end
+			end
+			if next(stops) ~= nil then list[#list + 1] = { line = line, co = lineCo, n = n, stops = stops } end
+		end
+	end
+	if #list == 0 then
+		if fresh and reg.vstop ~= nil then reg.vstop = nil; return {}, true end
+		return {}, false
+	end
+	local was = reg.vstop or {}
+	local now = fresh and {} or was
+	local owed = {}
+	for _, l in ipairs(list) do
+		local okv, vehicles = pcall(api.engine.system.transportVehicleSystem.getLineVehicles, l.line)
+		for _, v in ipairs(okv and vehicles or {}) do
+			local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+			local idx = tv and tv.stopIndex
+			if tv and not l.carrier then l.carrier = env.journalCarrier(tv.carrier) end
+			if type(idx) == "number" and l.n > 0 then
+				local k = tostring(v)
+				local last = was[k]
+				if last ~= nil and last ~= idx then
+					-- the stops left since the last look: last, last+1, ... idx-1
+					local s, guard = last, 0
+					while s ~= idx and guard < l.n do
+						local f = l.stops[s]
+						if f then owed[#owed + 1] = { from = l.co, to = f.co, fee = f.fee, carrier = l.carrier } end
+						s = (s + 1) % l.n
+						guard = guard + 1
+					end
+				end
+				now[k] = idx
+			end
+		end
+	end
+	if fresh then reg.vstop = next(now) ~= nil and now or nil else reg.vstop = now end
+	return owed, true
 end
 
 -- Tolls: a train of a company that enters the tracks of a company whose rule is "toll" pays that company the toll, once each time it
@@ -479,10 +708,11 @@ function E.tolls(st, env)
 	return true
 end
 
--- a vehicle bought in (or sent to) another company's depot: allowed when that depot is open; returns allowed, toll
-function E.depotUse(reg, env, depot, co)
+-- a vehicle bought in (or sent to) another company's depot: allowed when that depot is open; returns allowed, toll. ownerCo: the
+-- depot's company (its rule for the depots without a setting of their own, 0.5.2)
+function E.depotUse(reg, env, depot, co, ownerCo)
 	local con = E.depotCon(depot)
-	local r = E.depotRule(reg, depotKey(con))
+	local r = E.depotRule(reg, depotKey(con), ownerCo)
 	if r.rule == "open" then return true, 0 end
 	if r.rule == "toll" then return true, math.max(0, math.floor(tonumber(r.toll) or E.TOLL_DEFAULT)) end
 	return false, 0
@@ -522,11 +752,38 @@ function E.merge(st, a, b, env)
 	a.gone = "merged"
 	a.mergedInto = b.id
 	if reg.track then reg.track[tostring(a.id)] = nil end
+	-- (its rules for its stations and depots go with it: they follow b's from now on. The settings of its own stations and depots
+	-- are kept, they are now b's (its window shows them, its "every station" choice clears them). MPFEVER_LOTRULES=0: as before,
+	-- the settings stayed a's)
+	if reg.stops then reg.stops[tostring(a.id)] = nil end
+	if reg.depotCo then reg.depotCo[tostring(a.id)] = nil end
+	if os.getenv("MPFEVER_LOTRULES") ~= "0" then
+		for _, o in pairs(reg.stationRule or {}) do if type(o) == "table" and o.co == a.id then o.co = b.id end end
+		for _, d in pairs(reg.depots or {}) do if type(d) == "table" and d.co == a.id then d.co = b.id end end
+	end
 	news(reg, { kind = "merged", co = a.id, into = b.id })
 	env.log("companies: company " .. a.id .. " merged into company " .. b.id .. ": " .. n .. " entities and " .. bal .. " money change hands")
 end
 
 -- ---------------------------------------------------------------- the players' events
+-- The own settings of company c's stations go (co_stop_rule with reset): every one of them follows the company's rule. The
+-- settings made since 0.5.2 name their company (reg.stationRule[key].co); those of 0.5.1 (reg.shares) are found by the keys of
+-- the company's stations, read only when there are some. Returns how many went.
+function E.dropStationRules(reg, env, c)
+	local n = 0
+	for k, o in pairs(reg.stationRule or {}) do
+		if type(o) == "table" and o.co == c.id then reg.stationRule[k] = nil; n = n + 1 end
+	end
+	if c.ent and (next(reg.shares or {}) ~= nil or next(reg.stationRule or {}) ~= nil) then
+		for _, sg in ipairs(stationsOf(env, c.ent)) do
+			local k = env.R.sgKey(sg)
+			if reg.shares and reg.shares[k] ~= nil then reg.shares[k] = nil; n = n + 1 end
+			if reg.stationRule and reg.stationRule[k] ~= nil then reg.stationRule[k] = nil; n = n + 1 end
+		end
+	end
+	return n
+end
+
 local function dropRequests(reg, key)
 	local keep = {}
 	for _, r in ipairs(reg.requests or {}) do if r.key ~= key then keep[#keep + 1] = r end end
@@ -687,14 +944,47 @@ function E.event(st, name, param, env)
 	elseif name == "co_depot_rule" then
 		if not live(mine) then return refuse("no company") end
 		local rule = tostring(param.rule)
-		if rule ~= "private" and rule ~= "open" and rule ~= "toll" then return refuse("rule " .. rule) end
+		if rule ~= "private" and rule ~= "open" and rule ~= "toll" and rule ~= "co" then return refuse("rule " .. rule) end
 		-- (only its own depots)
 		local ownerOk = false
 		for _, d in ipairs(depotsOf(env, mine.ent)) do if depotKey(d) == param.key then ownerOk = true end end
 		if not ownerOk then return refuse("not its depot") end
 		reg.depots = reg.depots or {}
-		reg.depots[tostring(param.key)] = rule ~= "private" and { rule = rule, toll = math.max(0, math.floor(tonumber(param.toll) or E.TOLL_DEFAULT)), co = mine.id } or nil
+		-- (0.5.2: "co" takes the depot's own setting away, it follows its company's rule; private is a setting of its own, since
+		-- the company's rule may be open. MPFEVER_OPENDEFAULT=0: private is no setting, as before)
+		if rule == "co" or (rule == "private" and not E.OPEN_DEFAULT) then
+			reg.depots[tostring(param.key)] = nil
+		else
+			reg.depots[tostring(param.key)] = { rule = rule, toll = math.max(0, math.floor(tonumber(param.toll) or E.TOLL_DEFAULT)), co = mine.id }
+		end
 		env.log("companies: company " .. mine.id .. " depot " .. tostring(param.key) .. ": " .. rule)
+	elseif name == "co_depot_default" then
+		-- a company's rule for its depots (the depots without a setting of their own): any of its players may change it
+		if not live(mine) then return refuse("no company") end
+		local rule = tostring(param.rule)
+		if rule ~= "private" and rule ~= "open" and rule ~= "toll" then return refuse("rule " .. rule) end
+		local toll = math.max(0, math.floor(tonumber(param.toll) or E.TOLL_DEFAULT))
+		reg.depotCo = reg.depotCo or {}
+		reg.depotCo[tostring(mine.id)] = { rule = rule, toll = toll }
+		news(reg, { kind = "depot_rule", co = mine.id, rule = rule, toll = toll })
+		env.log("companies: company " .. mine.id .. " depots: " .. rule .. (rule == "toll" and (" " .. toll) or ""))
+	elseif name == "co_stop_rule" then
+		-- a company's rule for its stations and stops (those without a setting of their own; reset: all of them): any of its
+		-- players may change it
+		if not live(mine) then return refuse("no company") end
+		local rule = tostring(param.rule)
+		if rule ~= "private" and rule ~= "open" and rule ~= "toll" then return refuse("rule " .. rule) end
+		local fee = math.max(0, math.floor(tonumber(param.fee) or E.STOP_FEE_DEFAULT))
+		-- (a toll of nothing is no toll)
+		if rule == "toll" and fee <= 0 then rule = "open" end
+		reg.stops = reg.stops or {}
+		reg.stops[tostring(mine.id)] = { rule = rule, fee = fee > 0 and fee or E.STOP_FEE_DEFAULT }
+		local cleared = param.reset and E.dropStationRules(reg, env, mine) or 0
+		-- (the vehicles' next stops are read afresh: the fees count from the next look on, see E.stationFees)
+		reg.vstop = nil
+		news(reg, { kind = "stop_rule", co = mine.id, rule = rule, fee = reg.stops[tostring(mine.id)].fee, reset = param.reset and true or nil })
+		env.log("companies: company " .. mine.id .. " stations: " .. rule .. (rule == "toll" and (" " .. fee .. " per stop") or "")
+			.. (param.reset and (", " .. cleared .. " station setting(s) of its own cleared") or ""))
 	end
 end
 

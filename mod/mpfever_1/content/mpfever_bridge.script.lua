@@ -654,10 +654,11 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 				local e = a.args[i]
 				local owner = type(e) == "number" and CO.idOfEntity(R.CO, R.ownerOf(e)) or nil
 				if owner and owner ~= a.co then
-					-- (a depot its company opened to the others, 0.5.0: a vehicle bought there or sent there, for a toll or not)
+					-- (a depot its company opened to the others, 0.5.0: a vehicle bought there or sent there, for a toll or not; the
+					-- depot's own setting, else its company's rule for its depots, 0.5.2)
 					local open, fee = false, 0
 					if ((a.fn == "makeVehicleBuyCmd" and i == 2) or (a.fn == "makeVehicleSendToDepotCmd" and i == 3)) and C.eco() then
-						open, fee = C.eco().depotUse(R.CO, nil, e, a.co)
+						open, fee = C.eco().depotUse(R.CO, nil, e, a.co, owner)
 					end
 					if open then
 						if fee > 0 then toll = { to = owner, fee = fee } end
@@ -701,21 +702,29 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 			end)
 		end
 	end
-	-- companies mode: a line stops only at its company's stations and at the stations another company shares
+	-- companies mode: a line stops only at its company's stations and at the stations of another company that are not private
+	-- (0.5.2: the station's rule, its own setting or its company's, see mpfever_eco.lua's stationRule; before, its fee: 0 = not
+	-- shared, no fee = shared for $100. Without mpfever_eco.lua: as before)
 	if (a.fn == "makeLineCreateCmd" or a.fn == "makeLineUpdateCmd") and a.co and R.CO and R.CO.mode == "separate" and type(a.args) == "table" then
 		local line = a.args[a.fn == "makeLineCreateCmd" and 4 or 2]
 		local blocked = nil
+		local eco = C.eco()
 		pcall(function()
 			for _, stop in ipairs(type(line) == "table" and line.stops or {}) do
 				local sg = type(stop) == "table" and stop.stationGroup
 				if type(sg) == "number" and sg >= 0 then
 					local owner = CO.idOfEntity(R.CO, R.ownerOf(sg))
-					if owner and owner ~= a.co and C.shareFee(R.CO.shares, R.sgKey(sg)) <= 0 then blocked = sg break end
+					if owner and owner ~= a.co then
+						local key = R.sgKey(sg)
+						local private
+						if eco then private = eco.stationRule(R.CO, key, owner) == "private" else private = C.shareFee(R.CO.shares, key) <= 0 end
+						if private then blocked = sg break end
+					end
 				end
 			end
 		end)
 		if blocked then
-			result.err = "station " .. tostring(blocked) .. " belongs to another company and is not shared"
+			result.err = "station " .. tostring(blocked) .. " belongs to another company and is private"
 			log("action " .. tostring(a.uid) .. " " .. tostring(a.fn) .. " refused on every game: " .. result.err)
 			return result
 		end
@@ -1470,11 +1479,12 @@ local function contractProbe()
 	end
 end
 
--- Shared stations: the vehicles of a company stopping at a station another company shares pay the fee set by its owner (per stop),
--- booked to both companies. Every few steps: the lines using such stations (recomputed now and then), their vehicles' next stop
--- (a vehicle whose next stop moved on has left the stops in between). In the finance window (0.5.0): the line's company pays them
--- as station upkeep of its vehicles' carrier, the station's company earns them as revenue of that carrier (before: one sum per
--- company under « Other »). MPFEVER_FEEOTHER=1: as before.
+-- Shared stations: the vehicles of a company stopping at a station of another company whose rule is a toll pay the fee set by its
+-- owner (per stop), booked to both companies. Every few steps: the lines using such stations, their vehicles' next stop (a vehicle
+-- whose next stop moved on has left the stops in between): see mpfever_eco.lua's stationFees (0.5.2; it was here before, it reads
+-- the stations' rules there). In the finance window (0.5.0): the line's company pays them as station upkeep of its vehicles'
+-- carrier, the station's company earns them as revenue of that carrier (before: one sum per company under « Other »).
+-- MPFEVER_FEEOTHER=1: as before.
 -- the journal's carrier of a vehicle's carrier (api.type.enum.Carrier, as the game's achievements read it)
 SIM.journalCarrier = function(carrier)
 	local JC = api.type.JournalEntry.Carrier
@@ -1493,54 +1503,14 @@ local function chargeShares(st, dt)
 	-- and every game must book the fees at the same steps)
 	local stepNo = math.floor(gameTime() / STEP + 0.5)
 	if stepNo % 5 ~= 0 then return false end
-	SIM.sgKeys = SIM.sgKeys or {}
-	do
-		local list = {}
-		for _, line in ipairs(R.entitiesWith("LINE")) do
-			local lc = api.engine.getComponent(line, api.type.ComponentType.LINE)
-			local lineCo = CO.idOfEntity(reg, R.ownerOf(line))
-			if lc and lineCo then
-				local stops, n = {}, #lc.stops
-				for i = 1, n do
-					local sg = lc.stops[i].stationGroup
-					local key = SIM.sgKeys[sg]
-					if not key then key = R.sgKey(sg); SIM.sgKeys[sg] = key end
-					local fee = C.shareFee(reg.shares, key)
-					local ownerCo = fee > 0 and CO.idOfEntity(reg, R.ownerOf(sg)) or nil
-					if ownerCo and ownerCo ~= lineCo then stops[i - 1] = { co = ownerCo, fee = fee } end
-				end
-				if next(stops) ~= nil then list[#list + 1] = { line = line, co = lineCo, n = n, stops = stops } end
-			end
-		end
-		SIM.shareLines = list
+	-- (the same module on every game: without it, which never happens with MPFever's files in place, no fee is booked anywhere)
+	local eco = C.eco()
+	if not eco then
+		if not SIM.feesNoEco then SIM.feesNoEco = true; log("companies: station fees: mpfever_eco.lua is not loaded, no fee is booked") end
+		return false
 	end
-	if #SIM.shareLines == 0 then return false end
-	reg.vstop = reg.vstop or {}
-	local owed = {}
-	for _, l in ipairs(SIM.shareLines) do
-		local okv, vehicles = pcall(api.engine.system.transportVehicleSystem.getLineVehicles, l.line)
-		for _, v in ipairs(okv and vehicles or {}) do
-			local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
-			local idx = tv and tv.stopIndex
-			if tv and not l.carrier then l.carrier = SIM.journalCarrier(tv.carrier) end
-			if type(idx) == "number" and l.n > 0 then
-				local k = tostring(v)
-				local last = reg.vstop[k]
-				if last ~= nil and last ~= idx then
-					-- the stops left since the last look: last, last+1, ... idx-1
-					local s, guard = last, 0
-					while s ~= idx and guard < l.n do
-						local f = l.stops[s]
-						if f then owed[#owed + 1] = { from = l.co, to = f.co, fee = f.fee, carrier = l.carrier } end
-						s = (s + 1) % l.n
-						guard = guard + 1
-					end
-				end
-				reg.vstop[k] = idx
-			end
-		end
-	end
-	if #owed == 0 then return true end
+	local owed, changed = eco.stationFees(st, SIM.ecoEnv(), SIM)
+	if #owed == 0 then return changed end
 	local JE = api.type.JournalEntry
 	local plain = os.getenv("MPFEVER_FEEOTHER") == "1"
 	-- (one entry per company, way and carrier, booked in the order of their keys: the same on every game)
@@ -2482,24 +2452,54 @@ local function handleEvent(userParams, state, src, id, name, param)
 				log("test: the savegame's company spent " .. tostring(have + 100000))
 			end
 		elseif name == "share" then
-			-- a company shares one of its stations with the others (fee per stop of another company's vehicle), or stops sharing it
+			-- a company's setting for one of its stations (its window), for the other companies' vehicles: { key, rule, fee } with
+			-- rule "co" (no setting of its own: the company's rule, see mpfever_eco.lua's stationRule), "open", "private" or "toll"
+			-- (fee per stop). The form before 0.5.2, { key, fee }, stays: fee 0 = private, else that toll.
+			-- Kept in reg.stationRule[key] = { rule, fee, co } (the company that set it: its "every station" choice clears them);
+			-- a fee of 0.5.1 under the same key (reg.shares) goes.
 			local reg = st.co
 			if reg and reg.mode == "separate" and type(param.key) == "string" then
 				local okS, errS = pcall(function()
+					-- (a key "id:<n>" names the station by its entity id, which may be another station on another game: the
+					-- setting would apply on some games only, and so would its fees. Refused on every game; the station window
+					-- offers no choice for it. MPFEVER_IDKEYCHECK=0: as before)
+					if param.key:sub(1, 3) == "id:" and os.getenv("MPFEVER_IDKEYCHECK") ~= "0" then
+						log("companies: share of " .. param.key .. " refused (a station known by its entity id only)")
+						return
+					end
 					local found = nil
 					for _, sg in ipairs(R.entitiesWith("STATION_GROUP")) do
 						if R.sgKey(sg) == param.key then found = sg break end
 					end
 					local owner = found and CO.idOfEntity(reg, R.ownerOf(found)) or nil
-					if owner and owner == param.mpfCo then
-						reg.shares = reg.shares or {}
-						local fee = math.floor(tonumber(param.fee) or 0)
-						reg.shares[param.key] = math.max(fee, 0)      -- 0: not shared (a station absent from the list is shared by default)
-						SIM.shareLinesAt = nil
-						log("companies: company " .. owner .. (fee > 0 and (" shares its station " .. param.key .. " for " .. fee .. " per stop") or (" stops sharing its station " .. param.key)))
-					else
-						log("companies: share of " .. tostring(param.key) .. " refused (owner " .. tostring(owner) .. ", asked by " .. tostring(param.mpfCo) .. ")")
+					local fee = math.max(0, math.floor(tonumber(param.fee) or 0))
+					local rule = param.rule
+					if rule == nil then rule = fee > 0 and "toll" or "private" end
+					rule = tostring(rule)
+					local why = nil
+					if not (owner and owner == param.mpfCo) then why = "owner " .. tostring(owner) .. ", asked by " .. tostring(param.mpfCo)
+					elseif rule ~= "co" and rule ~= "open" and rule ~= "private" and rule ~= "toll" then why = "rule " .. rule
+					elseif rule == "toll" and fee <= 0 then why = "a toll of " .. fee end
+					if why then
+						log("companies: share of " .. tostring(param.key) .. " refused (" .. why .. ")")
+						return
 					end
+					reg.stationRule = reg.stationRule or {}
+					if rule == "co" then
+						reg.stationRule[param.key] = nil
+					else
+						reg.stationRule[param.key] = { rule = rule, fee = rule == "toll" and fee or 0, co = owner }
+					end
+					if reg.shares then
+						reg.shares[param.key] = nil
+						if next(reg.shares) == nil then reg.shares = nil end
+					end
+					if next(reg.stationRule) == nil then reg.stationRule = nil end
+					-- (the vehicles' next stops are read afresh: the fees count from the next look on, see E.stationFees.
+					-- MPFEVER_FEESCAN=0: kept, as before)
+					if os.getenv("MPFEVER_FEESCAN") ~= "0" then reg.vstop = nil end
+					log("companies: company " .. owner .. " station " .. param.key .. ": " .. (rule == "co" and "the company's rule"
+						or rule == "toll" and (fee .. " per stop") or rule))
 				end)
 				if not okS then log("companies: share failed: " .. tostring(errS)) end
 			end
@@ -10222,6 +10222,9 @@ H.coeco = function(from, p)
 	local function note(t) AUTO.results[#AUTO.results + 1] = t; log("AUTOTEST " .. t) end
 	if not (G.co and G.myCo) then note("coeco: not in the companies mode"); return autoFinish() end
 	if C.ROLE == "host" then
+		-- (0.5.2: tracks are open when nothing was set, expect "open 1000" here)
+		local r0 = C.eco() and C.eco().trackRule(G.co, CO.find(G.co, G.myCo))
+		note("host: tracks of company " .. tostring(G.myCo) .. " before: " .. tostring(r0 and r0.rule) .. " " .. tostring(r0 and r0.toll))
 		ev("co_track_rule", { rule = "toll", toll = 1500 })
 		G.waits[#G.waits + 1] = { at = G.frames + 300, fn = function()
 			local r = C.eco() and C.eco().trackRule(G.co, CO.find(G.co, G.myCo))
@@ -10452,8 +10455,9 @@ H.pickcheck = function(from, p)
 			local o = R.ownerOf(sg)
 			if o and o ~= me and o >= 0 then
 				local key = R.sgKey(sg)
-				local fee = C.shareFee(G.co and G.co.shares, key)
-				if fee > 0 and #list < 4 then list[#list + 1] = sg; AUTO.results[#AUTO.results + 1] = "foreign shared station " .. sg .. " " .. key .. " fee " .. fee end
+				local rule, fee = nil, 0
+				if C.eco() then rule, fee = C.eco().stationRule(G.co or {}, key, CO.idOfEntity(G.co, o)) end
+				if rule and rule ~= "private" and #list < 4 then list[#list + 1] = sg; AUTO.results[#AUTO.results + 1] = "foreign station " .. sg .. " " .. key .. " " .. rule .. " fee " .. fee end
 			end
 		end
 	end)
@@ -10507,11 +10511,12 @@ H.share = function(from, p)
 	AUTO.running = true
 	AUTO.results = {}
 	AUTO.points = {}
+	-- (0.5.2: the stations' own settings are in reg.stationRule)
 	if C.ROLE ~= "host" then
 		G.waits[#G.waits + 1] = { at = G.frames + 60, fn = function()
-			local t = {}
-			for k, fee in pairs((G.co and G.co.shares) or {}) do t[#t + 1] = fee end
-			AUTO.results[#AUTO.results + 1] = "stations shared seen here: " .. #t
+			local t = 0
+			for _ in pairs((G.co and G.co.stationRule) or {}) do t = t + 1 end
+			AUTO.results[#AUTO.results + 1] = "stations shared seen here: " .. t
 			autoFinish()
 		end }
 		return
@@ -10530,7 +10535,7 @@ H.share = function(from, p)
 	if not ok then AUTO.results[#AUTO.results + 1] = "share error " .. tostring(err) end
 	G.waits[#G.waits + 1] = { at = G.frames + 240, fn = function()
 		local t = 0
-		for _ in pairs((G.co and G.co.shares) or {}) do t = t + 1 end
+		for _ in pairs((G.co and G.co.stationRule) or {}) do t = t + 1 end
 		AUTO.results[#AUTO.results + 1] = "stations shared now: " .. t
 		autoFinish()
 	end }
@@ -10551,6 +10556,181 @@ H.fees = function(from, p)
 		f:close()
 	end)
 	G.waits[#G.waits + 1] = { at = G.frames + 180, fn = autoFinish }
+end
+
+-- Station rules scenario (0.5.2; MPFEVER_SCENARIO=line,stoprule,stoprule in the companies mode, MPFEVER_SPEED=4 advised so that
+-- the vehicles stop often): the client's line (scenario line) stops at the host's stations, open by default (free).
+--  host, round 1: A) 15 s as they are: nothing earned, no vehicle followed (reg.vstop empty); B) its company's rule a toll of
+--     500 per stop, 40 s: the earnings grow by multiples of 500, the first growth at most 500 per vehicle of the other companies'
+--     lines (no round of a line charged at once); C) its rule open again and one station of the client's line private, 40 s: the
+--     client's line keeps its stop there and pays 100 per stop (MPFEVER_PRIVATEFEE).
+--  client, round 1: its line updated (a waiting time changed) while it keeps the private stop: refused on every game ("is
+--     private" in both mod.logs, "refused" counted by the launcher, the waiting time unchanged); then 15 s of what it pays.
+--  host, round 2: D) the station back to the company's rule (open), 15 s: nothing earned; E) its own toll of 1000, 25 s:
+--     multiples of 1000; F) the company's rule open for every station (reset): no setting of its own left, 15 s: nothing earned,
+--     no vehicle followed.
+--  client, round 2: its line updated again: accepted now (the new waiting time is there).
+-- The checkpoints and the launcher's last "sync:" line then say whether every game did the same.
+H.stoprule = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function ev(name, param) uiRequest("makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = name, [4] = param }) end
+	local function note(t) AUTO.results[#AUTO.results + 1] = t; log("AUTOTEST stoprule " .. t) end
+	local E = C.eco()
+	if not (E and G.co and G.co.mode == "separate" and G.myCo and G.myEnt) then note("not in the companies mode"); return autoFinish() end
+	G.stopruleRound = (G.stopruleRound or 0) + 1
+	local round = G.stopruleRound
+	local me, myEnt = G.myCo, G.myEnt
+	local function sum(t) return math.floor(tonumber(t and t[tostring(me)]) or 0) end
+	local function vstopCount() local n = 0; for _ in pairs((G.co and G.co.vstop) or {}) do n = n + 1 end; return n end
+	local function ownCount()
+		local n = 0
+		for _, o in pairs((G.co and G.co.stationRule) or {}) do if type(o) == "table" and o.co == me then n = n + 1 end end
+		return n
+	end
+	-- (the steps one after the other, real time: the launcher waits 180 s for each round)
+	local steps, i = {}, 0
+	local function nextStep()
+		i = i + 1
+		local s = steps[i]
+		if not s then return autoFinish() end
+		local okS, errS = pcall(s)
+		if not okS then note("step " .. i .. " failed: " .. tostring(errS)); autoFinish() end
+	end
+	-- until cond() (at most `secs` seconds), then nextStep
+	local function waitFor(what, cond, secs)
+		local t0 = os.clock()
+		local function look()
+			local ok, yes = pcall(cond)
+			if ok and yes then note(what .. ": applied after " .. string.format("%.1f", os.clock() - t0) .. " s"); return nextStep() end
+			if os.clock() - t0 > secs then note(what .. ": NOT APPLIED after " .. secs .. " s"); return nextStep() end
+			G.waits[#G.waits + 1] = { at = G.frames + 15, fn = look }
+		end
+		look()
+	end
+	-- what the company earns (field "shareIncome") or pays ("shareExpense") during `secs` seconds, looked at every 10 frames
+	-- (a growth then holds one look of the fees, every 5 steps, most of the time): the whole sum, the first growth, and whether
+	-- every growth is a multiple of `unit`
+	local function sample(label, field, secs, unit, firstMax)
+		local t0 = os.clock()
+		local start = sum(G.co and G.co[field])
+		local last, first, steps2, odd = start, nil, 0, 0
+		local function look()
+			local now = sum(G.co and G.co[field])
+			if now ~= last then
+				local d = now - last
+				steps2 = steps2 + 1
+				if not first then first = d end
+				if unit and unit > 0 and d % unit ~= 0 then odd = odd + 1 end
+				last = now
+			end
+			if os.clock() - t0 < secs then G.waits[#G.waits + 1] = { at = G.frames + 10, fn = look }; return end
+			local t = label .. ": " .. field .. " +" .. (now - start) .. " in " .. secs .. " s (" .. steps2 .. " growth(s)"
+				.. (unit and ("; not a multiple of " .. unit .. ": " .. odd) or "")
+				.. (first and ("; first +" .. first) or "") .. (firstMax and first and (first <= firstMax and " (at most " .. firstMax .. ": OK)" or " (MORE THAN " .. firstMax .. ")") or "")
+				.. "), vehicles followed " .. vstopCount()
+			note(t)
+			nextStep()
+		end
+		look()
+	end
+	if C.ROLE == "host" then
+		-- the other companies' lines stopping at this company's stations: their vehicles, and one such station
+		local nVeh, key, nLines = 0, nil, 0
+		for _, l in ipairs(R.entitiesWith("LINE")) do
+			local lo = R.ownerOf(l)
+			if lo and lo ~= myEnt then
+				local mineHere = false
+				pcall(function()
+					local lc = api.engine.getComponent(l, api.type.ComponentType.LINE)
+					local sgs = {}
+					for k = 1, #lc.stops do sgs[k] = lc.stops[k].stationGroup end
+					for _, sg in ipairs(sgs) do
+						if R.ownerOf(sg) == myEnt then
+							mineHere = true
+							local k = R.sgKey(sg)
+							if not key and k:sub(1, 3) ~= "id:" then key = k end
+						end
+					end
+				end)
+				if mineHere then
+					nLines = nLines + 1
+					pcall(function() nVeh = nVeh + #api.engine.system.transportVehicleSystem.getLineVehicles(l) end)
+				end
+			end
+		end
+		note("round " .. round .. ": " .. nLines .. " line(s) of other companies stop at this company's stations, " .. nVeh .. " vehicle(s), station " .. tostring(key))
+		if not key then note("no station of this company on another company's line (run the scenario line before)"); return autoFinish() end
+		local function myRule() local r = G.co.stops and G.co.stops[tostring(me)]; return r and r.rule end
+		local function stationOwn() local o = G.co.stationRule and G.co.stationRule[key]; return o and o.rule end
+		if round == 1 then
+			local r0, f0 = E.stationRule(G.co, key, me)
+			note("A: station " .. key .. " " .. tostring(r0) .. " " .. tostring(f0) .. " (expected open)")
+			steps = {
+				function() sample("A open", "shareIncome", 15, nil, nil) end,
+				function() ev("co_stop_rule", { rule = "toll", fee = 500 }); waitFor("B toll 500", function() return myRule() == "toll" end, 10) end,
+				function() sample("B toll 500", "shareIncome", 40, 500, 500 * math.max(1, nVeh)) end,
+				function()
+					ev("co_stop_rule", { rule = "open" })
+					ev("share", { key = key, rule = "private" })
+					waitFor("C open, station private", function() return myRule() == "open" and stationOwn() == "private" end, 10)
+				end,
+				function() sample("C private, its lines pay " .. tostring(E.STOP_FEE_DEFAULT), "shareIncome", 40, E.STOP_FEE_DEFAULT, nil) end,
+			}
+		else
+			steps = {
+				function() ev("share", { key = key, rule = "co" }); waitFor("D station back to the company's rule", function() return stationOwn() == nil end, 10) end,
+				function() sample("D open", "shareIncome", 15, nil, nil) end,
+				function() ev("share", { key = key, rule = "toll", fee = 1000 }); waitFor("E station toll 1000", function() return stationOwn() == "toll" end, 10) end,
+				function() sample("E toll 1000", "shareIncome", 25, 1000, 1000 * math.max(1, nVeh)) end,
+				function() ev("co_stop_rule", { rule = "open", reset = true }); waitFor("F open for every station", function() return myRule() == "open" and ownCount() == 0 end, 10) end,
+				function() sample("F open, reset", "shareIncome", 15, nil, nil) end,
+				function() note("F: settings of its own left " .. ownCount() .. ", vehicles followed " .. vstopCount()); nextStep() end,
+			}
+		end
+		return nextStep()
+	end
+	-- the client: its line that stops at another company's station
+	local line = G.stopruleLine
+	if not line then
+		for _, l in ipairs(R.entitiesWith("LINE")) do
+			if not line and R.ownerOf(l) == myEnt then
+				pcall(function()
+					local lc = api.engine.getComponent(l, api.type.ComponentType.LINE)
+					local sgs = {}
+					for k = 1, #lc.stops do sgs[k] = lc.stops[k].stationGroup end
+					for _, sg in ipairs(sgs) do
+						local o = R.ownerOf(sg)
+						if o and o ~= myEnt and CO.idOfEntity(G.co, o) then line = l end
+					end
+				end)
+			end
+		end
+		G.stopruleLine = line
+	end
+	if not line then note("no line of this company stops at another company's station (run the scenario line before)"); return autoFinish() end
+	local function waiting() return api.engine.getComponent(line, api.type.ComponentType.LINE).stops[1].minWaitingTime end
+	local before = waiting()
+	local want = (before or 0) + 7
+	note("round " .. round .. ": line " .. line .. ", stop 1 waits " .. tostring(before) .. ", asked " .. want)
+	steps = {
+		function()
+			local lc = C.marshal(api.engine.getComponent(line, api.type.ComponentType.LINE))
+			lc.stops[1].minWaitingTime = want
+			lc.stops[1].maxWaitingTime = math.max(tonumber(lc.stops[1].maxWaitingTime) or 0, want + 60)
+			uiRequest("makeLineUpdateCmd", { n = 2, [1] = line, [2] = lc })
+			G.waits[#G.waits + 1] = { at = G.frames + 300, fn = function()
+				local now = waiting()
+				note("line update " .. (now == want and "ACCEPTED" or "refused") .. " (stop 1 waits " .. tostring(now) .. "; expected "
+					.. (round == 1 and "refused: a private station" or "accepted") .. ")")
+				nextStep()
+			end }
+		end,
+		function() sample("client pays", "shareExpense", 15, round == 1 and E.STOP_FEE_DEFAULT or nil, nil) end,
+	}
+	nextStep()
 end
 
 -- API probe (diagnostic): which native types a script can make, and their members (for trees and ground paint)
@@ -12873,16 +13053,27 @@ local function coGui(st)
 			if f then f:write(txt); f:close() end
 		end
 	end
-	-- the stations the companies share (the interface shows them in the station windows)
+	-- the stations with a setting of their own (the interface shows them in the station windows and the line tool): one line
+	-- "key TAB rule TAB fee" each (0.5.2; before, "key TAB fee"), the fees of 0.5.1 (reg.shares) as the rules they now are
 	do
 		local t = {}
-		for k, fee in pairs((st.co and st.co.shares) or {}) do t[#t + 1] = tostring(k):gsub("[%c]", " ") .. "\t" .. tostring(fee) end
+		local function clean(k) return (tostring(k):gsub("[%c]", " ")) end
+		local sr = (st.co and st.co.stationRule) or {}
+		for k, o in pairs(sr) do
+			if type(o) == "table" then t[#t + 1] = clean(k) .. "\t" .. tostring(o.rule) .. "\t" .. tostring(math.floor(tonumber(o.fee) or 0)) end
+		end
+		for k, fee in pairs((st.co and st.co.shares) or {}) do
+			local n = math.floor(tonumber(fee) or 0)
+			if sr[k] == nil then t[#t + 1] = clean(k) .. "\t" .. (n > 0 and "toll" or "private") .. "\t" .. math.max(n, 0) end
+		end
 		table.sort(t)
 		local txt = table.concat(t, NL)
 		if txt ~= G.shareFile then
 			G.shareFile = txt
 			local f = C.IO.open(C.DIR .. BS .. "shares.txt", "wb")
 			if f then f:write(txt); f:close() end
+			-- (the map's icons and the counts of eco.txt follow at once, see G.hudShare)
+			G.hudShareAt = nil
 		end
 	end
 	-- the loans of this player's company when it is not the savegame's one (the game's loan window shows what this file says)
@@ -12972,15 +13163,19 @@ local function coGui(st)
 			if osig ~= "" and not os.getenv("MPFEVER_NOCLEAR") then nativeCtl("setothers " .. tok .. " " .. osig) end
 			if reg.canon then nativeCtl("setcanon " .. tok .. " " .. reg.canon) end
 		end
-		-- the stations the other companies share: the native module lets their icons through the map's owner filter (the line
-		-- tool shows them, as this company's own), see HudShareSplice. Every 300 frames, written only when the list changes
-		if c and c.ent and os.getenv("MPFEVER_NOHUDSHARE") ~= "1" and G.frames - (G.hudShareAt or -1000) >= 300 then
+		-- the stations of the other companies that are not private: the native module lets their icons through the map's owner
+		-- filter (the line tool shows them, as this company's own), see HudShareSplice. Every 300 frames (at once when a rule
+		-- changed), written only when the list changes; the count of each company's stations with a setting of their own (eco.txt)
+		-- comes from the same look, MPFEVER_NOHUDSHARE=1 or not
+		if c and c.ent and G.frames - (G.hudShareAt or -1000) >= 300 then
 			G.hudShareAt = G.frames
-			pcall(G.hudShare, reg, c)
+			local okH, errH = pcall(G.hudShare, reg, c)
+			if not okH and (G.hudShareErrs or 0) < 5 then G.hudShareErrs = (G.hudShareErrs or 0) + 1; log("companies: shared stations failed: " .. tostring(errH)) end
 		end
 		-- the tracks the other companies opened (their rule "open" or "toll", or gone companies'): this game's track tool may
-		-- connect to them (see the native module's IsOwnedDetour). Every 300 frames, written only when the list changes
-		if c and c.ent and G.frames - (G.openNetAt or -1000) >= 300 then
+		-- connect to them (see the native module's IsOwnedDetour). Every 300 frames (1800 when listing the tracks is slow, see
+		-- G.openNet), written only when the list changes
+		if c and c.ent and G.frames - (G.openNetAt or -1000) >= (G.openNetEvery or 300) then
 			G.openNetAt = G.frames
 			local okO, errO = pcall(G.openNet, reg, c)
 			if not okO then log("companies: open tracks failed: " .. tostring(errO)) end
@@ -13002,6 +13197,7 @@ G.coEco = function(st, reg, c)
 	local function clean(t) return (tostring(t or ""):gsub("[%c]", " ")) end
 	local L = { "mykey\t" .. G.coMyKey(), "rules\t" .. tostring((reg.rules or {}).bankrupt or E.BANKRUPT_DEFAULT) }
 	local function num(t, id) return math.floor(tonumber(t and t[tostring(id)]) or 0) end
+	local rulesSig = {}
 	for _, co in ipairs(reg.list) do
 		if co.gone then L[#L + 1] = "gone\t" .. co.id .. "\t" .. tostring(co.gone) end
 		for _, m in ipairs(CO.members(co)) do L[#L + 1] = "member\t" .. co.id .. "\t" .. clean(m.key) end
@@ -13010,8 +13206,18 @@ G.coEco = function(st, reg, c)
 		if co.debt then L[#L + 1] = "debt\t" .. co.id .. "\t" .. co.debt end
 		local r = E.trackRule(reg, co)
 		L[#L + 1] = "track\t" .. co.id .. "\t" .. tostring(r.rule) .. "\t" .. tostring(r.toll or 0)
+		-- (0.5.2: the company's rule for its stations and stops, with the number of its stations that have a setting of their
+		-- own, counted by G.hudShare; its rule for its depots without a setting of their own)
+		local s = E.stopRule(reg, co)
+		L[#L + 1] = "stops\t" .. co.id .. "\t" .. tostring(s.rule) .. "\t" .. math.floor(tonumber(s.fee) or 0) .. "\t" .. ((G.stopOwn or {})[co.id] or 0)
+		rulesSig[#rulesSig + 1] = co.id .. tostring(s.rule) .. tostring(s.fee)
+		local d = E.depotCoRule(reg, co)
+		L[#L + 1] = "depotco\t" .. co.id .. "\t" .. tostring(d.rule) .. "\t" .. math.floor(tonumber(d.toll) or 0)
 		L[#L + 1] = "fees\t" .. co.id .. "\t" .. num(reg.shareIncome, co.id) .. "\t" .. num(reg.shareExpense, co.id) .. "\t" .. num(reg.tollIncome, co.id) .. "\t" .. num(reg.tollExpense, co.id)
 	end
+	-- (a company's rule for its stations changed: the map's icons and the line tool follow at once, see G.hudShare)
+	local rs = table.concat(rulesSig, " ")
+	if rs ~= G.stopRulesSig then G.stopRulesSig = rs; G.hudShareAt = nil end
 	for _, r in ipairs(reg.requests or {}) do L[#L + 1] = "req\t" .. clean(r.key) .. "\t" .. clean(r.name) .. "\t" .. tostring(r.to) end
 	for _, o in ipairs(reg.mergeOffers or {}) do L[#L + 1] = "merge\t" .. tostring(o.from) .. "\t" .. tostring(o.to) end
 	local au = reg.auction
@@ -13166,19 +13372,49 @@ G.coNewsText = function(reg, n)
 		local what = n.rule == "open" and C.T("ouvertes à tous", "open to all") or n.rule == "toll" and C.Tf("ouvertes avec un péage de %s par passage", "open with a toll of %s per passage", G.coMoney(n.toll)) or C.T("privées", "private")
 		return C.Tf("Voies de %s : %s.", "%s's tracks: %s.", nm(n.co), what)
 	end
+	-- (whole sentences: the words for open and private take the gender of stations or depots in other languages)
+	if k == "stop_rule" then
+		local t = n.rule == "open" and C.Tf("Gares et arrêts de %s : ouverts à tous.", "%s's stations and stops: open to all.", nm(n.co))
+			or n.rule == "toll" and C.Tf("Gares et arrêts de %s : péage de %s par arrêt.", "%s's stations and stops: a toll of %s per stop.", nm(n.co), G.coMoney(n.fee))
+			or C.Tf("Gares et arrêts de %s : privés.", "%s's stations and stops: private.", nm(n.co))
+		return t .. (n.reset and C.T(" Pour toutes ses gares.", " For all its stations.") or "")
+	end
+	if k == "depot_rule" then
+		return n.rule == "open" and C.Tf("Dépôts de %s : ouverts à tous.", "%s's depots: open to all.", nm(n.co))
+			or n.rule == "toll" and C.Tf("Dépôts de %s : péage de %s par véhicule.", "%s's depots: a toll of %s per vehicle.", nm(n.co), G.coMoney(n.toll))
+			or C.Tf("Dépôts de %s : privés.", "%s's depots: private.", nm(n.co))
+	end
 	return nil
 end
 
 -- (a field of G: the main chunk is at Lua's limit of 200 locals)
+-- The other companies' stations that are not private (0.5.2: their rule, see mpfever_eco.lua's stationRule; before, their fee),
+-- for the map (hud_share.txt), and the number of each company's stations that have a setting of their own (G.stopOwn, eco.txt).
+-- The stations' keys are read only when some station has a setting of its own.
 G.hudShare = function(reg, me)
+	local E = C.eco()
 	local ids, seen = {}, {}
+	local own = {}
+	local needKey = E == nil or next(reg.stationRule or {}) ~= nil or next(reg.shares or {}) ~= nil
 	local function add(e) if type(e) == "number" and e >= 0 and not seen[e] then seen[e] = true; ids[#ids + 1] = e end end
 	for _, sg in ipairs(R.entitiesWith("STATION_GROUP")) do
 		local owner = R.ownerOf(sg)
 		local oc = owner and CO.idOfEntity(reg, owner)
-		if oc and oc ~= me.id then
-			local okk, key = pcall(R.sgKey, sg)
-			if okk and key and (C.shareFee(reg.shares, key) or 0) > 0 then
+		if oc then
+			local key = nil
+			if needKey then
+				local okk, k = pcall(R.sgKey, sg)
+				key = okk and k or nil
+			end
+			local rule, isOwn = nil, false
+			if E then
+				local r, _, o = E.stationRule(reg, key, oc)
+				rule, isOwn = r, o
+			elseif key then
+				rule = (C.shareFee(reg.shares, key) or 0) > 0 and "toll" or "private"
+			end
+			if isOwn then own[oc] = (own[oc] or 0) + 1 end
+			if oc ~= me.id and rule and rule ~= "private" then
 				add(sg)
 				pcall(function()
 					for _, stn in ipairs(api.engine.getComponent(sg, api.type.ComponentType.STATION_GROUP).stations) do
@@ -13190,6 +13426,8 @@ G.hudShare = function(reg, me)
 			end
 		end
 	end
+	G.stopOwn = own
+	if os.getenv("MPFEVER_NOHUDSHARE") == "1" then return end
 	table.sort(ids)
 	local txt = table.concat(ids, " ")
 	if txt == G.hudShareTxt then return end
@@ -13204,32 +13442,66 @@ G.hudShare = function(reg, me)
 	log("companies: " .. #ids .. " entities of the stations the other companies share shown on the map")
 end
 
+-- The tracks the other companies opened, their segments and nodes (open_net.txt). 0.5.2: tracks are open by default, so the list
+-- is in use in every companies game: only the track segments are looked at (R.entitiesWith("BASE_EDGE_TRACK"); before, every
+-- segment of the map, streets included, with a component read each), and their owners are read again only when the number of
+-- tracks or the open companies changed, or every 1800 frames (a sale or a merger changes owners without changing the number).
+-- When the engine refuses to list the tracks, every segment as before; when listing them takes long, every 1800 frames instead of
+-- 300 (G.openNetEvery). MPFEVER_OPENNETFAST=0: as before.
 G.openNet = function(reg, me)
 	local E = C.eco()
 	if not E then return end
-	local open = {}
-	local any = false
+	local open, sig = {}, {}
 	for _, co in ipairs(reg.list) do
 		if co.ent and co.id ~= me.id then
 			local r = E.trackRule(reg, co)
-			if r.rule == "open" or r.rule == "toll" then open[co.ent] = true; any = true end
+			if r.rule == "open" or r.rule == "toll" then open[co.ent] = true; sig[#sig + 1] = co.ent end
 		end
+	end
+	local fast = os.getenv("MPFEVER_OPENNETFAST") ~= "0" and not G.openNetAll
+	local edges = {}
+	if #sig > 0 then
+		if fast then
+			local t0 = os.clock()
+			edges = R.entitiesWith("BASE_EDGE_TRACK")
+			local ms = math.floor((os.clock() - t0) * 1000 + 0.5)
+			if #edges == 0 and R.loopErrors.BASE_EDGE_TRACK then
+				G.openNetAll = true
+				fast = false
+				log("companies: open tracks: the engine does not list the tracks (" .. tostring(R.loopErrors.BASE_EDGE_TRACK) .. "): every segment is looked at")
+				edges = R.allEdges()
+			else
+				G.openNetEvery = ms > 100 and 1800 or 300
+				G.openNetLogs = (G.openNetLogs or 0) + 1
+				if G.openNetLogs <= 5 then log("companies: open tracks: " .. #edges .. " track segment(s) listed in " .. ms .. " ms") end
+			end
+		else
+			edges = R.allEdges()
+		end
+	end
+	if fast then
+		local key = me.id .. "|" .. table.concat(sig, " ") .. "|" .. #edges
+		if key == G.openNetKey and G.frames - (G.openNetFull or -100000) < 1800 then return end
+		G.openNetKey = key
+		G.openNetFull = G.frames
 	end
 	local ids, seen = {}, {}
 	local function add(e) if type(e) == "number" and e >= 0 and not seen[e] then seen[e] = true; ids[#ids + 1] = e end end
-	if any then
-		for _, e in ipairs(R.allEdges()) do
-			local okc, po = pcall(api.engine.getComponent, e, api.type.ComponentType.PLAYER_OWNED)
-			if okc and po and open[po.player] then
+	for _, e in ipairs(edges) do
+		local okc, po = pcall(api.engine.getComponent, e, api.type.ComponentType.PLAYER_OWNED)
+		if okc and po and open[po.player] then
+			local isTrack = fast
+			if not isTrack then
 				local okt, tr = pcall(api.engine.getComponent, e, api.type.ComponentType.BASE_EDGE_TRACK)
-				if okt and tr then
-					add(e)
-					pcall(function()
-						local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
-						add(be.node0)
-						add(be.node1)
-					end)
-				end
+				isTrack = okt and tr ~= nil
+			end
+			if isTrack then
+				add(e)
+				pcall(function()
+					local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+					add(be.node0)
+					add(be.node1)
+				end)
 			end
 		end
 	end

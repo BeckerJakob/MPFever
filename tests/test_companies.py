@@ -22,6 +22,10 @@ LINES = {}         -- player entity -> { line entities }
 VEH = {}           -- line -> { vehicles }
 NAMES = {}
 SENT = {}
+SGS = {}           -- the station groups (R.entitiesWith("STATION_GROUP"))
+LINELIST = {}      -- the lines (R.entitiesWith("LINE"))
+STOPS = {}         -- line -> { station groups of its stops }
+TV = {}            -- vehicle -> { stopIndex, carrier }
 local function rec(kind, a, b, c) SENT[#SENT + 1] = { kind = kind, a = a, b = b, c = c } end
 api = {
   type = {
@@ -45,7 +49,12 @@ api = {
     getComponent = function(e, ct)
       if ct == "po" then return OWN[e] and { player = OWN[e] } or nil end
       if ct == "name" then return { name = NAMES[e] or ("E" .. e) } end
-      if ct == "line" then return { stops = {} } end
+      if ct == "line" then
+        local s = {}
+        for i, sg in ipairs(STOPS[e] or {}) do s[i] = { stationGroup = sg } end
+        return { stops = s }
+      end
+      if ct == "tv" then return TV[e] end
       return nil
     end,
     forEachEntityWithComponent = function(fn, ct) if ct == "po" then local ks = {} for e in pairs(OWN) do ks[#ks + 1] = e end table.sort(ks) for _, e in ipairs(ks) do fn(e) end end end,
@@ -57,7 +66,12 @@ api = {
     },
   },
 }
-R = { allEdges = function() return {} end, entitiesWith = function() return {} end, withoutAssets = function(l) return l end,
+R = { allEdges = function() return {} end, withoutAssets = function(l) return l end,
+      entitiesWith = function(name)
+        if name == "STATION_GROUP" then return SGS end
+        if name == "LINE" then return LINELIST end
+        return {}
+      end,
       sgKey = function(sg) return "sg" .. sg end, ownerOf = function(e) return OWN[e] end }
 LOG = {}
 ENV = { log = function(s) LOG[#LOG + 1] = s end, R = R, STEP = 200, gameTime = function() return TIME end,
@@ -312,6 +326,111 @@ except Exception as e:
     old_fail["error"] = 1
 check(old_fail.get("rename", 0) == 0 and "error" not in old_fail, "the old rules pass the two-PC rename too (unchanged rule)")
 run('ENVOVR = {}')
+
+# (0.5.2) the rules of tracks, stations and stops, depots: open when nothing is set, a company's rule, a station's own setting
+print("rules")
+run('''
+local d = CO.join(st.co, "dave", "Dave", false, "Dave Co", "s5", 5); d.ent = 400; BAL[400] = 2000000
+local e = CO.join(st.co, "eve", "Eve", false, "Eve Co", "s6", 6); e.ent = 500; BAL[500] = 2000000
+DAVE, EVE = d.id, e.id
+''')
+dave, eve = run('return DAVE'), run('return EVE')
+check(run('local r = E.trackRule(st.co, CO.find(st.co, DAVE)); return r.rule .. " " .. r.toll') == "open 1000", "a company that set nothing has open tracks (toll 1000 when chosen)")
+check(run('local r = E.stopRule(st.co, CO.find(st.co, DAVE)); return r.rule .. " " .. r.fee') == "open 100", "and open stations (toll 100 when chosen)")
+check(run('local r = E.depotCoRule(st.co, CO.find(st.co, DAVE)); return r.rule .. " " .. r.toll') == "open 1000", "and open depots (toll 1000 when chosen)")
+check(run('return E.depotRule(st.co, "D:x@1,2", DAVE).rule') == "open", "a depot without a setting follows its company's rule")
+check(run('return (E.stationRule(st.co, "sg8001", DAVE))') == "open", "a station without a setting is open")
+check(run('return (E.stationRule(st.co, "sg8001", nil))') is None, "a station of no company has no rule")
+check(run('return E.anyStopFee(st.co)') is False, "nothing costs anything by default")
+run('E.event(st, "co_stop_rule", { rule = "toll", fee = 500, mpfCo = DAVE, mpfFrom = "Dave#3" }, ENV)')
+check(run('local r, f, own = E.stationRule(st.co, "sg8001", DAVE); return r .. " " .. f .. " " .. tostring(own)') == "toll 500 false",
+      "co_stop_rule toll 500: the company's stations cost 500 per stop")
+run('E.event(st, "co_stop_rule", { rule = "toll", fee = 0, mpfCo = DAVE, mpfFrom = "Dave#3" }, ENV)')
+check(run('return st.co.stops[tostring(DAVE)].rule') == "open", "a toll of 0 is open")
+run('E.event(st, "co_stop_rule", { rule = "toll", fee = 500, mpfCo = 4, mpfFrom = "Carl#2" }, ENV)')
+check(run('return st.co.stops["4"]') is None, "a gone company cannot change its rule")
+run('E.event(st, "co_stop_rule", { rule = "toll", fee = 500, mpfCo = DAVE, mpfFrom = "Dave#3" }, ENV)')
+# the station's own setting first (reg.stationRule), then a fee of 0.5.1 (reg.shares: 0 private, else that toll), then the company's
+run('st.co.shares = { sg8001 = 0, sg8003 = 2500 }; st.co.stationRule = { sg8001 = { rule = "open", fee = 0, co = DAVE }, sg8004 = { rule = "private", fee = 0, co = DAVE } }')
+check(run('local r, f, own = E.stationRule(st.co, "sg8001", DAVE); return r .. " " .. tostring(own)') == "open true", "a station's own setting comes before a fee of 0.5.1")
+check(run('local r, f, own = E.stationRule(st.co, "sg8003", DAVE); return r .. " " .. f .. " " .. tostring(own)') == "toll 2500 true", "a fee of 0.5.1 is kept (toll)")
+run('st.co.shares.sg8005 = 0')
+check(run('return (E.stationRule(st.co, "sg8005", DAVE))') == "private", "a fee of 0 of 0.5.1 is private")
+check(run('return (E.stationRule(st.co, "sg8002", DAVE))') == "toll", "a station without a setting follows its company's rule")
+check(run('return (E.stationRule(st.co, "sg8003", 4))') == "open", "a gone company's stations are open")
+check(run('return E.stopFee(st.co, "sg8003", DAVE, DAVE)') is None, "a company's own lines stop at its stations for free")
+check(run('return E.stopFee(st.co, "sg8003", DAVE, 1)') == 2500, "another company's line pays the station's toll")
+check(run('return E.stopFee(st.co, "sg8001", DAVE, 1)') is None, "an open station costs nothing")
+check(run('return E.stopFee(st.co, "sg8004", DAVE, 1)') == 100, "a private station another company's line already stops at costs 100 per stop")
+run('E.OPEN_DEFAULT = false')
+check(run('local r, f = E.stationRule(st.co, "sg9", EVE); return r .. " " .. f') == "toll 100", "MPFEVER_OPENDEFAULT=0: a station without a setting is shared for 100, as before")
+check(run('return E.trackRule(st.co, CO.find(st.co, EVE)).rule') == "private", "MPFEVER_OPENDEFAULT=0: tracks private, as before")
+check(run('return E.depotRule(st.co, "D:y", EVE).rule') == "private", "MPFEVER_OPENDEFAULT=0: depots private, as before")
+run('E.OPEN_DEFAULT = true')
+
+print("rules: reset, merge, auction")
+# Dave's stations: 8001, 8003, 8004, 8005 (entity 400); 8006 is Eve's, with its own setting too
+run('''
+for _, sg in ipairs({ 8001, 8003, 8004, 8005 }) do OWN[sg] = 400; SGS[#SGS + 1] = sg end
+OWN[8006] = 500; SGS[#SGS + 1] = 8006
+st.co.stationRule.sg8006 = { rule = "toll", fee = 300, co = EVE }
+''')
+run('E.event(st, "co_stop_rule", { rule = "open", reset = true, mpfCo = DAVE, mpfFrom = "Dave#3" }, ENV)')
+check(run('local n = 0; for _, o in pairs(st.co.stationRule) do if o.co == DAVE then n = n + 1 end end; return n') == 0, "reset: the settings tagged with the company go")
+check(run('return st.co.shares.sg8003 == nil and st.co.shares.sg8005 == nil') is True, "reset: the fees of 0.5.1 of its stations go")
+check(run('return st.co.stationRule.sg8006 ~= nil and st.co.stationRule.sg8006.co == EVE') is True, "reset: another company's settings stay")
+# a merger: the merged company's own settings become the other's, its company rule goes
+run('st.co.stops[tostring(EVE)] = { rule = "toll", fee = 700 }; st.co.depotCo = { [tostring(EVE)] = { rule = "private", toll = 0 } }')
+run('E.event(st, "co_merge_ask", { to = DAVE, mpfCo = EVE, mpfFrom = "Eve#4" }, ENV)')
+run('E.event(st, "co_merge_answer", { from = EVE, accept = true, mpfCo = DAVE, mpfFrom = "Dave#3" }, ENV)')
+check(run('return CO.find(st.co, EVE).gone') == "merged", "Eve's company merged into Dave's")
+check(run('return st.co.stops[tostring(EVE)] == nil and st.co.depotCo[tostring(EVE)] == nil') is True, "its company rules went")
+check(run('return st.co.stationRule.sg8006.co') == dave, "its station's own setting is now Dave's company's")
+# an auction: a station sold loses its own setting (it follows the buyer's rule)
+run('''
+local f = CO.join(st.co, "fay", "Fay", false, "Fay Co", "s7", 7); f.ent = 700; BAL[700] = 0; FAY = f.id
+OWN[8100] = 700; SGS[#SGS + 1] = 8100
+st.co.stationRule.sg8100 = { rule = "toll", fee = 777, co = FAY }
+E.bankrupt(st, f, ENV)
+''')
+check(run('return st.co.auction ~= nil and st.co.auction.lots[1].key') == "sg8100", "Fay's station is at auction")
+run('E.event(st, "co_bid", { seq = st.co.auction.seq, lot = 1, amount = 100000, mpfCo = 1, mpfFrom = "Host" }, ENV)')
+run('E.event(st, "co_lot_close", { seq = st.co.auction.seq, lot = 1, mpfFrom = "Host" }, ENV)')
+check(run('return OWN[8100]') == 100 and run('return st.co.stationRule.sg8100') is None, "the station sold is company 1's, without its own setting")
+
+print("rules: station fees")
+# company 1's line 7001 stops at Dave's 8001 (index 0), its own 8002 (1), Dave's 8003 (2) and 8004 (3); its vehicle 7101
+run('''
+st.co.stationRule = nil; st.co.shares = nil
+OWN[8002] = 100; SGS[#SGS + 1] = 8002
+OWN[7001] = 100; LINELIST = { 7001 }; STOPS[7001] = { 8001, 8002, 8003, 8004 }; VEH[7001] = { 7101 }; OWN[7101] = 100
+TV[7101] = { stopIndex = 1, carrier = 1 }
+st.co.vstop = { ["7101"] = 1, ["9999"] = 2 }
+HOLD = {}
+''')
+check(run('local owed, ch = E.stationFees(st, ENV, HOLD); return #owed .. " " .. tostring(ch) .. " " .. tostring(st.co.vstop)') == "0 true nil",
+      "nothing costs anything: no line looked at, the vehicles' last stops forgotten")
+check(run('local owed, ch = E.stationFees(st, ENV, HOLD); return #owed .. " " .. tostring(ch)') == "0 false", "and nothing changes at the next look")
+# open for a long while: the vehicle went round its line; then Dave's toll (set directly, as a savegame would hold it)
+run('TV[7101].stopIndex = 0; st.co.stops[tostring(DAVE)] = { rule = "toll", fee = 500 }')
+check(run('local owed = E.stationFees(st, ENV, HOLD); return #owed') == 0, "open -> toll: the first look charges nothing (no round of the line)")
+run('TV[7101].stopIndex = 1')
+check(run('local owed = E.stationFees(st, ENV, HOLD); local s = 0; for _, o in ipairs(owed) do s = s + o.fee end; return #owed .. " " .. s') == "1 500",
+      "then one stop left, one toll paid")
+run('TV[7101].stopIndex = 2')
+check(run('local owed = E.stationFees(st, ENV, HOLD); return #owed') == 0, "its own station costs nothing")
+run('TV[7101].stopIndex = 1')
+check(run('local owed = E.stationFees(st, ENV, HOLD); return #owed') == 3, "three of Dave's stations left (round the line's end): three tolls")
+check(run('return st.co.vstop["9999"]') is None, "a vehicle no longer on a line looked at is forgotten")
+# a line that no longer stops at a paying station: its vehicle is forgotten, its next look after a new toll charges nothing
+run('st.co.stops[tostring(DAVE)] = { rule = "open", fee = 500 }; st.co.stationRule = { sg8002 = { rule = "toll", fee = 50, co = 1 } }')
+check(run('local owed = E.stationFees(st, ENV, HOLD); return #owed .. " " .. tostring(st.co.vstop)') == "0 nil",
+      "another company's toll elsewhere: the line is not looked at, its vehicle forgotten")
+run('TV[7101].stopIndex = 0; st.co.stops[tostring(DAVE)] = { rule = "toll", fee = 500 }')
+check(run('return #E.stationFees(st, ENV, HOLD)') == 0, "toll again: the first look charges nothing")
+run('E.PRIVATE_FEE = true; st.co.stops[tostring(DAVE)] = { rule = "private", fee = 500 }; TV[7101].stopIndex = 1')
+check(run('local owed = E.stationFees(st, ENV, HOLD); return #owed .. " " .. (owed[1] and owed[1].fee or 0)') == "1 100",
+      "a private station the line already stops at: 100 per stop")
 
 print()
 print("FAILED: %d" % len(failures) if failures else "all passed")
