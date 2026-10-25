@@ -77,15 +77,19 @@ WHAT WORKS
   waits while nobody is connected, is saved every 10 minutes and survives a crash of the
   game. Players join its address as they join a host, with its password if it has one.
   It comes as a separate archive, MPFever-<version>-server.zip (see SERVER.txt in it).
-- MPFever window in the game: open the pause menu (Esc) and click the MPFever card. It shows
-  the players and their link (connected, behind, not responding, loading the host's game,
-  left), whether the games are in sync and, for the host, a button to invite Steam friends.
-  It stays open while you play; move it or close it as any game window.
-- Chat in the game: the "Chat" card of the pause menu (or the button of the MPFever window)
-  opens a chat window to write to the other players; new messages show for a few seconds
-  at the left of the screen.
+- MPFever icon in the game's bottom bar, left of Earnings: green when the games are in sync,
+  yellow during a reload or while a player joins, red when something is wrong (link lost,
+  games out of sync), with the number of unread chat messages. A click opens the window.
+- MPFever window in the game: it opens by itself when the session starts and after each
+  reload (closed by you, it stays closed for the session), or from the bar icon or the
+  MPFever card of the pause menu. Its tabs: Session (the players and their link, the sync
+  state, the game speed, Steam invites, Report a problem, and for the host a Resynchronise
+  button), Chat, Company and Rules (one company per player only), Settings.
+- Chat in the game: the Chat tab (or the "Chat" card of the pause menu); new messages show
+  for a few seconds at the left of the screen.
 - The mod is built into the game: the only additions to the game interface are the
-  MPFever button in the main menu and the MPFever and Chat cards in the pause menu.
+  MPFever button in the main menu, the icon in the bottom bar and the MPFever and Chat cards
+  in the pause menu.
 - Since 0.3.4 the games stay identical much longer: the main cause of the desyncs (the
   game's own scripts did not take their decisions in the same order on every PC) is fixed.
   Resynchronisations should now be rare.
@@ -113,7 +117,7 @@ KNOWN LIMITATIONS
 - Trees and plants of the brush are copied (since 0.3.3). Ground PAINT (textures) is not copied
   yet: each game keeps its own paint (it does not cause a resynchronisation).
 - Tested with 2 players. More players should work but are untested.
-- Windows only. Made for the current Steam version of Transport Fever 3 (builds 40408 and 40420).
+- Windows only. Made for the current Steam version of Transport Fever 3 (builds 40420, 40423 and 40425).
   After a game update, the mod still runs but synchronisation may be worse until
   MPFever is updated.
 - The host's port is opened on its router by itself (UPnP, else NAT-PMP) while a session

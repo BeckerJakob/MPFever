@@ -33,7 +33,7 @@ Each player plays in their own copy of the game. MPFever replays every player's 
 | Requirement | Why |
 |---|---|
 | **Transport Fever 3 on Steam, Windows** | MPFever is tested on the Steam version only. Other stores (Epic...) are not supported yet. |
-| **The same game version on every PC** | Two different game builds don't simulate the world the same way. Supported: **40423** (current) and **40420**. Make sure Steam has updated the game on every PC. |
+| **The same game version on every PC** | Two different game builds don't simulate the world the same way. Supported: **40425** (current), **40423** and **40420**. Make sure Steam has updated the game on every PC. |
 | **The same MPFever version on every PC** | MPFever updates itself; every player just needs a recent version (0.3.15 or later). |
 | **The same mods, in the same version** | MPFever checks it in the lobby, installs the missing ones from the game's Mod Hub and tells you what to fix. Mods that only change your interface may differ. |
 
@@ -62,7 +62,7 @@ Players can also join a game already running, and a lost connection reconnects b
 - **One company per player**: each player has their own money, network, vehicles, lines, loans, contracts and Company window.
   - Each player picks their company's colour in the lobby; the map's icons show who owns what.
   - What belongs to another company can't be sold, edited or used.
-  - Tracks, stations and depots are open to the other companies by default. Each company sets its rules in the MPFever window: private, open, or with a toll (per passage, per stop, per vehicle).
+  - Tracks, stations and depots are open to the other companies by default. Each company sets its rules in the Rules tab of the MPFever window: private, open, or with a toll (per passage, per stop, per vehicle). A station's or depot's own setting comes first.
   - Several players can run one company together: ask to join another company (its chief accepts), leave yours, or merge two companies.
   - A company in debt for too long (3 to 24 months, set by the host in the lobby) goes bankrupt: its lines, stations and depots are auctioned to the others, and its players start again.
   - Fees and tolls show in the finance window. Companies can give each other money, and the MPFever window ranks them.
@@ -78,10 +78,13 @@ Players can also join a game already running, and a lost connection reconnects b
 
 ### In-game tools
 
-The MPFever card in the pause menu opens:
-
-- **the MPFever window:** the players, their connection, the sync state, Steam invites, and the **Report a problem** button;
-- **the chat:** new messages show for a few seconds on the left of the screen.
+- **An icon in the game's bottom bar**, left of Earnings: green when the games are in sync, yellow during a reload or while a player joins, red when something is wrong, with the number of unread chat messages. A click opens or closes the MPFever window.
+- **The MPFever window** opens by itself when the session starts and after each reload (closed, it stays closed). Its tabs:
+  - **Session:** the players, their connection, the sync state, the game speed, Steam invites, the **Report a problem** button, and for the host a **Resynchronise** button;
+  - **Chat:** new messages also show for a few seconds on the left of the screen;
+  - **Company** and **Rules** (one company per player only): members, joins and mergers, money gifts, the ranking, and the rules for your tracks, stations and depots;
+  - **Settings.**
+- The MPFever and Chat cards of the pause menu open it too.
 
 ![The MPFever window and the chat in game](docs/images/ingame-window-chat.png)
 

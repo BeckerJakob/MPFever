@@ -51,7 +51,9 @@ MPFever - Changelog
   - FIX (desyncs): a bus stop placed on a bridge or in a tunnel reshaped the ground around the bridge on the other games
     (77.517/117.783 of terrain alignment against 0/0 on the builder's game, 2026-10-25) and the towns drifted. Such a stop
     (or its removal) is now replayed as the stop tool's own build: its segment replacement and the engine's own stops.
-    MPFEVER_NATIVESTOP=0: as before.
+    MPFEVER_NATIVESTOP=0: as before. The engine still gives that replay terrain alignment the stop tool's build does not
+    have (7 to 23 against 0, a resynchronisation after each stop in the test of 2026-10-25): when the builder's build left
+    the towns alike, the replay is sent as a script's build, which the towns ignore too. MPFEVER_STOPPI=1: as before.
   - FIX (desyncs): a track or street build that re-creates signals or stops on its new segments (a catenary upgrade of a
     signalled line, the Auto Signals mod, a road joined to a street with stops) was replayed as the street and then one
     build per segment: every later entity got another number (the friends' session of 2026-10-24, 23:17). It is now replayed

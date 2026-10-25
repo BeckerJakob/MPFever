@@ -4810,6 +4810,19 @@ G.nativeStopWanted = function(a, plan)
 	return true
 end
 
+-- A stop on a bridge or in a tunnel: the stop tool's build leaves the towns alike (no terrain alignment: 0/0 on the builder's game),
+-- while the engine gives its replay terrain alignment (7 to 23 on 2026-10-25, the user's test: "TOWN STATS DIFFER", a
+-- resynchronisation after each stop; the dstop tests built their stop by script, with alignment on both games, and showed nothing).
+-- When the builder's statistics are all zero, the replay is sent as not initiated by a player: the towns script takes nothing from
+-- it, as from the builder's. MPFEVER_STOPPI=1: as before (a player's build)
+G.stopNoTown = function(a)
+	if os.getenv("MPFEVER_STOPPI") == "1" or type(a.ts) ~= "table" then return false end
+	for _, k in ipairs({ "al", "ar", "tr", "rk", "ba", "br", "tv" }) do
+		if tonumber(a.ts[k]) ~= 0 then return false end
+	end
+	return true
+end
+
 G.replayNativeStop = function(a, plan)
 	local uid = tostring(a.uid)
 	local function asBefore(why)
@@ -4844,6 +4857,8 @@ G.replayNativeStop = function(a, plan)
 	local kind = "type " .. tostring(c.type) .. "/" .. tostring(c.typeIndex)
 	local function build(eo, keep)
 		local ctx = sContext(a)
+		local pi = not G.stopNoTown(a)
+		if not pi then log("NATIVE REPLAY " .. uid .. " native stop: the builder's build left the towns alike: replayed as a script's build (the towns ignore it)") end
 		-- (priced like the tool's build, as replayStop: the replaced segment free)
 		local free = G.toolCosts(a, plan) and (sc.roadTemplate == nil or sc.roadTemplate == c.roadTemplate)
 		local okk, cmd, label = false, nil, nil
@@ -4854,10 +4869,10 @@ G.replayNativeStop = function(a, plan)
 			label = (variant.noMaps and "without node configurations and id maps") or (variant.noConfigs and "without node configurations") or "complete"
 			local okp, P = pcall(C.rebuildNativeWithConstruction, m, nil, rm, variant)
 			if okp and P then
-				if free then okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true, true) end) end
+				if free then okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, pi, true) end) end
 				if not (okk and cmd) then
 					free = false
-					okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true) end)
+					okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, pi) end)
 				end
 				log("NATIVE REPLAY " .. uid .. " native stop (" .. label .. "): " .. ((okk and cmd) and "command made" or shortErr(cmd))
 					.. (#C.errors > 0 and (" [" .. table.concat(C.errors, " ; "):sub(1, 200) .. "]") or ""))

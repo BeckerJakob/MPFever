@@ -30,11 +30,11 @@
 [*][b]Smooth play.[/b] The game keeps a steady pace, without stops, for smooth vehicle movement.
 [*][b]Fair refunds.[/b] Demolishing what you just built gives your money back on every game, as in a solo game.
 [*][b]Easy hosting.[/b] Host any savegame from the main menu: the players gather in a lobby, MPFever opens the port on your router by itself (UPnP / NAT-PMP) and sends your world to your friends. Joining a game already running works too, over IPv4 or IPv6.
-[*][b]Chat and MPFever window in the game.[/b] Talk with the other players from the pause menu. The MPFever window shows the connected players, the sync state, the companies and, for the host, a button to invite Steam friends.
+[*][b]Chat and MPFever window in the game.[/b] An icon in the bottom bar shows the sync state and the unread messages; a click opens the MPFever window, which also opens by itself at the start of a session. Its tabs: Session (players, sync state, game speed, Steam invites, and for the host a Resynchronise button), Chat, Company and Rules (one company per player only), Settings.
 [*][b]Mods made easy.[/b] Missing mods install themselves from the game's Mod Hub, the host can send its own local mods, and mods that only change your interface (personal mods) may differ from one player to another.
 [*][b]See what the others are building.[/b] What another player's tool shows before their click shows on the ground in your game, in their colour.
 [*][b]Dedicated server[/b] (separate download): the world waits while nobody is connected, saves regularly, restarts by itself after a crash, and has a console (status, say, save, kick, restart...).
-[*][b]Built into the game.[/b] Nothing clutters the screen: just a button in the main menu and two cards in the pause menu.
+[*][b]Built into the game.[/b] Nothing clutters the screen: just a button in the main menu, an icon in the bottom bar and two cards in the pause menu.
 [*][b]One-click bug reports.[/b] One button gathers every log (without your personal data) and opens a prefilled report.
 [/list]
 

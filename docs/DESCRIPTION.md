@@ -28,11 +28,12 @@
 
   Money is corrected automatically. Any other lasting difference triggers an **automatic resync**: a short pause, the host's game is sent to everyone, all games reload it, and play resumes (about 20 s).
 - **Easy start, with a lobby.** Open a lobby with any savegame from the multiplayer button of the main menu. Friends join it by IP address or through a Steam invitation, and the host starts the game when everybody is there: every game loads it at the same time. Joining a game already running works too. The host's game is sent to the players automatically.
-- **Chat and MPFever window in the game.** Write to the other players from the pause menu's Chat card. The MPFever window, also from the pause menu, shows:
-  - the players and their connection;
-  - whether the games are in sync;
-  - for the host, a button to invite Steam friends.
-- **Built into the game.** Nothing is added to the game screen. MPFever only adds a button in the main menu and two cards in the pause menu.
+- **Chat and MPFever window in the game.** An icon in the bottom bar shows the sync state (green, yellow, red) and the unread messages; a click opens the MPFever window, which also opens by itself at the start of a session. Its tabs:
+  - Session: the players and their connection, the sync state, the game speed, Steam invites and, for the host, a Resynchronise button;
+  - Chat;
+  - Company and Rules (one company per player only);
+  - Settings.
+- **Built into the game.** MPFever only adds a button in the main menu, an icon in the bottom bar and two cards in the pause menu.
 - **In the 13 languages of the game.** The launcher and the in-game windows follow the language of Transport Fever 3. The language can also be chosen in the launcher.
 
 ## Known limitations
@@ -44,7 +45,7 @@
 - Ground paint is not copied yet.
 - Each build appears after about 1 to 2 seconds: every game applies it at the same game time.
 - Tested with 2 players. Windows only.
-- Made for the current Steam version of the game (builds 40408 and 40420).
+- Made for the current Steam version of the game (builds 40420, 40423 and 40425).
 
 ## Open source and transparent
 
