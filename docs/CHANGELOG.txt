@@ -2,6 +2,18 @@ MPFever - Changelog
 ===================
 
 0.5.4 - train stations without the frame rate falling (issue #82)
+  - FIX (desyncs, the most frequent cause in the friends' sessions of 2026-10-25): every new entity (a vehicle, a person, a
+    town building, a segment) takes its id from the engine's queue of freed ids, first in, first out. A replay that freed or
+    reused ids in another order than the builder's tool (a stop or a bus terminal placed again, a dry run the engine refuses)
+    left that queue in another order on one game: the next vehicle bought was 350772 on one game and 353349 on the other, and
+    towns and vehicles drifted until a reload (4 reloads of 6). The native module now keeps the queue in id order: the engine
+    gives the smallest free id, the same on every game that has the same free ids. MPFEVER_NOFREEMIN=1 (on every game): as before.
+  - FIX: the "buildIds" check read a build's new ids two script updates after it, which is not the same moment on every game:
+    one game read after the next build had removed the segment and reported a difference that was not there. It reads them two
+    steps after the build now, at that game time everywhere.
+  - Diagnostic: two replays were built two steps after their time on the host (a stop removed, a new street; BUILDLEAD), with
+    no "LATE" warning. Each replay now logs how the game stands when it is sent ("REPLAY SEND"), with the exact steps asked
+    while another game's build is awaited ("STEPS") and steps that passed their target ("STILL CHECK").
   - FIX (issue #82): the frame rate fell with every module added to a train station, when the game ran without a lobby
     (MPFever.exe, then a savegame loaded from the game's own menu). MPFever kept every build in full in the simulation's
     state, to send it to the other players; without a lobby nobody took it, and the engine copies the whole state several

@@ -1686,9 +1686,12 @@ local function update(userParams, state, dt)
 	if not ok then log("simulation apply failed: " .. tostring(err)) end
 	if SIM.idChecks then
 		local keep = {}
+		-- (read two steps after the build, at that game time on every game: read two script updates after it, one game read
+		-- after the next build had removed the segment (-1) and the other before, a false "buildIds" difference, 2026-10-25)
+		local okT, tCk = pcall(gameTime)
 		for _, ck in ipairs(SIM.idChecks) do
 			ck.ticks = ck.ticks + 1
-			if ck.ticks >= 2 then
+			if okT and tCk >= ck.at + 2 * STEP then
 				local si, ni = R.idsAt(ck.segs, ck.nodes)
 				-- (and how many of its new nodes have a node configuration: issue #50's drift, nodeConfigs 7418 / 7420 after
 				-- a station of 200 nodes, compares here between the builder's game and the others)
@@ -5705,11 +5708,13 @@ G.stillWatch = function()
 			end
 		end
 		S.lastUpd, S.lastSpeed, S.lastTickSeen = upd, speed, tick
-		if G.stepTarget and type(G.clockSeen) == "number" and G.clockSeen > G.stepTarget and S.overAt ~= G.stepTarget then
-			S.overAt = G.stepTarget
-			S.over = (S.over or 0) + 1
-			log("STILL CHECK: exact steps passed their target: t=" .. G.clockSeen .. " for " .. G.stepTarget .. " (" .. S.over .. " so far) [frame " .. G.frames .. "]")
-		end
+	end
+	-- (always: two replays of 2026-10-25 were built two steps after their time, see "REPLAY SEND")
+	if G.stepTarget and type(G.clockSeen) == "number" and G.clockSeen > G.stepTarget and S.overAt ~= G.stepTarget then
+		S.overAt = G.stepTarget
+		S.over = (S.over or 0) + 1
+		log("STILL CHECK: exact steps passed their target: t=" .. G.clockSeen .. " for " .. G.stepTarget .. " (" .. S.over .. " so far, hold "
+			.. tostring(G.holdAt) .. ", still proof " .. tostring(S.proven) .. ") [frame " .. G.frames .. "]")
 	end
 	if tick == nil then
 		if S.why ~= "fields not readable" then
@@ -6802,6 +6807,14 @@ local function runNativeReplays()
 					if not okT then log("town stats of " .. tostring(a.uid) .. " not announced: " .. tostring(errT)) end
 				end
 				G.refund = a.refund
+				-- (diagnostic: how this game stands when the replay goes to the engine; two replays of 2026-10-25 were sent at their
+				-- time and built two steps later, with no "LATE" here)
+				pcall(function()
+					log("REPLAY SEND " .. tostring(a.uid) .. " at=" .. tostring(a.at) .. " now=" .. tostring(now) .. " speed=" .. tostring(gameSpeed())
+						.. " still=" .. tostring(G.simStill()) .. " hold=" .. tostring(G.holdAt) .. " stepTarget=" .. tostring(G.stepTarget)
+						.. " wantSteps=" .. tostring(G.wantSteps) .. " barrier=" .. tostring(G.lastBarrier) .. " replayOut=" .. tostring(G.replayOut)
+						.. " [frame " .. G.frames .. "]")
+				end)
 				okr, errr = pcall(withActor, PL(a), replayNative, a, 1)
 				G.refund = nil
 			end
@@ -14453,7 +14466,8 @@ local function guiUpdate(userParams, state, guiState)
 			if G.stepTarget and (now >= G.stepTarget or (G.frames - G.stepSince > 120 and G.frames - (G.clockMovedAt or 0) > 120)) then G.stepTarget = nil end
 			if sp == 0 and G.wantSteps and G.wantSteps > 0 and not G.stepTarget and G.simStill() then
 				G.stepTarget, G.stepSince = now + G.wantSteps * STEP, G.frames
-				if os.getenv("MPFEVER_STEPLOG") then log("STEPS " .. G.wantSteps .. " from t=" .. now .. " to " .. G.stepTarget .. " (hold " .. tostring(G.holdAt) .. ", barrier " .. tostring(G.lastBarrier) .. ", pause " .. tostring(G.session.pauseAt) .. ") [frame " .. G.frames .. "]"
+				-- (also while another game's build is awaited here: see "REPLAY SEND")
+				if os.getenv("MPFEVER_STEPLOG") or #(G.nativeQueue or {}) > 0 or #(G.natWait or {}) > 0 then log("STEPS " .. G.wantSteps .. " from t=" .. now .. " to " .. G.stepTarget .. " (hold " .. tostring(G.holdAt) .. ", barrier " .. tostring(G.lastBarrier) .. ", pause " .. tostring(G.session.pauseAt) .. ") [frame " .. G.frames .. "]"
 					.. (G.stillS and (" [still: old rule " .. (G.stillOldRule() and "yes" or "no") .. ", new rule " .. ((G.stillS.usable and G.stillS.proven) and "yes" or (G.stillS.usable and "no" or "n/a")) .. ", " .. ((G.fastStill and G.stillS.usable) and "the earlier of the two decides" or "the old rule decides") .. "]") or "")) end
 				O.sendCommand(O.steps(G.wantSteps))
 			end

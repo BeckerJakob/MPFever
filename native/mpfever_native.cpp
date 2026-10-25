@@ -2797,6 +2797,56 @@ static void SortEntityVector(u64 vec, int which)
 // 0: each modification's freed ids join the engine's FIFO free-id queue in entity order (the ids new entities get)
 static void FixFreedIds(SavedRegs* r) { if (Readable((void*)r->r12, 8)) SortEntityVector(*(u64*)r->r12, 0); }
 
+// 11: the free-id queue kept in id order (0.5.4). The engine gives a new entity the id at the head of a FIFO queue (a
+// std::deque<int> at engine+0xd8: map +0xe0, map size +0xe8, offset +0xf0, size +0xf8, four ids per block) and each
+// modification appends the ids it freed. A replay that freed or reused ids in another order than the builder's tool (a dry run
+// the engine refuses, a stop rebuilt in two modifications) left the queue in another order on that game only: every entity made
+// afterwards got another id (sessions of 2026-10-25: a stop replayed, then the next vehicle bought was 350772 on one game and
+// 353349 on the other; towns and vehicles drifted and the games reloaded). Sorted after every append, the queue gives the smallest
+// free id: two games with the same free ids give the same ids, whatever order they freed them in. About two appends per step.
+static i32* g_fqBuf = 0;
+static u64 g_fqCap = 0;
+static SRWLOCK_ g_fqLock = { 0 };      // (the simulation's engine and the interface's copy may append at the same time)
+static void SortFreeQueue(u8* q)
+{
+    const int W = 11;
+    if (!Readable(q, 0x28)) { _InterlockedIncrement(&g_orderRefused[W]); return; }
+    u64 map = *(u64*)(q + 8), ms = *(u64*)(q + 0x10), off = *(u64*)(q + 0x18), n = *(u64*)(q + 0x20);
+    _InterlockedIncrement(&g_orderSorts[W]);
+    if (n < 2) return;
+    if (!map || !ms || (ms & (ms - 1)) || n > ms * 4 || n > (32u << 20) || !Readable((void*)map, ms * 8)) { _InterlockedIncrement(&g_orderRefused[W]); return; }
+    u64 mask = ms - 1;
+    if (n > g_fqCap) {
+        u64 cap = n + n / 2 + 1024;
+        i32* nb = (i32*)HeapAlloc(GetProcessHeap(), 0, cap * 4);
+        if (!nb) { _InterlockedIncrement(&g_orderRefused[W]); return; }
+        if (g_fqBuf) HeapFree(GetProcessHeap(), 0, g_fqBuf);
+        g_fqBuf = nb; g_fqCap = cap;
+    }
+    i32* a = g_fqBuf;
+    bool sorted = true;
+    for (u64 i = 0; i < n; i++) {
+        u64 j = off + i;
+        i32* blk = *(i32**)(map + ((j >> 2) & mask) * 8);
+        if (!blk || ((u64)blk & 3)) { _InterlockedIncrement(&g_orderRefused[W]); return; }
+        a[i] = blk[j & 3];
+        if (i && a[i - 1] > a[i]) sorted = false;
+    }
+    if (sorted) return;
+    _InterlockedIncrement(&g_orderReorders[W]);
+    u64 gap = 1;
+    while (gap < n / 3) gap = gap * 3 + 1;
+    for (; gap > 0; gap /= 3)
+        for (u64 i = gap; i < n; i++) { i32 v = a[i]; u64 j = i; while (j >= gap && a[j - gap] > v) { a[j] = a[j - gap]; j -= gap; } a[j] = v; }
+    for (u64 i = 0; i < n; i++) { u64 j = off + i; (*(i32**)(map + ((j >> 2) & mask) * 8))[j & 3] = a[i]; }
+}
+static void FixFreeQueue(SavedRegs* r)
+{
+    AcquireSRWLockExclusive(&g_fqLock);
+    SortFreeQueue((u8*)r->r13 + 0xd8);
+    ReleaseSRWLockExclusive(&g_fqLock);
+}
+
 // 1: the vehicles that want track, before the engine's seeded shuffle and priority sort decide who reserves first: entries
 // {int node index, float} of [rbp-0x20]..[rbp-0x18], sorted by their vehicle's entity id, read as the engine's own loop does
 static i32 LandKey(u64 records, u64 entry) { return *(i32*)(records + (u64)(i32)(entry & 0xFFFFFFFF) * 20); }
@@ -3056,6 +3106,8 @@ static const OrderFix ORDER_FIXES[] = {
     { "needs path", "49 8B 45 10 48 8B 50 08 48 2B 10 48 C1 FA 02 4C 8D 45 30 48 8D 4D E0 E8", 0, 8, FixNeedsPath },
     // build 40425; 0.5.3
     { "tick epochs", "66 83 BF 1C 03 00 00 00 7D 1B 0F B7 05 ?? ?? ?? ?? 66 89 87 1C 03 00 00 0F B7 C5 66 89 87 1E 03 00 00 66 FF C5", 0, 8, FixTickEpoch },
+    // 0.5.4: right after the freed ids were appended to the queue (the call of "freed ids" above)
+    { "free id queue", "E8 ?? ?? ?? ?? 49 8B 14 24 4D 89 3C 24 48 85 D2 74 08 49 8B CC E8", 5, 8, FixFreeQueue },
 };
 static const int ORDER_N = (int)(sizeof(ORDER_FIXES) / sizeof(ORDER_FIXES[0]));
 
@@ -3098,6 +3150,8 @@ static void InstallOrderFixes()
         // (the segments' ages: the stolen compare is the one the stamping follows, and the step comes from GameTime's getter)
         if (i == 10) layout = layout && getUpd && g_applyTls != 0xFFFFFFFFu && GetEnvironmentVariableA("MPFEVER_NOTICKEPOCH", 0, 0) == 0;
         if (i == 6 || i == 7) layout = layout && GetEnvironmentVariableA("MPFEVER_NOPLATFORMORDER", 0, 0) == 0;
+        // (the free-id queue: right after the freed ids' append, r13 the engine; MPFEVER_NOFREEMIN=1 on every game: FIFO as before)
+        if (i == 11) layout = layout && ORDER_FIXES[0].sig && FindSigRva(ORDER_FIXES[0].sig) + 0x22 == at && GetEnvironmentVariableA("MPFEVER_NOFREEMIN", 0, 0) == 0;
         if (i == 9) {
             static const u8 ctx[] = { 0x49, 0x8B, 0x45, 0x10, 0x48, 0x8B, 0x08, 0x42, 0x8B, 0x1C, 0xA1 };
             layout = layout && g_needsPathGetter && at && memcmp((void*)(g_base + at + 0x1ad), ctx, sizeof(ctx)) == 0
