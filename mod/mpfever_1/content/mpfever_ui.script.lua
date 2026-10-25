@@ -2597,7 +2597,8 @@ U.windowContent = function(K, st, chat, ctx)
 	U.ackTabReq(tab, result, #rows)
 	local body
 	if tab == "chat" then
-		body = builtin.Component { meta = { localKey = "mpfever-body-chat", styleSheet = K.style { size = { K.WIN_W, -1 } } }, layout = K.col(rows) }
+		-- (the same height as the other tabs: the window kept jumping in size from one tab to the other)
+		body = builtin.Component { meta = { localKey = "mpfever-body-chat", styleSheet = K.style { size = { K.WIN_W, K.BODY_H } } }, layout = K.col(rows) }
 	else
 		body = builtin.ScrollArea {
 			meta = { localKey = "mpfever-body-" .. tab, styleSheet = K.style { size = { K.WIN_W, K.BODY_H } } },
