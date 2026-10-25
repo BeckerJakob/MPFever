@@ -1618,7 +1618,7 @@ namespace MPFever
                 menuGame.InGame = false;
                 foreach (var f in new[] { "in.log", "out.log", "ui.log", "sim_mods.log", "started.txt", "results.log", "native_events.log", "resync_claims.txt",
                                           "resync_pending.txt", "bindings.log", "captured.txt", "companies.txt", "shares.txt",
-                                          "chat.txt", "chat_out.txt" })
+                                          "chat.txt", "chat_out.txt", "load_id.txt" })
                     try { var p = Path.Combine(menuGame.Dir, f); if (File.Exists(p)) File.WriteAllText(p, ""); } catch { }
             }
             menuPhase = "idle"; menuText = ""; menuLoad = ""; menuLoadSeq = "";
@@ -1693,6 +1693,7 @@ namespace MPFever
                 // the host's own game loads the savegame from the main menu (mpfever_auto.lua), while the players receive it
                 lastLoadOrder = Now;
                 menuLoad = lobbySave; menuLoadSeq = "h" + DateTime.Now.Ticks;
+                WriteLoadId(menuGame, id);
                 menuPhase = "loading"; menuText = T("Chargement de la partie...", "Loading the game...");
                 MenuStatus();
                 SendSave(id, bytes, sha, peers);
@@ -2041,16 +2042,20 @@ namespace MPFever
             bool staleCheck = Environment.GetEnvironmentVariable("MPFEVER_STALEJOIN") != "0";
             bool exitLeaves = !ServerMode && Environment.GetEnvironmentVariable("MPFEVER_EXITKEEPSESSION") != "1";
             bool SessionLeft() => staleCheck && (gen != sessionGen || (exitLeaves && menuMode && game == menuGame && !game.GameRunning));
-            // (checked and added under the lock: LeaveOnGameExit and EndSession take and empty the list under it, after they
-            // marked the session left, so a connection is either closed by them or never added)
+            // (the session's number checked and the connection added under the lock: LeaveOnGameExit and EndSession take and empty
+            // the list under it, after they marked the session left, so a connection is either closed by them or never added. The
+            // game's end is read before the lock: Process.HasExited may run the game's Exited handlers, LeaveOnGameExit among them,
+            // under the Process's own lock, and LeaveOnGameExit takes this one: read under it, the two threads could wait on each
+            // other for ever)
             bool AddUnlessLeft(Client c)
             {
-                bool left;
-                lock (clients)
-                {
-                    left = SessionLeft();
-                    if (!left) { clients.Add(c); current = c; }
-                }
+                bool left = SessionLeft();
+                if (!left)
+                    lock (clients)
+                    {
+                        left = staleCheck && gen != sessionGen;
+                        if (!left) { clients.Add(c); current = c; }
+                    }
                 if (!left) return true;
                 Log.W(F("[{0}] session quittée pendant la connexion : la connexion à l'hôte est refermée", "[{0}] session left while connecting: the connection to the host is closed again", name));
                 try { c.Dispose(); } catch { }
@@ -3467,6 +3472,15 @@ namespace MPFever
 
         /// <summary>(a player) The host's game is here (received, or this PC's own copy): written next to the savegames, then
         /// loaded by the game.</summary>
+        /// <summary>The number of the resynchronisation (or lobby start) whose savegame a game loads from the main menu, for the
+        /// game's mod (load_id.txt, read at its first start in the session): a game loaded in the game gets it from its order to
+        /// load (resync_load). A build made after its builder loaded the same savegame cannot be in it (see the bridge's
+        /// G.alreadyBuilt).</summary>
+        static void WriteLoadId(GameLink game, int id)
+        {
+            try { if (game != null) File.WriteAllText(Path.Combine(game.Dir, "load_id.txt"), id.ToString(System.Globalization.CultureInfo.InvariantCulture)); } catch { }
+        }
+
         void LoadReceivedSave(GameLink game, Msg m, int id, byte[] bytes, string sha, byte[] raw = null)
         {
             try
@@ -3504,6 +3518,7 @@ namespace MPFever
                 string seq = id + "-" + DateTime.Now.Ticks;
                 if (menuMode && !game.InGame)
                 {
+                    WriteLoadId(game, id);
                     // still in the main menu: its MPFever window loads the savegame
                     menuPhase = "loading"; menuText = T("Chargement de la partie de l'hôte...", "Loading the host's game..."); menuLoad = name; menuLoadSeq = "r" + seq;
                     MenuStatus();

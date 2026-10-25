@@ -3251,7 +3251,8 @@ local function replaySend(cmd, cb)
 	local who, rf = G.actor, G.refund
 	O.sendCommand(cmd, function(...)
 		G.replayOut = math.max(0, (G.replayOut or 1) - 1)
-		G.replayQuiet = G.frames + 3   -- room for a follow-up command (next segment, next form)
+		-- room for a follow-up command (next segment, next form); a longer hold for an edge-object count is kept (G.eoCheckHold)
+		G.replayQuiet = G.eoHoldOwn and math.max(G.replayQuiet or 0, G.frames + 3) or (G.frames + 3)
 		pcall(buildEffects, ...)
 		if counted and select(2, ...) ~= true then pcall(toSim, "replay_unused", {}) end
 		if cb then
@@ -4528,6 +4529,7 @@ local function replayNativeStreet(a)
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " edge objects here " .. got .. ", originator " .. exp .. (got == exp and "" or " EDGE OBJECT COUNT DIFFERS"))
 				if got ~= exp then replayFailed(a, "edge objects differ") end
 			end }
+			G.eoCheckHold()
 		end
 		-- (diagnostic) the tool's new nodes and segments the engine did not apply here, by place
 		pcall(function()
@@ -4560,6 +4562,15 @@ G.eoCount = function()
 	local n = 0
 	pcall(function() for _ in pairs(api.engine.system.streetSystem.getEdgeObject2EdgeMap()) do n = n + 1 end end)
 	return n
+end
+
+-- After a replay whose stops and signals are counted on the whole map 10 frames later (native stop, a street with its edge
+-- objects), nothing else is sent to the engine until that count is made: the next replay of a pause (or this game's own build
+-- held at its step) answered within those frames added its objects to the count, a false difference and a resynchronisation on
+-- a slow game. MPFEVER_EOCHECKHOLD=0: as before (3 frames).
+G.eoHoldOwn = os.getenv("MPFEVER_EOCHECKHOLD") ~= "0"
+G.eoCheckHold = function()
+	if G.eoHoldOwn then G.replayQuiet = math.max(G.replayQuiet or 0, G.frames + 11) end
 end
 
 -- A fallback of a replay: at once, or on the next frame when it comes from an engine's answer, as the other retries (the game stays
@@ -4875,6 +4886,7 @@ G.replayNativeStop = function(a, plan)
 				log("NATIVE REPLAY " .. uid .. " stops on the map " .. before .. " -> " .. after .. ((after == expected) and "" or (" (EXPECTED " .. expected .. "): resynchronisation")))
 				if after ~= expected then replayFailed(a, "native stop: stops differ") end
 			end }
+			G.eoCheckHold()
 		end)
 	end
 	-- the bulldozer on a stop: nothing new, the tool's removal of the objects is written by their rank on the segment
@@ -6039,7 +6051,7 @@ local function runNativeRelease()
 			else
 				keep[#keep + 1] = r
 			end
-		elseif now >= r.at and gameSpeed() == 0 then
+		elseif now >= r.at and gameSpeed() == 0 and not (G.eoHoldOwn and G.frames < (G.replayQuiet or 0)) then
 			releaseOne(r, now)
 		else
 			keep[#keep + 1] = r
@@ -6341,11 +6353,86 @@ G.assetPI = function() return os.getenv("MPFEVER_ASSETPI") ~= "0" end
 -- build did, so the trees built after them take the same ids from the queue of freed ids as on the builder's game (unless that
 -- queue was empty). Player-initiated as replayAssets' build (G.assetPI): the towns count the groups removed, then the trees built
 -- again, which adds up to the builder's one tree taken away (their penalty is linear in the trees).
+-- The groups of trees rm removed and the kept trees cons (the mod's constructions) built in ONE native build, as the builder's
+-- bulldozer did: the towns count that build once, the trees taken away less the trees built again (in two builds the towns' score
+-- and penalty, kept within their bounds after each build, could end elsewhere than the builder's near a town of low score). A
+-- script's proposal cannot name a group of trees to remove (the factory refuses it, and the engine's createProposalRemove too:
+-- "Unknown exception", 2026-10-25), a native proposal can, as the game's reforestation does. The kept trees are converted by the
+-- engine first: a dry run it refuses (the kept trees twice, colliding with themselves and with the group still standing), whose
+-- result carries them as the native proposal wants them. dry(cmd, cb) sends the dry run; done(cmd, how, builtDry) gets the
+-- command of the build, or nil and why (builtDry: the dry run was built, a desync on a replaying game)
+G.treeProposal = function(rm, cons, ctx, pi, dry, done)
+	local function native(conv)
+		local okP, P = pcall(function()
+			local P = api.type.Proposal.new()
+			local l = {}
+			for i, e in ipairs(rm) do l[i] = e end
+			P.toRemove = l
+			if conv then P.toAdd = conv end
+			return P
+		end)
+		if not okP or not P then return nil, "native proposal " .. shortErr(P) end
+		local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, pi) end)
+		if not okc or not cmd then return nil, "native command " .. shortErr(cmd) end
+		return cmd
+	end
+	if #cons == 0 then
+		local cmd, why = native(nil)
+		return done(cmd, cmd and (#rm .. " tree group(s) removed in one native build") or why)
+	end
+	local sp = api.type.SimpleProposal.new()
+	local l = {}
+	for _, c in ipairs(cons) do l[#l + 1] = c end
+	for _, c in ipairs(cons) do l[#l + 1] = c end
+	local okd, dcmd = pcall(function()
+		sp.constructionsToAdd = l
+		return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, false)
+	end)
+	if not okd or not dcmd then return done(nil, "kept trees: dry run not made " .. shortErr(dcmd)) end
+	dry(dcmd, function(res, success)
+		if success then return done(nil, "kept trees: the dry run was built instead of refused", true) end
+		local conv = {}
+		pcall(function() local t = res.proposal.toAdd; for i = 1, #cons do conv[i] = t[i] end end)
+		if #conv ~= #cons then return done(nil, "kept trees: the engine's conversion has " .. #conv .. " construction(s), " .. (2 * #cons) .. " expected") end
+		local cmd, why = native(conv)
+		-- (the converted constructions live in that result: kept until the command is made)
+		G.treeDryRes = res
+		done(cmd, cmd and (#rm .. " tree group(s) removed and " .. #conv .. " construction(s) of kept trees in one native build") or why)
+	end)
+end
+
 G.assetEngineRemoval = function(a, uid, rm, cons, ctx, strict)
 	local pi = G.assetPI()
 	local function fail(why)
 		log("ASSET REPLAY " .. uid .. ": " .. why)
 		if strict then replayFailed(a, ("asset removal: " .. why):sub(1, 100)) end
+	end
+	-- one native build first (G.treeProposal); refused, or not made: the groups one after the other as below. MPFEVER_TREEONEBUILD=0:
+	-- as before (the engine's removal of each group, then the kept trees)
+	-- (the dry run is refused only because its copies collide: with the asset construction's flags of 0.5.1, skipCollision, every
+	-- replaying game would build it, so the groups one after the other then)
+	if os.getenv("MPFEVER_TREEONEBUILD") ~= "0" and os.getenv("MPFEVER_ASSETOLDFLAGS") ~= "1" and not a.treeOneTried then
+		a.treeOneTried = true
+		local function dry(cmd, cb)
+			toSim("replaying", { nots = true })
+			replaySend(cmd, cb)
+		end
+		return G.treeProposal(rm, cons, ctx, pi, dry, function(cmd, how, builtDry)
+			if builtDry then return fail(how .. " (desync)") end
+			if not cmd then
+				log("ASSET REPLAY " .. uid .. ": " .. how .. ": the groups one after the other")
+				return G.nowOrNext(function() G.assetEngineRemoval(a, uid, rm, cons, ctx, strict) end)
+			end
+			toSim("replaying", { nots = true })
+			replaySend(cmd, function(res, success)
+				G.treeDryRes = nil
+				if success then log("ASSET REPLAY " .. uid .. ": " .. how .. ": BUILT") return end
+				local why = ""
+				pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
+				log("ASSET REPLAY " .. uid .. ": " .. how .. ": refused " .. why .. ": the groups one after the other")
+				G.nowOrNext(function() G.assetEngineRemoval(a, uid, rm, cons, ctx, strict) end)
+			end)
+		end)
 	end
 	local function step(i)
 		if i > #rm then
@@ -6364,7 +6451,20 @@ G.assetEngineRemoval = function(a, uid, rm, cons, ctx, strict)
 			return
 		end
 		local okP, P = pcall(api.engine.util.proposal.createProposalRemove, rm[i], ctx)
-		if not okP or not P then fail("no engine removal for group " .. rm[i] .. " (" .. shortErr(P) .. ")") return end
+		-- (the engine's removal refuses a group of trees, "Unknown exception": a native proposal naming it, as G.treeProposal;
+		-- MPFEVER_TREEONEBUILD=0: as before, not reproduced)
+		if not okP or not P then
+			local okN, PN = false, "off"
+			if os.getenv("MPFEVER_TREEONEBUILD") ~= "0" then
+				okN, PN = pcall(function()
+					local q = api.type.Proposal.new()
+					q.toRemove = { rm[i] }
+					return q
+				end)
+			end
+			if okN and PN then okP, P = true, PN
+			else fail("no engine removal for group " .. rm[i] .. " (" .. shortErr(P) .. "; native " .. shortErr(PN) .. ")") return end
+		end
 		local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, true, pi) end)
 		if not okc or not cmd then fail("the engine's removal of group " .. rm[i] .. ": command " .. shortErr(cmd)) return end
 		toSim("replaying", { nots = true })
@@ -6501,10 +6601,14 @@ end
 -- the map. Before, every construction-only build of another player was checked (a full read of the map's constructions in the
 -- interface, about 0.1 s each on a large map), and the same mod construction placed twice at one spot was built once here and
 -- twice on the builder's game (a resynchronisation). MPFEVER_ALREADYBUILT=all: as before (every act, the whole map)
+-- The game time stands still in the pause after a load, so a build made in it is stamped the load's time too: a build whose
+-- builder had loaded the same resynchronisation as this game (a.lt, G.loadId) was made after its savegame was taken and is not
+-- looked at either. MPFEVER_ALREADYBUILT=time: the game time only
 G.alreadyBuilt = function(a)
 	local sw = os.getenv("MPFEVER_ALREADYBUILT")
 	if a.fn ~= "makeWorldBuildProposalCmd" or sw == "0" then return false end
 	if sw ~= "all" and not (type(G.loadT) == "number" and type(a.at) == "number" and a.at <= G.loadT) then return false end
+	if sw ~= "all" and sw ~= "time" and a.lt ~= nil and a.lt == G.loadId then return false end
 	local m = type(a.args) == "table" and a.args[1]
 	if type(m) ~= "table" or #(m.toAdd or {}) == 0 or #(m.toRemove or {}) > 0 then return false end
 	local st = m.proposal or {}
@@ -7055,7 +7159,7 @@ local function shipNativeBuilds(st)
 				if not oke then log("edge object enrichment failed: " .. tostring(erre)) end
 			end
 			local a = { fn = o.fn, args = o.args, at = o.at, origin = G.me, oseq = G.oseq, uid = G.me .. ":" .. G.oseq,
-				native = true, paused = o.paused, co = G.myCo, cost = o.cost, ts = o.ts }
+				native = true, paused = o.paused, co = G.myCo, cost = o.cost, ts = o.ts, lt = G.loadId }
 			if G.natShipIds and #G.natShipIds > 0 then
 				-- the released build that was built at this time; the ones released before it and not shipped were refused
 				-- (BUILDLEAD: a build released at once lands at some step at or after the time it was released at, the first of
@@ -11190,11 +11294,21 @@ H.treeremove = function(from, p)
 		local d = R.describe("con", g)
 		if d and d.p then AUTO.points[#AUTO.points + 1] = { x = d.p.x, y = d.p.y, z = d.p.z or 0 } end
 		local okP, P = pcall(api.engine.util.proposal.createProposalRemove, g, playerContext())
-		if not okP or not P then say("group " .. g .. ": createProposalRemove " .. shortErr(P)) return false end
+		-- (refused for a group of trees, "Unknown exception", 2026-10-25: a native proposal naming the group, as G.treeProposal;
+		-- MPFEVER_TREEREMOVE=engine: the engine's removal only)
+		if (not okP or not P) and os.getenv("MPFEVER_TREEREMOVE") ~= "engine" then
+			say("group " .. g .. ": createProposalRemove " .. shortErr(P) .. ": a native proposal instead")
+			okP, P = pcall(function()
+				local q = api.type.Proposal.new()
+				q.toRemove = { g }
+				return q
+			end)
+		end
+		if not okP or not P then say("group " .. g .. ": no removal proposal " .. shortErr(P)) return false end
 		local nr = -1
 		pcall(function() nr = P.toRemove_native:size() end)
 		if nr < 0 then pcall(function() nr = #P.toRemove end) end
-		say("group " .. g .. " (" .. R.assetComponents(g) .. "): the engine's removal proposal removes " .. tostring(nr))
+		say("group " .. g .. " (" .. R.assetComponents(g) .. "): the removal proposal removes " .. tostring(nr))
 		deferredSend(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res, success)
 			local why = ""
 			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
@@ -11218,7 +11332,7 @@ H.treeerase = function(from, p)
 	local function say(t) log("AUTOTEST treeerase " .. t) AUTO.results[#AUTO.results + 1] = t end
 	local mode = os.getenv("MPFEVER_TREEERASE") or "onetree"
 	local ok, sent = pcall(function()
-		local P, what, g = nil, nil, nil
+		local P, what, g, kept = nil, nil, nil, {}
 		if mode == "reforest" then
 			for seed = 1, 5 do
 				if not P then
@@ -11312,13 +11426,14 @@ H.treeerase = function(from, p)
 				ce.playerEntity = api.engine.util.getPlayer()
 				pcall(function() ce.name = "" end)
 				sp.constructionsToAdd = { ce }
+				kept = { ce }
 				what = "one tree taken out of group " .. g .. " (" .. #models .. " kept tree(s) built again)"
 			else
 				what = "group " .. g .. " removed whole (" .. #inst .. " tree(s))"
 			end
 			P = sp
 		end
-		deferredSend(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res, success)
+		local function built(res, success)
 			local why = ""
 			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 			say(what .. ": " .. (success and "BUILT" or ("refused " .. why)))
@@ -11340,7 +11455,22 @@ H.treeerase = function(from, p)
 				for i = 1, math.min(#made, 5) do say("made " .. made[i] .. ": " .. R.assetComponents(made[i])) end
 				G.waits[#G.waits + 1] = { at = G.frames + 60, fn = autoFinish }
 			end }
-		end)
+		end
+		-- (a script's proposal naming the group is refused by the factory: one native build as the bulldozer's, G.treeProposal;
+		-- MPFEVER_TREENATIVE=0: the script's proposal, as before)
+		if g and mode ~= "reforest" and os.getenv("MPFEVER_TREENATIVE") ~= "0" and os.getenv("MPFEVER_ASSETOLDFLAGS") ~= "1" then
+			local function dry(cmd, cb)
+				toSim("replaying", { nots = true })
+				replaySend(cmd, cb)
+			end
+			G.treeProposal({ g }, kept, playerContext(), true, dry, function(cmd, how, builtDry)
+				say(how)
+				if not cmd then G.waits[#G.waits + 1] = { at = G.frames + 30, fn = autoFinish } return end
+				deferredSend(cmd, function(res, success) G.treeDryRes = nil built(res, success) end)
+			end)
+			return true
+		end
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), built)
 		return true
 	end)
 	if not ok then say("error " .. shortErr(sent)) end
@@ -13129,6 +13259,8 @@ local function resumeAfterLoad(state)
 	-- the game time of the savegame loaded now (the session's start, or the host's game of a resynchronisation): the acts stamped
 	-- later cannot be in it (see G.alreadyBuilt)
 	pcall(function() G.loadT = gameTime() end)
+	-- (and the resynchronisation it came from, when it did: read below from the launcher's order to load)
+	G.loadId = nil
 	-- records of the savegame's script state (an earlier session, or the host's): never shipped or reported again
 	local st = state:get() or {}
 	for _, o in ipairs(st.out or {}) do if o.n > G.outSent then G.outSent = o.n end end
@@ -13148,6 +13280,18 @@ local function resumeAfterLoad(state)
 	end)
 	-- first start of this game in the session: everything the launcher wrote so far is for it
 	if fileSize("started.txt") == 0 then
+		-- (loaded from the main menu by MPFever's order: the resynchronisation's or the lobby start's number, written by the
+		-- launcher for this load only, see G.alreadyBuilt)
+		pcall(function()
+			local f = C.IO.open(C.DIR .. BS .. "load_id.txt", "rb")
+			if not f then return end
+			local s = f:read("*a") or ""
+			f:close()
+			G.loadId = tonumber(s:match("%d+"))
+			if G.loadId then log("loaded from the main menu: savegame of resynchronisation " .. G.loadId) end
+			local w = C.IO.open(C.DIR .. BS .. "load_id.txt", "wb")
+			if w then w:close() end
+		end)
 		C.appendFile(C.DIR .. BS .. "started.txt", "1")
 		return
 	end
@@ -13159,16 +13303,19 @@ local function resumeAfterLoad(state)
 		if not f then return end
 		local s = f:read("*a") or ""
 		f:close()
-		local last, pos = nil, 1
+		local last, pos, lastAt = nil, 1, nil
 		while true do
 			local i = s:find("resync_load" .. TAB, pos, true)
 			if not i then break end
 			if i == 1 or s:sub(i - 1, i - 1) == NL then
 				local e = s:find(NL, i, true)
-				if e then last = e end
+				if e then last = e; lastAt = i end
 			end
 			pos = i + 1
 		end
+		-- (the host's number of that resynchronisation, the same on every game: "7" on the host's, "7-<ticks>" on the others')
+		if lastAt then G.loadId = tonumber(s:sub(lastAt, last):match('%["id"%]="?(%d+)')) end
+		if G.loadId then log("loaded: savegame of resynchronisation " .. G.loadId) end
 		if last and last < #s then
 			log("resynchronisation: " .. (#s - last) .. " bytes of messages received during the load are read")
 			G.inOff = last

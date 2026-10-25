@@ -19,6 +19,9 @@ MPFever - Changelog
   - CHANGE (companies): tracks, stations and depots are open to the other companies, for free, when their company set
     nothing (before: tracks and depots private, $100 per stop at a station). The settings already saved are kept.
     MPFEVER_OPENDEFAULT=0: as before.
+  - FIX (companies): the other companies' open tracks were never listed (Transport Fever 3 has no track component): no
+    company could connect to another's open tracks and no train ever paid a track toll. A track is now a segment that is
+    not a street, and each segment's owner is kept from one look to the next. MPFEVER_TRACKTYPE=0: as before.
   - FIX (companies): a station made private stayed free for the other companies' lines that already stopped there: they now
     pay $100 per stop there (new stops are refused). When a station started charging, the first look could charge a whole
     round of a line at once: fees now count from the next stop. A setting for a station known only by its id (another
@@ -34,9 +37,13 @@ MPFever - Changelog
   - FIX (desyncs): the bulldozer on a tree of a forest of the map (a very common click) made the games drift apart: the
     group of trees it took away (thin models, which 0.5.0 could not describe) stayed on the other games and every entity
     made afterwards got another number there (the friends' resynchronisations of 2026-10-24 at 22:30 and 10:20). The group is
-    now described, found again and removed on every game, by the engine's own removal; a removal that cannot be reproduced
-    reloads everybody at once instead of drifting. The bulldozer on a whole group is replayed too. MPFEVER_ASSETREF=0,
-    MPFEVER_ASSETCAPTURE=0, MPFEVER_ASSETSTRICT=0, MPFEVER_ASSETENGINERM=0: as before.
+    now described (by the felled tree, so a game whose savegame already holds the bulldozer does not do it again), found
+    again and replayed on every game as the bulldozer's own build: the group removed and its other trees built again in ONE
+    build, a player's build like the builder's (the towns count the one tree taken away; a script cannot name such a group,
+    the game refused it in every other form, tested on 2026-10-25); a removal that cannot be reproduced reloads everybody at
+    once instead of drifting. The bulldozer on a whole group is replayed too. MPFEVER_ASSETREF=0, MPFEVER_ASSETCAPTURE=0,
+    MPFEVER_ASSETSTRICT=0, MPFEVER_ASSETENGINERM=0, MPFEVER_ASSETPI=0, MPFEVER_ASSETFELLED=0, MPFEVER_TREEONEBUILD=0: as
+    before.
   - FIX (desyncs): a bus stop placed or removed on a town street laid the street on the ground again on the other games
     when an end of its segment lay off its node, even by a hair (0.55 m down to 0.0005 m): the ground was reshaped and town
     buildings removed there only, then the towns drifted (the friends' resynchronisations at 23:35 and 23:38). The replay
@@ -49,18 +56,24 @@ MPFever - Changelog
     signalled line, the Auto Signals mod, a road joined to a street with stops) was replayed as the street and then one
     build per segment: every later entity got another number (the friends' session of 2026-10-24, 23:17). It is now replayed
     as ONE build carrying the engine's own signals and stops, as on the builder's game. MPFEVER_EOINLINE=0: as before.
+    The stops and signals of such a build (and of a stop on a bridge) are counted 10 frames later; nothing else is built
+    meanwhile, or a slow game counted the next build's too and reloaded everybody. MPFEVER_EOCHECKHOLD=0: as before.
   - NEW (desyncs): every build is sent with its town statistics (terrain alignment, trees and rocks taken away, terrain
     brush, new tunnels, as the game's towns count them). A game whose replay gives its towns other numbers asks for a
-    resynchronisation at once ("TOWN STATS DIFFER" in mod.log) instead of drifting for minutes. MPFEVER_ALIGNCHECK=0: off.
+    resynchronisation at once ("TOWN STATS DIFFER" in mod.log) instead of drifting for minutes. Only the replayed build's
+    own proposals are counted (not a terrain edit or trees replayed at the same game time). MPFEVER_ALIGNCHECK=0: off.
   - FIX: a construction built during the pause of a resynchronisation (a headquarters) was in the host's savegame AND
     replayed by the game that loaded it: two headquarters on one game, the companies numbered differently, then a crash at
-    the next load. A construction that already stands at the same place is not built again. MPFEVER_ALREADYBUILT=0: as before.
+    the next load. A construction stamped no later than the loaded savegame, and not made after its builder loaded the same
+    savegame, that already stands at the same place is not built again (only the constructions around it are looked at).
+    MPFEVER_ALREADYBUILT=0: as before.
   - FIX: a player's game could stop on an engine assertion right after loading a resynchronisation: the native module still
     gave the interface the company number of the previous game (a group of trees in the new one). It forgets them before the
     load. MPFEVER_LOADKEEPCO=1: as before.
   - FIX: after its game closed or crashed, MPFever went on reconnecting to the host, and a second MPFever started for the
     same player took the place of the first one every 5 s (a resynchronisation each time). MPFever now leaves the session
-    when its game closes. MPFEVER_EXITKEEPSESSION=1: as before.
+    when its game closes, a reconnection or a join under way included, and a problem report made afterwards describes the
+    session that ran. MPFEVER_EXITKEEPSESSION=1, MPFEVER_STALEJOIN=0, MPFEVER_EXITREPORT=0: as before.
   - FIX: the lobby's « Start the game » button went out of the page when the list of players or settings grew: the lobby's
     buttons now stay in view and the list scrolls above them.
   - Game build 40425 is known (no warning). The winhttp relay gives the game the real error when Windows' winhttp.dll cannot
