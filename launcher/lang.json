@@ -9815,6 +9815,19 @@
       "ko": "답장: MPFever (하단 바)  ›  채팅",
       "zh-CN": "回复：MPFever（底部栏）  ›  聊天",
       "zh-TW": "回覆：MPFever（底部列）  ›  聊天"
+    },
+    "[{0}] session left while connecting: the connection to the host is closed again": {
+      "de": "[{0}] Sitzung während des Verbindens verlassen: die Verbindung zum Host wird wieder geschlossen",
+      "es": "[{0}] sesión abandonada durante la conexión: la conexión con el anfitrión se vuelve a cerrar",
+      "it": "[{0}] sessione lasciata durante la connessione: la connessione all'host viene richiusa",
+      "nl": "[{0}] sessie verlaten tijdens het verbinden: de verbinding met de host wordt weer gesloten",
+      "pl": "[{0}] sesja opuszczona podczas łączenia: połączenie z hostem zostaje ponownie zamknięte",
+      "pt-BR": "[{0}] sessão abandonada durante a conexão: a conexão com o anfitrião é fechada novamente",
+      "ru": "[{0}] сеанс покинут во время подключения: соединение с хостом снова закрывается",
+      "ja": "[{0}] 接続中にセッションを離れました：ホストとの接続を再び閉じます",
+      "ko": "[{0}] 연결 중에 세션을 떠났습니다: 호스트와의 연결을 다시 닫습니다",
+      "zh-CN": "[{0}] 连接期间已离开会话：与主机的连接被重新关闭",
+      "zh-TW": "[{0}] 連線期間已離開工作階段：與主機的連線被重新關閉"
     }
   }
 }

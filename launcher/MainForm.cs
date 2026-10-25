@@ -153,6 +153,11 @@ namespace MPFever
         Action<GameLink, Msg> hostFromGame, clientFromGame;   // the session's handlers on the game's messages (removed at its end)
         int sessionGen;
         int censusN;                                         // autotest: census taken so far                                      // a new session: the threads of the previous one stop
+        // (a player) joins and reconnections under way: StartClient's first connection, a Reconnect thread (see LeaveOnGameExit)
+        int clientJoins;
+        // the session as a problem report describes it, taken when the game closed (see LeaveOnGameExit): a report made after that
+        // (the crash question, the thanks window's Report) still tells the role and the players of the session that ran
+        string leftSession;
 
         // ---- host session state
         readonly object sendGate = new object();   // every host broadcast goes through this lock: same order for everybody
@@ -805,13 +810,9 @@ namespace MPFever
             try
             {
                 var sb = new System.Text.StringBuilder();
-                bool st; lock (sessionGate) st = started;
-                string role = server != null ? "dedicated server" : hostGame != null ? "host" : clients.Count > 0 ? "client" : "no session";
-                string[] ready; lock (players) ready = players.ToArray();
                 sb.AppendLine("MPFever " + Version + ", game build " + Reporter.GameBuild(gameDir));
-                sb.AppendLine("Company mode: " + (companyMode == "separate" ? "one company per player" : "one company for everybody") + "; role: " + role
-                    + (hostName != null ? " (host " + BaseName(hostName) + ")" : ""));
-                sb.AppendLine("Players: " + (ready.Length > 0 ? string.Join(", ", ready.Select(BaseName)) : "-") + "; game running: " + (st ? "yes" : "no"));
+                // (after the game closed: the session it left then, see LeaveOnGameExit)
+                sb.AppendLine(leftSession ?? SessionLines(false));
                 sb.AppendLine("Settings changed: " + Options.Changed());
                 sb.AppendLine("Sync: " + syncText + "; desyncs " + desyncs + ", resynchronisations " + resyncId + ", actions relayed " + actsRelayed + ", refused " + actRefused);
                 sb.AppendLine("Processor: " + Reporter.Processor() + "; " + Reporter.WindowsVersion());
@@ -836,6 +837,19 @@ namespace MPFever
                 Log.Err(F("Rapport de problème impossible : {0}", "Could not make the problem report: {0}", e.Message));
                 if (menuGame != null) try { File.WriteAllText(Path.Combine(menuGame.Dir, "report.txt"), DateTime.Now.Ticks + "\t" + F("Rapport impossible : {0}", "Could not make the report: {0}", e.Message) + "\n"); } catch { }
             }
+        }
+
+        /// <summary>The session as a problem report describes it, two lines: the company mode and this MPFever's role (with the
+        /// host), then the players and whether the game runs. joining: a player whose join or reconnection is under way, with no
+        /// connection to the host right now (a "client", not "no session").</summary>
+        string SessionLines(bool joining)
+        {
+            bool st; lock (sessionGate) st = started;
+            string role = server != null ? "dedicated server" : hostGame != null ? "host" : clients.Count > 0 ? "client" : joining ? "client (not connected)" : "no session";
+            string[] ready; lock (players) ready = players.ToArray();
+            return "Company mode: " + (companyMode == "separate" ? "one company per player" : "one company for everybody") + "; role: " + role
+                + (hostName != null ? " (host " + BaseName(hostName) + ")" : "") + Environment.NewLine
+                + "Players: " + (ready.Length > 0 ? string.Join(", ", ready.Select(BaseName)) : "-") + "; game running: " + (st ? "yes" : "no");
         }
 
         void Init()
@@ -1529,9 +1543,6 @@ namespace MPFever
             }
         }
 
-        /// <summary>The player left the game for the main menu: connections closed, the session's state cleared, the files the
-        /// game and MPFever.exe exchange emptied (the next game must not read the previous session's messages). The game
-        /// keeps running: the MPFever window of its main menu can host or join again.</summary>
         /// <summary>The game closed (or crashed): this MPFever leaves its session at once, the session's files kept for a report.
         /// Kept, a player's MPFever went on reconnecting to the host with no game behind it; the player started MPFever again, and
         /// the old one and the new one took each other's place every 5 s (the host closes the old connection of a name that comes
@@ -1539,16 +1550,35 @@ namespace MPFever
         void LeaveOnGameExit()
         {
             if (ServerMode || Environment.GetEnvironmentVariable("MPFEVER_EXITKEEPSESSION") == "1") return;
-            if (clients.Count == 0 && relay == null) return;
-            Log.W(T("Le jeu est fermé : MPFever quitte la session.", "The game closed: MPFever leaves the session."));
+            // A player whose connection had dropped has none to close, but its reconnection goes on for 5 minutes: it is stopped
+            // too, like a join still connecting. Left alone, it found the host again when the host's MPFever came back (after a
+            // crash of the host's game, say): the same MPFever with no game behind it, a phantom player in the host's session, and
+            // the same swaps every 5 s once the player started MPFever again. A connection made while the session is being left
+            // is closed instead of kept (see StartClient). MPFEVER_STALEJOIN=0: as before.
+            bool stopJoin = Environment.GetEnvironmentVariable("MPFEVER_STALEJOIN") != "0";
+            bool joining = stopJoin && Volatile.Read(ref clientJoins) > 0 && !clientCancelled;
+            bool live = clients.Count > 0 || relay != null || joining;
+            // The session is described now, before it goes: a problem report made afterwards (the crash question, the thanks
+            // window's Report) told "no session" for a player, whose connection is closed here, and only the host among the
+            // players for a host, whose relay is closed here. MPFEVER_EXITREPORT=0: as before.
+            if (live && Environment.GetEnvironmentVariable("MPFEVER_EXITREPORT") != "0")
+                leftSession = SessionLines(joining) + "; session left when the game closed";
+            if (!live && !stopJoin) return;
             sessionGen++;
             clientCancelled = true;
-            foreach (var cl in clients.ToList()) try { cl.Dispose(); } catch { }
-            lock (clients) clients.Clear();
+            if (!live) return;
+            Log.W(T("Le jeu est fermé : MPFever quitte la session.", "The game closed: MPFever leaves the session."));
+            // (taken and emptied at once: a reconnection that adds its connection in between finds the session left, see
+            // StartClient, or has its connection closed here)
+            Client[] gone; lock (clients) { gone = clients.ToArray(); clients.Clear(); }
+            foreach (var cl in gone) try { cl.Dispose(); } catch { }
             var r = relay; relay = null;
             if (r != null) { try { r.Dispose(); } catch { } PortMap.Close(); }
         }
 
+        /// <summary>The player left the game for the main menu: connections closed, the session's state cleared, the files the
+        /// game and MPFever.exe exchange emptied (the next game must not read the previous session's messages). The game
+        /// keeps running: the MPFever window of its main menu can host or join again.</summary>
         void EndSession(string why = null)
         {
             Log.W(why ?? T("=== Retour au menu principal : fin de la session ===", "=== Back to the main menu: the session ends ==="));
@@ -1558,8 +1588,8 @@ namespace MPFever
             clientCancelled = true;
             Options.HostSession = null;
             foreach (var g in games.ToList()) g.WriteSettings();
-            foreach (var cl in clients.ToList()) try { cl.Dispose(); } catch { }
-            lock (clients) clients.Clear();
+            Client[] gone; lock (clients) { gone = clients.ToArray(); clients.Clear(); }
+            foreach (var cl in gone) try { cl.Dispose(); } catch { }
             var r = relay; relay = null;
             if (r != null) { try { r.Dispose(); } catch { } PortMap.Close(); }
             if (hostGame != null && hostFromGame != null) hostGame.FromGame -= hostFromGame;
@@ -1925,6 +1955,7 @@ namespace MPFever
 
         void StartHost(string name, bool launch, GameLink existing = null)
         {
+            leftSession = null;   // (a report describes this session now)
             hostName = name;
             relay = new Relay();
             // a dedicated server lets in only the players with its password and its version, up to its number of players
@@ -1999,8 +2030,32 @@ namespace MPFever
             if (!games.Contains(game)) games.Add(game);
             Client current = null;
             clientCancelled = false;
+            leftSession = null;   // (a report describes this session now)
             // a reconnect thread of an earlier session must not wake up in this one (issue #13)
             int gen = sessionGen;
+            // A connection made once the session was left (LeaveOnGameExit when the game closed, EndSession) is closed instead of
+            // added: Connect may take 20 s, and the session's end found nothing to close meanwhile. Added, it was a player with
+            // no game behind it, in the host's session until this MPFever was quit (see LeaveOnGameExit). The same when the game
+            // of the MPFever window closed before this join even started. MPFEVER_STALEJOIN=0: as before.
+            // (the game's end counts only where it ends the session: not on a dedicated server, nor with MPFEVER_EXITKEEPSESSION=1)
+            bool staleCheck = Environment.GetEnvironmentVariable("MPFEVER_STALEJOIN") != "0";
+            bool exitLeaves = !ServerMode && Environment.GetEnvironmentVariable("MPFEVER_EXITKEEPSESSION") != "1";
+            bool SessionLeft() => staleCheck && (gen != sessionGen || (exitLeaves && menuMode && game == menuGame && !game.GameRunning));
+            // (checked and added under the lock: LeaveOnGameExit and EndSession take and empty the list under it, after they
+            // marked the session left, so a connection is either closed by them or never added)
+            bool AddUnlessLeft(Client c)
+            {
+                bool left;
+                lock (clients)
+                {
+                    left = SessionLeft();
+                    if (!left) { clients.Add(c); current = c; }
+                }
+                if (!left) return true;
+                Log.W(F("[{0}] session quittée pendant la connexion : la connexion à l'hôte est refermée", "[{0}] session left while connecting: the connection to the host is closed again", name));
+                try { c.Dispose(); } catch { }
+                return false;
+            }
             // the in-game MPFever window: the host's view of the session, and this game's own link to the host
             string myId = name, hostStatus = "", deniedText = null;
             long lastChatId = 0;   // the host sends its chat history again on a reconnection
@@ -2155,43 +2210,54 @@ namespace MPFever
                     Log.Warn(F("[{0}] connexion à l'hôte perdue", "[{0}] connection to the host lost", name));
                     ClientStatus(deniedText != null ? "denied" : "lost", 0);
                     game.ToGame(Msg.Make("session", "MPFever", "{[\"started\"]=false,[\"speed\"]=0}"));
-                    if (!menuMode || clientCancelled || gen != sessionGen) return;
+                    // (nor when the session was left: a connection closed by AddUnlessLeft once the game had closed, say)
+                    if (!menuMode || clientCancelled || gen != sessionGen || SessionLeft()) return;
                     // (a host game half received is kept: back with the same host, only the rest is asked for; see "welcome")
                     // the connection dropped: try again for 5 minutes; back with the host, this game receives its
                     // game again like any player who joins
+                    Interlocked.Increment(ref clientJoins);
                     new Thread(() =>
                     {
-                        var end = DateTime.UtcNow.AddMinutes(5);
-                        for (int attempt = 1; DateTime.UtcNow < end && !clientCancelled && gen == sessionGen; attempt++)
+                        try
                         {
-                            menuPhase = "connecting";
-                            menuText = F("Connexion à l'hôte perdue : reconnexion (essai {0})...", "Connection to the host lost: reconnecting (attempt {0})...", attempt);
-                            MenuStatus();
-                            ClientStatus("lost", attempt);
-                            Thread.Sleep(5000);
-                            if (clientCancelled || gen != sessionGen) return;
-                            var c = new Client();
-                            try
+                            var end = DateTime.UtcNow.AddMinutes(5);
+                            for (int attempt = 1; DateTime.UtcNow < end && !clientCancelled && gen == sessionGen; attempt++)
                             {
-                                wire(c);
-                                c.Connect(host, port, name, password);
-                                lock (clients) clients.Add(c);
-                                current = c;
-                                Log.Ok(F("[{0}] reconnecté à l'hôte", "[{0}] reconnected to the host", name));
-                                menuPhase = "connected"; menuText = T("Reconnecté. L'hôte renvoie sa partie...", "Reconnected. The host sends its game again..."); MenuStatus();
-                                return;
+                                menuPhase = "connecting";
+                                menuText = F("Connexion à l'hôte perdue : reconnexion (essai {0})...", "Connection to the host lost: reconnecting (attempt {0})...", attempt);
+                                MenuStatus();
+                                ClientStatus("lost", attempt);
+                                Thread.Sleep(5000);
+                                if (clientCancelled || gen != sessionGen) return;
+                                var c = new Client();
+                                try
+                                {
+                                    wire(c);
+                                    c.Connect(host, port, name, password);
+                                    if (!AddUnlessLeft(c)) return;
+                                    Log.Ok(F("[{0}] reconnecté à l'hôte", "[{0}] reconnected to the host", name));
+                                    menuPhase = "connected"; menuText = T("Reconnecté. L'hôte renvoie sa partie...", "Reconnected. The host sends its game again..."); MenuStatus();
+                                    return;
+                                }
+                                catch (Exception e) { Log.Warn(T("Reconnexion : ", "Reconnecting: ") + e.Message); }
                             }
-                            catch (Exception e) { Log.Warn(T("Reconnexion : ", "Reconnecting: ") + e.Message); }
+                            if (!clientCancelled && gen == sessionGen) { menuPhase = "error"; menuText = T("Connexion à l'hôte perdue (reconnexion impossible).", "Connection to the host lost (could not reconnect)."); MenuStatus(); ClientStatus("gone", 0); }
                         }
-                        if (!clientCancelled && gen == sessionGen) { menuPhase = "error"; menuText = T("Connexion à l'hôte perdue (reconnexion impossible).", "Connection to the host lost (could not reconnect)."); MenuStatus(); ClientStatus("gone", 0); }
+                        finally { Interlocked.Decrement(ref clientJoins); }
                     }) { IsBackground = true, Name = "Reconnect" }.Start();
                 };
             };
             var first = new Client();
             wire(first);
-            first.Connect(host, port, name, password);
-            lock (clients) clients.Add(first);
-            current = first;
+            bool added;
+            Interlocked.Increment(ref clientJoins);
+            try
+            {
+                first.Connect(host, port, name, password);
+                added = AddUnlessLeft(first);
+            }
+            finally { Interlocked.Decrement(ref clientJoins); }
+            if (!added) return;
             // the in-game chat: this player's messages go to the host, which sends them to everybody. Started once the
             // connection is up, and only one at a time: a join that failed before (timeout, wrong address) must not leave
             // a reader behind that takes the messages and marks them unsent
