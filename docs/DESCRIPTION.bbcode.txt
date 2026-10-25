@@ -55,7 +55,7 @@ Your solo games are not affected: MPFever only acts when the game is started thr
 [/list]
 
 [size=4][b]Open source and transparent[/b][/size]
-The full source code is public: [url=https://github.com/dkdknight/MPFever]github.com/dkdknight/MPFever[/url].
+The full source code is public: [url=https://github.com/dkdknight/MPFever]github.com/dkdknight/MPFever[/url], under the GNU GPL v3 (versions up to 0.4.5: MIT).
 MPFever copies a small winhttp.dll file into the game folder, which the game loads by itself, like the usual mod loaders. It passes the game's network requests to Windows unchanged and stays inactive in solo games. MPFever only connects to your friends, to your router (to open the port) and to GitHub.
 
 [size=4][b]Roadmap[/b][/size]

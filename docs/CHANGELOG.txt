@@ -2,6 +2,9 @@ MPFever - Changelog
 ===================
 
 0.5.1 - builds in a pause, houses, warehouses, signals; the same mathematics on every Windows
+  - LICENSE: MPFever is now under the GNU General Public License v3 or later (LICENSE, NOTICE.txt). Versions up to
+    0.4.5 were published under the MIT License and stay so; a project that uses MPFever's code from now on shares its own
+    under the same license. The code ported from TPF3-MP keeps its MIT notice.
   - NEW (desyncs): the same mathematics on every Windows. The game takes sin, exp, pow... from Windows, and those functions
     give other last digits from one Windows build to the other (Windows 11 22621 and 26100: 392 pow results of 200,000
     differ, and atan2, asin, acos, sinh, cosh, exp2...): two players on two Windows could compute their towns differently,

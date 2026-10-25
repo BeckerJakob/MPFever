@@ -30,6 +30,8 @@ copy /y native\out\winhttp.dll "%DIST%\" >nul || exit /b 1
 rem the native module's places by signature (tools\mksigs.py), for a game build it does not know
 if exist native\mpfever_sigs.txt copy /y native\mpfever_sigs.txt "%DIST%\" >nul
 for %%f in (README INSTALL ROADMAP CHANGELOG) do copy /y docs\%%f.txt "%DIST%\" >nul || exit /b 1
+copy /y LICENSE "%DIST%\LICENSE.txt" >nul || exit /b 1
+copy /y NOTICE.txt "%DIST%\" >nul || exit /b 1
 xcopy /e /i /q /y mod\mpfever_1 "%DIST%\mod\mpfever_1" >nul || exit /b 1
 if exist "release\MPFever-%VERSION%.zip" del "release\MPFever-%VERSION%.zip"
 rem standard zip entries (forward slashes), unlike Compress-Archive of Windows PowerShell 5
