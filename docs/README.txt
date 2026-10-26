@@ -106,7 +106,9 @@ KNOWN LIMITATIONS
   games diverge (a unique building made by one player blocks the other's task). Play a game
   without the tutorial.
 - Each build waits about 1 to 2 seconds before it appears: the games apply every
-  construction at the same game time, which needs a safety margin.
+  construction at the same game time, which needs a safety margin. Two players changing the
+  same place within those seconds (one building where the other just did) can lead to an
+  automatic resynchronisation.
 - When a road upgrade moves several town buildings, the town may place one extra
   building differently on each game; the automatic resynchronisation then corrects it
   after a few seconds.
