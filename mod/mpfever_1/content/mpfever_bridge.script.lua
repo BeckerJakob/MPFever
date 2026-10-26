@@ -5885,7 +5885,9 @@ end
 -- games were reloaded 3 minutes later. Each paused action now takes a turn from the host among the paused builds (G.pt), and every
 -- game applies it in that order; one whose turn has not come in 10 s goes as before. MPFEVER_ACTTURNS=0: as before.
 G.actTurns = G.ptOn and os.getenv("MPFEVER_ACTTURNS") ~= "0"
-G.actTurnId = function(a) return "a" .. tostring(a.oseq) end
+-- (with its time: a player's action counter starts again from 1 when its game loads, and a turn kept from an earlier pause would
+-- let the new action go out of its turn)
+G.actTurnId = function(a) return "a" .. tostring(a.oseq) .. "@" .. tostring(a.at) end
 -- the turn of a paused action: its number, false while it has none yet (wait), nil when it needs none
 G.actTurn = function(a)
 	if not a.paused or not G.actTurns or a.kind == "hash" or a.fn == "mpfCoJoin" or a.oseq == nil then return nil end
@@ -6875,6 +6877,15 @@ end
 H.auth = function(from, p)
 	if C.ROLE == "host" or type(p.n) ~= "number" then return end
 	local own = G.authOwn and G.authOwn[p.n]
+	-- (a checkpoint of a pause the host took at another turn than this game: its money is another moment's, a correction from it
+	-- was undone at the next checkpoint, and the money kept moving in a long paused building session. MPFEVER_TURNCHECK=0: as before)
+	if own and type(p.ptd) == "number" and type(own.ptd) == "number" and p.ptd ~= own.ptd and os.getenv("MPFEVER_TURNCHECK") ~= "0" then
+		if (G.authTurnLogged or 0) < 20 then
+			G.authTurnLogged = (G.authTurnLogged or 0) + 1
+			log("host authority: checkpoint " .. p.n .. " taken at turn " .. tostring(p.ptd) .. " on the host, " .. tostring(own.ptd) .. " here: no correction")
+		end
+		return
+	end
 	if own then
 		-- checkpoint taken while paused, here in the GUI half
 		local ok, err = pcall(correctMoney, own, p, p.n, O.sendCommand, G.co)
@@ -7422,9 +7433,13 @@ local function runPausedActions()
 			if a.at < now then log("paused action " .. tostring(a.uid) .. " for t=" .. tostring(a.at) .. " applied at " .. now .. " (desync risk)") end
 			if a.kind == "hash" then
 				local okA, auth = pcall(authValues, G.co)
+				-- (the turns of the pause applied here: a host's value taken at another turn is no correction, see H.auth)
+				if okA and type(auth) == "table" and G.ptOn and G.pt.seen then auth.ptd = G.pt.done end
 				G.authOwn = G.authOwn or {}
 				G.authOwn[a.n] = okA and auth or nil
-				send("sync_hash", { n = a.n, parts = simHash(G.simTerrainSig, G.co, a.n, G.simBuildIds, now), cost = 0, auth = okA and auth or nil })
+				-- (with the turns this game has applied in the pause: a game a turn behind the others is not compared, see the launcher)
+				send("sync_hash", { n = a.n, parts = simHash(G.simTerrainSig, G.co, a.n, G.simBuildIds, now), cost = 0, auth = okA and auth or nil,
+					ptd = (G.ptOn and G.pt.seen) and G.pt.done or nil })
 			elseif a.fn == "mpfCoJoin" or coIsLoanEvent({ co = G.co }, a) then
 				toSim("co_apply", a)
 			else

@@ -173,6 +173,8 @@ namespace MPFever
         long? pauseAt;        // session paused at this game time
         int hashN;
         readonly Dictionary<int, Dictionary<string, Dictionary<object, object>>> hashes = new Dictionary<int, Dictionary<string, Dictionary<object, object>>>();
+        // (the turns of the pause each game had applied at a check, by check number: see OnSyncHash; under the hashes lock)
+        readonly Dictionary<int, Dictionary<string, double>> hashTurns = new Dictionary<int, Dictionary<string, double>>();
         string syncText = "—";
         int actsRelayed, actRefused, actFails, desyncs;
         double lastLoadOrder = -1000;   // when this machine's game was last told to load a game (a load may pass through the main menu)
@@ -3129,14 +3131,33 @@ namespace MPFever
             }
             Dictionary<string, Dictionary<object, object>> got = null;
             int expected; lock (players) expected = players.Count;
+            Dictionary<string, double> turns = null;
             lock (hashes)
             {
                 if (!hashes.TryGetValue(n, out var d)) return;
                 d[m.From] = parts;
-                if (d.Count >= expected) { got = d; hashes.Remove(n); }
+                // (a check taken in a pause: the turns of the paused builds and actions each game had applied, see below)
+                if (t.TryGetValue("ptd", out var ptv) && ptv is double ptd)
+                {
+                    if (!hashTurns.TryGetValue(n, out var tn)) hashTurns[n] = tn = new Dictionary<string, double>();
+                    tn[m.From] = ptd;
+                }
+                if (d.Count >= expected) { got = d; hashes.Remove(n); hashTurns.TryGetValue(n, out turns); hashTurns.Remove(n); }
                 foreach (var old in hashes.Keys.Where(k => k < n - 20).ToList()) hashes.Remove(old);
+                foreach (var old in hashTurns.Keys.Where(k => k < n - 20).ToList()) hashTurns.Remove(old);
             }
             if (got == null) return;
+            // In a pause every game applies the builds and actions in the host's turns, each when it has them: a check taken
+            // while one game had applied a turn the other had not yet compared two different moments, and a player building on
+            // and on in a pause kept the difference there check after check (nodeConfigs, then a reload: most likely 2026-10-25
+            // 21:45, 400 builds in one pause). Games at different turns are not compared; the next check is. MPFEVER_TURNCHECK=0:
+            // as before.
+            if (turns != null && turns.Count == got.Count && turns.Values.Distinct().Count() > 1 && Environment.GetEnvironmentVariable("MPFEVER_TURNCHECK") != "0")
+            {
+                Log.Dim(F("Synchronisation n°{0} : pas comparée (jeux à des tours différents de la pause : {1})", "Sync check #{0}: not compared (games at different turns of the pause: {1})",
+                    n, string.Join(", ", turns.OrderBy(x => x.Key).Select(x => x.Key + "=" + x.Value))));
+                return;
+            }
             lastSyncAt = Now;
             var names = got.Keys.OrderBy(k => k).ToList();
             var keys = got.Values.Where(v => v != null).SelectMany(v => v.Keys.Select(k => k.ToString())).Distinct().OrderBy(k => k).ToList();

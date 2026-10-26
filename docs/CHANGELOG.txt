@@ -15,6 +15,13 @@ MPFever - Changelog
     bought afterwards got another id (72528 here, 62302 there) and the games were reloaded 3 minutes later. Every action made in
     a pause now takes its turn among the builds, and every game applies them all in that one order (the game stays where it is
     while one waits for its turn). MPFEVER_ACTTURNS=0: as before.
+  - FIX (false reloads in long paused building sessions): a check taken in a pause compared games that had applied a
+    different number of the host's turns (one game had built the last stop, the other not yet); a player building on and on
+    kept that difference there check after check ("nodeConfigs": most likely the reload at 21:45 on 2026-10-25, during 400
+    paused builds; that session's game logs were not in the reports).
+    Each game now sends the turns it has applied with its check, and games at different turns are not compared (the next
+    check is); nor does a game correct its money from the host's at a check the host took at another turn (it was undone at
+    the next check, and the money kept moving while a player built in a pause). MPFEVER_TURNCHECK=0: as before.
   - Tests: the replay of a session (recplay) writes the keys of the vehicles and lines made by an action it stamped again with
     their new time (the later actions found none: every vehicle bought in a pause was "unresolved"); scenario pmix (paused
     purchases and builds of two players at once).

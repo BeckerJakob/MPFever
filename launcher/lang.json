@@ -1626,6 +1626,19 @@
       "zh-CN": "同步检查 #{0}（时间 {1}）：{2} 个游戏完全一致（{3} 项测量值）",
       "zh-TW": "同步檢查 #{0}（時間 {1}）：{2} 個遊戲完全一致（{3} 項測量值）"
     },
+    "Sync check #{0}: not compared (games at different turns of the pause: {1})": {
+      "de": "Sync-Prüfung Nr. {0}: nicht verglichen (Spiele bei verschiedenen Zügen der Pause: {1})",
+      "es": "Comprobación de sincronización n.º {0}: no comparada (juegos en turnos distintos de la pausa: {1})",
+      "it": "Controllo di sincronizzazione n. {0}: non confrontato (giochi a turni diversi della pausa: {1})",
+      "nl": "Synchronisatiecontrole nr. {0}: niet vergeleken (spellen bij verschillende beurten van de pauze: {1})",
+      "pl": "Kontrola synchronizacji nr {0}: nieporównana (gry na różnych turach pauzy: {1})",
+      "pt-BR": "Verificação de sincronização nº {0}: não comparada (jogos em turnos diferentes da pausa: {1})",
+      "ru": "Проверка синхронизации № {0}: не сравнивалась (игры на разных ходах паузы: {1})",
+      "ja": "同期チェック #{0}：比較せず（一時停止中の手番がゲームごとに異なる：{1}）",
+      "ko": "동기화 확인 #{0}: 비교하지 않음 (일시 정지 중 게임별 차례가 다름: {1})",
+      "zh-CN": "同步检查 #{0}：未比较（暂停中各游戏处于不同的轮次：{1}）",
+      "zh-TW": "同步檢查 #{0}：未比較（暫停中各遊戲處於不同的輪次：{1}）"
+    },
     "SYNC ~ (slight drift: ": {
       "de": "SYNC ~ (leichte Abweichung: ",
       "es": "SYNC ~ (ligera desviación: ",
