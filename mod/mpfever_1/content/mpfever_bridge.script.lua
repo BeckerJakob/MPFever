@@ -5472,11 +5472,6 @@ local function replayNative(a, formIndex)
 			end
 		end
 		local removal = (#missing == 0) and removalPlan(probe) or nil
-		-- (tests, MPFEVER_NATIVEREMOVAL=1: the tool's own removal, as a native street proposal without a second street cleanup)
-		if removal and os.getenv("MPFEVER_NATIVEREMOVAL") == "1" and not hasConstructionSegments(a.args[1]) and #(R.removedConstructions(probe) or {}) == 0 then
-			log("NATIVE REPLAY " .. tostring(a.uid) .. ": removal of " .. table.concat(removal, ",") .. " as the tool's native proposal (MPFEVER_NATIVEREMOVAL=1)")
-			return replayNativeStreet(a)
-		end
 		if removal then
 			return engineReplay(a, "removal of " .. table.concat(removal, ","), function()
 				return api.engine.util.proposal.makeSegmentsRemoveProposal(removal)
@@ -5822,9 +5817,11 @@ local function nativeHoldAt()
 	-- (stops and signals placed again after a build: all in its step, see G.placeStopsAfter; not more than a minute)
 	if G.stopsAfterBusy and G.frames - G.stopsAfterBusy > 3600 then log("stops placed again: still busy after a minute, hold released"); G.stopsAfterBusy = nil end
 	if (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0) or G.terrainBusy or G.coBusy or G.stopsAfterBusy then return now end
-	-- (a player joining waits until the others announced at the same time have arrived too, see runNativeReplays)
+	-- (a player joining waits until the others announced at the same time have arrived too, see runNativeReplays; a replay due
+	-- now waits until the engine is proven still, see G.sendStillWait)
 	for _, a in ipairs(G.nativeQueue or {}) do
 		if a.fn == "mpfCoJoin" and a.at <= now and (G.frames - (a.recvFrame or 0) < K.JOIN_GATHER or G.joinTurn(a) == false) then return now end
+		if a.stillWait and a.at <= now then return now end
 	end
 	for _, a in ipairs(G.nativeQueue or {}) do
 		if a.at > now then local t = approach(a.at) if m == nil or t < m then m = t end end
@@ -6814,6 +6811,25 @@ G.alreadyBuilt = function(a)
 	return true
 end
 
+-- A replay due now waits while the engine may still be making a step: "now" is this interface's copy of the game time, and a
+-- build sent while the engine finished one more step landed a step later on that game only, with no "LATE" (a replay of the
+-- friends' session, 2026-10-26: theop#1:41 built at 105717600 on one game and 105717400 on the other, both games drifting from
+-- then on; "REPLAY SEND ... still=false stepTarget=nil"). It goes once the engine is proven still, or at once when the exact
+-- steps asked for end at this time (the engine applies the build after them); after 3 s it goes anyway (logged). The game is
+-- held where it is meanwhile (nativeHoldAt). MPFEVER_SENDSTILL=0: as before.
+G.sendStill = os.getenv("MPFEVER_SENDSTILL") ~= "0"
+G.sendStillWait = function(a, now)
+	if not G.sendStill then return false end
+	if G.simStill() or (G.stepTarget ~= nil and G.stepTarget == now) then a.stillWait = nil; return false end
+	a.stillWait = a.stillWait or G.frames
+	if G.frames - a.stillWait > 180 then
+		log("NATIVE REPLAY " .. tostring(a.uid) .. ": the engine not proven still in 3 s, sent anyway (t=" .. tostring(now) .. ") [frame " .. G.frames .. "]")
+		a.stillWait = nil
+		return false
+	end
+	return true
+end
+
 local function runNativeReplays()
 	pumpTerrain()
 	pumpCompanies()
@@ -6839,6 +6855,8 @@ local function runNativeReplays()
 			keep[#keep + 1] = a      -- the previous one is still being handed to the engine (or its turn has not been given yet)
 		elseif a.at <= now and seq and not G.ptMayGo(seq) then
 			keep[#keep + 1] = a      -- a paused build whose turn has not come here yet
+		elseif a.at <= now and a.fn ~= "mpfCoJoin" and G.sendStillWait(a, now) then
+			keep[#keep + 1] = a      -- the engine may still be making a step (see G.sendStillWait)
 		elseif a.at <= now then
 			if seq then G.ptDone(seq); log("NATIVE REPLAY " .. tostring(a.uid) .. ": paused build, turn " .. seq) end
 			if a.at < now then

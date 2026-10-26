@@ -22,6 +22,11 @@ MPFever - Changelog
     Each game now sends the turns it has applied with its check, and games at different turns are not compared (the next
     check is); nor does a game correct its money from the host's at a check the host took at another turn (it was undone at
     the next check, and the money kept moving while a player built in a pause). MPFEVER_TURNCHECK=0: as before.
+  - FIX (desyncs): a replayed build was sent as soon as the game's interface showed its time, even while the engine might still
+    be finishing a step (no exact steps asked, the engine not yet seen standing still): it then landed one step later on that
+    game only, with no warning, and the games drifted (a replay of the friends' session: 105717600 on one game, 105717400 on
+    the other; 34 of 147 replays of that session were sent that way). It now waits, the game held where it is, until the
+    engine is seen standing still or the exact steps asked end at that time (3 s at most). MPFEVER_SENDSTILL=0: as before.
   - FIX (crash): a vehicle command (sale, line, depot...) naming an entity that is not a vehicle on a game, or a line that is no
     line there, stopped that game's engine on an assertion ("it != components.end()"): a sale of 8 vehicles by their numbers
     crashed both games of a replay at once. Such a command is now skipped on that game and reported, as a missing vehicle
