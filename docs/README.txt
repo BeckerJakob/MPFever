@@ -73,9 +73,10 @@ WHAT WORKS
   - A build one game cannot reproduce makes the host resynchronise at once.
 - If the connection is lost, the player's MPFever reconnects by itself (for 5 minutes).
 - Dedicated server (NEW, in development): a PC of its own can run the world for everybody,
-  without the PC of one of the players (MPFever.exe --server or start-server.bat). The world
-  waits while nobody is connected, is saved every 10 minutes and survives a crash of the
-  game. Players join its address as they join a host, with its password if it has one.
+  without the PC of one of the players (MPFever.exe of the server's archive), with display or
+  without (the game runs hidden and draws nothing). The world waits while nobody is
+  connected, is saved every 10 minutes and survives a crash of the game. Players join its
+  address as they join a host, with its password if it has one.
   It comes as a separate archive, MPFever-<version>-server.zip (see SERVER.txt in it).
 - MPFever icon in the game's bottom bar, left of Earnings: green when the games are in sync,
   yellow during a reload or while a player joins, red when something is wrong (link lost,

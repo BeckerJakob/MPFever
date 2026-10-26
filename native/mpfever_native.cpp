@@ -3565,6 +3565,106 @@ static void InstallSmoothPacing()
     Buf b; b.str("smooth pacing: CGame::Sync's call at ").hex(at + 20).str(" redirected (batch interval scaled by native_pace.txt)"); LogLine(b);
 }
 
+// ---------------------------------------------------------------- dedicated server without display (MPFEVER_HEADLESS=1)
+// The game of a server started "without display" simulates the world and runs the mod's scripts as always, but nobody looks
+// at it: its window is made hidden (and never full screen), the 3D world is not drawn (CRenderer::Render returns at once: the
+// terrain, the buildings, the vehicles, shadows, water...), its sound is silent (every OpenAL gain at 0), and its frames are
+// paced by a sleep: the main loop's own limiter (in CCore::UpdateTime) only waits until 4 ms have passed since the last frame,
+// with a busy loop; the drawing's wait for the screen held the loop before. The interface's frame (its light 2D pass, the
+// frame's begin and end) still runs, which keeps the graphics device's per-frame work as it is.
+// MPFEVER_HEADLESS_FPS: frames per second at most (default 60). MPFEVER_HEADLESS_NOUPDATE=1 (an experiment): the renderer's
+// per-frame preparation (CRenderer::NewUpdate: levels of detail, culling) is skipped too.
+static bool g_headless = false;
+static void* PatchImport(uptr base, const char* dll, const char* fn, void* repl);
+typedef void* (*SdlCreateWindowF)(const char* title, int x, int y, int w, int h, u32 flags);
+typedef void (*AlListenerfF)(int param, float value);
+typedef void (*AlSourcefF)(u32 source, int param, float value);
+typedef void (*AlSourcePlayF)(u32 source);
+static SdlCreateWindowF g_sdlCreateWindow = 0;
+static AlListenerfF g_alListenerf = 0;
+static AlSourcefF g_alSourcef = 0;
+static AlSourcePlayF g_alSourcePlay = 0;
+static const int AL_GAIN_ = 0x100A;
+
+extern "C" void* SdlCreateWindowHeadless(const char* title, int x, int y, int w, int h, u32 flags)
+{
+    // SDL_WINDOW_HIDDEN, and neither SDL_WINDOW_FULLSCREEN nor SDL_WINDOW_FULLSCREEN_DESKTOP (0x1, 0x1001)
+    return g_sdlCreateWindow(title, x, y, w, h, (flags | 0x8) & ~0x1001u);
+}
+extern "C" int SdlSetWindowFullscreenHeadless(void*, u32) { return 0; }
+extern "C" void AlListenerfHeadless(int param, float value) { g_alListenerf(param, param == AL_GAIN_ ? 0.0f : value); }
+extern "C" void AlSourcefHeadless(u32 source, int param, float value) { g_alSourcef(source, param, param == AL_GAIN_ ? 0.0f : value); }
+extern "C" void AlSourcePlayHeadless(u32 source)
+{
+    // (a source whose gain the game never set plays at 1, and so does the listener)
+    if (g_alListenerf) g_alListenerf(AL_GAIN_, 0.0f);
+    if (g_alSourcef) g_alSourcef(source, AL_GAIN_, 0.0f);
+    g_alSourcePlay(source);
+}
+extern "C" void HeadlessYield() { Sleep(1); }
+
+// in DllMain, before the game creates its window and opens its sound device: their imports
+static void SetupHeadlessImports()
+{
+    char v[4];
+    if (GetEnvironmentVariableA("MPFEVER_HEADLESS", v, 3) == 0 || v[0] != '1') return;
+    g_headless = true;
+    uptr base = (uptr)GetModuleHandleW(0);
+    g_sdlCreateWindow = (SdlCreateWindowF)PatchImport(base, "SDL2.dll", "SDL_CreateWindow", (void*)&SdlCreateWindowHeadless);
+    PatchImport(base, "SDL2.dll", "SDL_SetWindowFullscreen", (void*)&SdlSetWindowFullscreenHeadless);
+    g_alListenerf = (AlListenerfF)PatchImport(base, "OpenAL32.dll", "alListenerf", (void*)&AlListenerfHeadless);
+    g_alSourcef = (AlSourcefF)PatchImport(base, "OpenAL32.dll", "alSourcef", (void*)&AlSourcefHeadless);
+    g_alSourcePlay = (AlSourcePlayF)PatchImport(base, "OpenAL32.dll", "alSourcePlay", (void*)&AlSourcePlayHeadless);
+}
+
+// a void function of the game made to return at once (its first byte a "ret")
+static bool SkipFunction(const char* what, const char* sig)
+{
+    u32 at = FindSigRva(sig);
+    Buf b;
+    if (!at) { b.str("without display: ").str(what).str(" not found: still done"); LogLine(b); return false; }
+    u8* p = (u8*)(g_base + at);
+    DWORD old;
+    if (!VirtualProtect(p, 1, PAGE_EXECUTE_READWRITE, &old)) return false;
+    *p = 0xC3;
+    VirtualProtect(p, 1, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), p, 1);
+    b.str("without display: ").str(what).str(" at ").hex(at).str(" skipped");
+    LogLine(b);
+    return true;
+}
+
+// in Init (the game's code runs no frame yet): the drawing skipped, the frames paced
+static void InstallHeadless()
+{
+    if (!g_headless) return;
+    {
+        Buf b; b.str("without display (dedicated server): window ").str(g_sdlCreateWindow ? "hidden" : "NOT hidden (SDL_CreateWindow not imported)")
+            .str(", sound ").str(g_alSourcePlay ? "silent" : "NOT silent (OpenAL not imported)");
+        LogLine(b);
+    }
+    SkipFunction("CRenderer::Render (the 3D world)", "48 8B C4 55 53 56 57 41 54 41 55 41 56 41 57 48 8D A8 A8 F3 FF FF");
+    { char v[4]; if (GetEnvironmentVariableA("MPFEVER_HEADLESS_NOUPDATE", v, 3) > 0 && v[0] == '1')
+        SkipFunction("CRenderer::NewUpdate (the renderer's preparation)", "48 89 5C 24 10 48 89 74 24 18 57 41 54 41 55 41 56 41 57 B8 80 14 00 00"); }
+    // CCore::UpdateTime's wait for the next frame: "mov rax,rbx / sub rax,[r15] / cmp rax,0FA0h / jge ... / call _Thrd_yield":
+    // its 4000 us become the frame time asked for, and the yield a 1 ms sleep
+    u32 fps = 60;
+    { char v[8] = {}; DWORD n = GetEnvironmentVariableA("MPFEVER_HEADLESS_FPS", v, 7); if (n > 0 && n < 7) { u32 f = 0; for (DWORD i = 0; i < n && v[i] >= '0' && v[i] <= '9'; i++) f = f * 10 + (v[i] - '0'); if (f >= 5 && f <= 250) fps = f; } }
+    u32 at = FindSigRva("48 8B C3 49 2B 07 48 3D A0 0F 00 00 0F 8D ?? ?? ?? ?? E8");
+    u8* thunk = at ? AllocNear(16) : 0;
+    if (!thunk) { Buf b; b.str("without display: the frame limiter not found, the frames are not paced"); LogLine(b); return; }
+    WriteAbsJump(thunk, (uptr)&HeadlessYield);
+    FlushInstructionCache(GetCurrentProcess(), thunk, 14);
+    u8* p = (u8*)(g_base + at);
+    DWORD old;
+    if (!VirtualProtect(p, 23, PAGE_EXECUTE_READWRITE, &old)) return;
+    *(u32*)(p + 8) = 1000000 / fps;
+    *(i32*)(p + 19) = (i32)(thunk - (p + 23));
+    VirtualProtect(p, 23, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), p, 23);
+    Buf b; b.str("without display: frames paced at ").dec(fps).str(" per second at most (limiter at ").hex(at).str(")"); LogLine(b);
+}
+
 static DWORD WINAPI Init(void*)
 {
     g_base = (uptr)GetModuleHandleW(0);
@@ -3600,6 +3700,7 @@ static DWORD WINAPI Init(void*)
     if (g_simPoolA || g_simPoolB) { Buf t; t.str("pool sizes forced: ").hex(g_simPoolA).str(",").hex(g_simPoolB); LogLine(t); }
     { Buf t; t.str(g_mathOther ? "mathematics: another C runtime's (MPFEVER_MATHDLL), functions " : (g_mathPatched ? "mathematics: MPFever's own, functions " : "mathematics: Windows' (not replaced), functions ")).hex(g_mathPatched); LogLine(t); }
     if (g_threads) { Buf t; t.str("engine told it has ").hex(g_threads).str(" processor(s)").str(g_realGetSystemInfo ? "" : " (GetSystemInfo not patched)"); LogLine(t); }
+    InstallHeadless();
     bool known = SelectBuild(fh->TimeDateStamp);
     if (g_sigReportN) { g_sigReport[g_sigReportN] = 0; Buf w; w.str("game build ").hex(fh->TimeDateStamp).str(": ").str(g_sigReport); LogLine(w); }
     if (!known) {
@@ -3916,6 +4017,7 @@ extern "C" BOOL WINAPI DllMain(HMODULE inst, DWORD reason, void*)
             LimitThreads(); SetupSimPools(); PatchScriptPool((uptr)GetModuleHandleW(0));
             PatchMath(g_base);
             PatchLuaSeed(g_base);
+            SetupHeadlessImports();
             u8* ll = FindUnique(g_base, P_LUA_LOAD, (int)sizeof(P_LUA_LOAD), g_knownLua);
             if (ll) { RVA_LUA_LOAD = (u32)((uptr)ll - g_base); InstallDetour(RVA_LUA_LOAD, P_LUA_LOAD, sizeof(P_LUA_LOAD), (void*)&LuaLoadDetour, (void**)&g_luaLoadOrig); }
         }

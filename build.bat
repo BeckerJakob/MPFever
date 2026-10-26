@@ -26,7 +26,7 @@ where python >nul 2>&1 || (echo Python not found: install Python 3 and lupa ^(pi
 python tests\run_all.py --exe launcher\bin\Release\MPFever.exe || (echo TESTS FAILED: no archive made & exit /b 1)
 
 echo === 4/4 package
-set "VERSION=0.5.7"
+set "VERSION=0.5.8"
 set "DIST=release\dist\MPFever"
 if exist release\dist rmdir /s /q release\dist
 mkdir "%DIST%" || exit /b 1
@@ -44,12 +44,14 @@ rem standard zip entries (forward slashes), unlike Compress-Archive of Windows P
 powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path 'release\dist\MPFever'), (Join-Path (Resolve-Path 'release') 'MPFever-%VERSION%.zip'), 'Optimal', $true)" || exit /b 1
 echo BUILD OK: release\MPFever-%VERSION%.zip
 
-rem the dedicated server's archive: the same MPFever, plus start-server.bat and SERVER.txt (players do not need them)
-set "SDIST=release\dist-server\MPFever"
+rem the dedicated server's archive: the same MPFever, plus start-server.bat, SERVER.txt and server-edition.txt (its MPFever.exe
+rem opens the server's window), in a folder of its own name (players do not need them)
+set "SDIST=release\dist-server\MPFever-Server"
 if exist release\dist-server rmdir /s /q release\dist-server
 xcopy /e /i /q /y "%DIST%" "%SDIST%" >nul || exit /b 1
 copy /y docs\SERVER.txt "%SDIST%\" >nul || exit /b 1
+copy /y docs\server-edition.txt "%SDIST%\" >nul || exit /b 1
 copy /y launcher\start-server.bat "%SDIST%\" >nul || exit /b 1
 if exist "release\MPFever-%VERSION%-server.zip" del "release\MPFever-%VERSION%-server.zip"
-powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path 'release\dist-server\MPFever'), (Join-Path (Resolve-Path 'release') 'MPFever-%VERSION%-server.zip'), 'Optimal', $true)" || exit /b 1
+powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path 'release\dist-server\MPFever-Server'), (Join-Path (Resolve-Path 'release') 'MPFever-%VERSION%-server.zip'), 'Optimal', $true)" || exit /b 1
 echo BUILD OK: release\MPFever-%VERSION%-server.zip

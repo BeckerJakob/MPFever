@@ -191,16 +191,26 @@ namespace MPFever
         }
     }
 
-    /// <summary>Dedicated server (MPFever.exe --server): the game of this PC loads the world and hosts it like a player
-    /// hosts a savegame, but nobody plays on it. The world is saved regularly, the game is started again when it crashes,
-    /// and the console under the log drives the server. What a player sees is unchanged: they join its address.
-    /// Inspired by the servers of Minecraft (server.properties, console), Satisfactory and Factorio (the world waits while
-    /// nobody is connected, autosave).</summary>
+    /// <summary>Dedicated server (MPFever.exe of the server's archive, or MPFever.exe --server): the game of this PC loads
+    /// the world and hosts it like a player hosts a savegame, but nobody plays on it. The window opens with the server
+    /// stopped; it starts with one of its two buttons: with display (the game's window shows the world, as a player's game) or
+    /// without (the game's window is hidden and the world is not drawn, see the native module's MPFEVER_HEADLESS), or by itself
+    /// when the window opens if asked (serverautostart=1 in mpfever_settings.txt, in the last mode used). The world is saved
+    /// regularly, the game is started again when it crashes, and the console under the log drives the server. What a player
+    /// sees is unchanged: they join its address. Inspired by the servers of Minecraft (server.properties, console),
+    /// Satisfactory and Factorio (the world waits while nobody is connected, autosave).</summary>
     sealed partial class MainForm
     {
-        /// <summary>MPFever.exe --server.</summary>
+        /// <summary>The server's window: MPFever.exe of the server's archive (server-edition.txt next to it) or --server.</summary>
         public static bool ServerMode;
+        /// <summary>The file of the server's archive that makes its MPFever.exe open the server's window.</summary>
+        public const string ServerEditionFile = "server-edition.txt";
+        /// <summary>--server-start display|headless: the server starts at once in that mode (MPFever started again by an update
+        /// installed while it ran), else null.</summary>
+        static string serverStartAtOpen;
         ServerConfig server;
+        volatile bool serverStarted, serverStoppedByHand;
+        bool serverHeadless;
 
         // saves of the world: their numbers are far above those of the resynchronisations (save_done tells them apart)
         const int ServerSaveIdBase = 1000000;
@@ -238,21 +248,71 @@ namespace MPFever
 
         // ---------------------------------------------------------------- start, stop, restart
 
-        void StartServerMode()
+        /// <summary>The arguments MPFever.exe was started with, for the server's window: whether the server starts at once.</summary>
+        internal static void ServerArgs(string[] args, bool updated)
+        {
+            int i = Array.IndexOf(args, "--server-start");
+            if (i >= 0 && i + 1 < args.Length && (args[i + 1] == "display" || args[i + 1] == "headless")) serverStartAtOpen = args[i + 1];
+            // (MPFever 0.5.7's server started its world at once: its update, installed while the world ran, starts the new
+            // version with "--server" only)
+            else if (updated && args.Contains("--server") && !args.Contains("--server-idle")) serverStartAtOpen = "display";
+            // (an update found when the window opens starts MPFever again with them)
+            Program.Args = serverStartAtOpen != null ? new[] { "--server", "--server-start", serverStartAtOpen } : new[] { "--server", "--server-idle" };
+        }
+
+        /// <summary>The arguments of the next MPFever.exe (after an update, or a stop): the server running in its mode, or stopped.</summary>
+        string[] ServerRunArgs() => serverStarted && !serverStoppedByHand
+            ? new[] { "--server", "--server-start", serverHeadless ? "headless" : "display" }
+            : new[] { "--server", "--server-idle" };
+
+        static bool ServerAutoStart => LoadSettings().TryGetValue("serverautostart", out var v) && v == "1";
+        static bool ServerLastHeadless => LoadSettings().TryGetValue("servermode", out var v) && v == "headless";
+
+        /// <summary>The window is open: the settings are read, and the server starts if asked (an update installed while
+        /// it ran, or the automatic start), else it waits for one of the two start buttons.</summary>
+        void OpenServerWindow()
         {
             menuMode = true;
-            running = true;
             hostBtn.Enabled = joinBtn.Enabled = localBtn.Enabled = false;
+            Program.Args = ServerRunArgs();
             LoadServerConfig();
-            menuGame = new GameLink(ServerPlayerName(), "menu") { Server = true };
+            new Thread(FindServerAddresses) { IsBackground = true, Name = "Server addresses" }.Start();
+            string mode = serverStartAtOpen ?? (ServerAutoStart ? (ServerLastHeadless ? "headless" : "display") : null);
+            if (mode != null)
+            {
+                if (serverStartAtOpen == null)
+                    Log.W(T("Démarrage automatique du serveur (case cochée dans la fenêtre).", "The server starts by itself (box ticked in the window)."));
+                StartServerMode(mode == "headless");
+                return;
+            }
+            menuPhase = "idle";
+            menuText = T("Le serveur est arrêté. Démarrez-le avec l'un des deux boutons :\n\n• avec affichage : la fenêtre du jeu montre le monde, comme chez un joueur ;\n• sans affichage : le jeu tourne caché, sans dessiner le monde ni faire de bruit (bien moins de ressources ; il faut tout de même une carte graphique).",
+                "The server is stopped. Start it with one of the two buttons:\n\n• with display: the game's window shows the world, as on a player's PC;\n• without display: the game runs hidden, without drawing the world or making any sound (far fewer resources; a graphics card is still needed).");
+            try { BeginInvoke((Action)UpdateServerButtons); } catch { }
+        }
+
+        /// <summary>A start button, the automatic start or the console's "start": the server's game starts and loads the world,
+        /// with its window and its drawing, or without them (headless).</summary>
+        void StartServerMode(bool headless)
+        {
+            if (serverStarted || serverStopping) return;
+            if (gameMissing) { Log.Err(T("Transport Fever 3 est introuvable : le serveur ne peut pas démarrer.", "Transport Fever 3 was not found: the server cannot start.")); return; }
+            serverStarted = true;
+            serverHeadless = headless;
+            SaveSetting("servermode", headless ? "headless" : "display");
+            Program.Args = ServerRunArgs();
+            running = true;
+            Log.W(headless ? T("=== Démarrage du serveur sans affichage : le jeu tourne caché, sans dessiner le monde ===", "=== The server starts without display: the game runs hidden, without drawing the world ===")
+                           : T("=== Démarrage du serveur avec affichage ===", "=== The server starts with display ==="));
+            LoadServerConfig();   // (the file as it is now)
+            menuGame = new GameLink(ServerPlayerName(), "menu") { Server = true, Headless = headless };
             games.Add(menuGame);
             menuGame.Exited += OnServerGameExited;
             new Thread(MenuLoop) { IsBackground = true, Name = "Menu link" }.Start();
             new Thread(ServerLoop) { IsBackground = true, Name = "Server" }.Start();
-            new Thread(FindServerAddresses) { IsBackground = true, Name = "Server addresses" }.Start();
             if (!BeginServerWorld(true))
                 Log.Warn(T("Le serveur attend : corrigez mpfever_server.properties puis tapez « restart ».", "The server is waiting: fix mpfever_server.properties, then type « restart »."));
-            try { BeginInvoke((Action)(() => cmdBox?.Focus())); } catch { }
+            try { BeginInvoke((Action)(() => { UpdateServerButtons(); cmdBox?.Focus(); })); } catch { }
         }
 
         /// <summary>Reads mpfever_server.properties (written with its default values the first time).</summary>
@@ -436,11 +496,14 @@ namespace MPFever
             }) { IsBackground = true, Name = "Server restart" }.Start();
         }
 
-        /// <summary>"stop" (or the window closed): the world is saved, the players are told, the game closes, then MPFever.</summary>
-        void StopServer()
+        /// <summary>"stop" (or the window closed): the world is saved, the players are told and the game closes. Then the
+        /// window closes, or (the stop button, the console's "stop") opens again with the server stopped: MPFever starts
+        /// again, which leaves nothing of the stopped session behind.</summary>
+        void StopServer(bool closeWindow)
         {
             if (serverStopping) return;
             serverStopping = true;
+            serverStoppedByHand = true;
             new Thread(() =>
             {
                 Log.W(T("=== Arrêt du serveur ===", "=== The server stops ==="));
@@ -460,6 +523,13 @@ namespace MPFever
                 catch (Exception e) { Log.Err(e.Message); }
                 menuGame?.Kill();
                 Thread.Sleep(500);
+                if (!closeWindow)
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MPFever.exe"), string.Join(" ", ServerRunArgs()))
+                            { UseShellExecute = false, WorkingDirectory = Environment.CurrentDirectory });
+                    }
+                    catch (Exception e) { Log.Err(e.Message); }
                 serverClosed = true;
                 try { BeginInvoke((Action)Close); } catch { }
             }) { IsBackground = true, Name = "Server stop" }.Start();
@@ -467,9 +537,9 @@ namespace MPFever
 
         double updateEmptySince = -1;
 
-        /// <summary>A new release while nobody is connected: the world is saved, the game closes, the update is installed and
-        /// MPFever starts again with the same arguments (--server), which loads the world again. If the update fails, the
-        /// same version starts again.</summary>
+        /// <summary>A new release while nobody is connected (or while the server is stopped): the world is saved, the game
+        /// closes, the update is installed and MPFever starts again as the server was (running in its mode, which loads the
+        /// world again, or stopped). If the update fails, the same version starts again.</summary>
         void ServerSelfUpdate(UpdateInfo u)
         {
             if (serverStopping) return;
@@ -484,14 +554,14 @@ namespace MPFever
                     if (st) SaveWorld(T("mise à jour", "update"), true, false, 600);
                     var r = relay;
                     if (r != null) foreach (var p in r.Admitted()) r.Deny(p, "{[\"reason\"]=\"stopped\"}");
-                    EndSession(T("=== Serveur arrêté pour la mise à jour ===", "=== Server stopped for the update ==="));
+                    if (serverStarted) EndSession(T("=== Serveur arrêté pour la mise à jour ===", "=== Server stopped for the update ==="));
                 }
                 catch (Exception e) { Log.Err(e.Message); }
                 menuGame?.Kill();
                 Thread.Sleep(1500);
                 try { Updater.Run(u, null, null); }
                 catch (Exception e) { Log.Err(F("Échec de la mise à jour : {0}", "Update failed: {0}", Updater.Describe(e))); }
-                try { Updater.Restart(Program.Args); }
+                try { Updater.Restart(ServerRunArgs()); }
                 catch (Exception e) { Log.Err(e.Message); }
                 serverClosed = true;
                 try { BeginInvoke((Action)Close); } catch { }
@@ -504,7 +574,7 @@ namespace MPFever
             if (server != null && !serverClosed && e.CloseReason != CloseReason.WindowsShutDown && menuGame != null && menuGame.GameRunning)
             {
                 e.Cancel = true;
-                StopServer();
+                StopServer(true);
                 return;
             }
             base.OnFormClosing(e);
@@ -777,8 +847,8 @@ namespace MPFever
         // ---------------------------------------------------------------- console
 
         static string ServerHelp() => T(
-            "Commandes du serveur :\n  status            joueurs, vitesse, synchronisation, dernière sauvegarde\n  say <texte>       message dans la discussion de tous les joueurs\n  save              sauvegarde le monde maintenant\n  pause | resume    met le monde en pause ou le relance\n  speed <1|2|4>     vitesse du jeu\n  kick <joueur>     exclut un joueur (il peut revenir)\n  resync            recharge le monde du serveur chez tous les joueurs\n  restart           relit les paramètres, sauvegarde et redémarre le monde\n  stop              sauvegarde le monde et arrête le serveur",
-            "Server commands:\n  status            players, speed, sync, last save\n  say <text>        message in every player's chat\n  save              saves the world now\n  pause | resume    pauses the world or runs it again\n  speed <1|2|4>     game speed\n  kick <player>     kicks a player (who may come back)\n  resync            reloads the server's world on every player's game\n  restart           reads the settings again, saves and restarts the world\n  stop              saves the world and stops the server");
+            "Commandes du serveur :\n  start [headless]  démarre le serveur (headless : sans affichage)\n  status            joueurs, vitesse, synchronisation, dernière sauvegarde\n  say <texte>       message dans la discussion de tous les joueurs\n  save              sauvegarde le monde maintenant\n  pause | resume    met le monde en pause ou le relance\n  speed <1|2|4>     vitesse du jeu\n  kick <joueur>     exclut un joueur (il peut revenir)\n  resync            recharge le monde du serveur chez tous les joueurs\n  restart           relit les paramètres, sauvegarde et redémarre le monde\n  stop              sauvegarde le monde et arrête le serveur (la fenêtre reste ouverte)",
+            "Server commands:\n  start [headless]  starts the server (headless: without display)\n  status            players, speed, sync, last save\n  say <text>        message in every player's chat\n  save              saves the world now\n  pause | resume    pauses the world or runs it again\n  speed <1|2|4>     game speed\n  kick <player>     kicks a player (who may come back)\n  resync            reloads the server's world on every player's game\n  restart           reads the settings again, saves and restarts the world\n  stop              saves the world and stops the server (the window stays open)");
 
         void ServerCommand(string line)
         {
@@ -789,8 +859,19 @@ namespace MPFever
             var cmd = (sp < 0 ? line : line.Substring(0, sp)).ToLowerInvariant().TrimStart('/');
             var arg = sp < 0 ? "" : line.Substring(sp + 1).Trim();
             bool st; lock (sessionGate) st = started;
+            // (the server stopped: only what needs no world)
+            if (!serverStarted && cmd != "help" && cmd != "?" && cmd != "start" && cmd != "status" && cmd != "list" && cmd != "stop" && cmd != "exit" && cmd != "quit")
+            {
+                Log.Warn(T("Le serveur est arrêté : démarrez-le (un bouton, ou « start » / « start headless »).", "The server is stopped: start it (a button, or « start » / « start headless »)."));
+                return;
+            }
             switch (cmd)
             {
+                case "start":
+                    if (serverStarted) { Log.Warn(T("Le serveur est déjà démarré.", "The server is already running.")); break; }
+                    if (arg != "" && arg != "headless" && arg != "display") { Log.Warn("start [display|headless]"); break; }
+                    StartServerMode(arg == "headless");
+                    break;
                 case "help": case "?":
                     foreach (var l in ServerHelp().Split('\n')) Log.Dim(l);
                     break;
@@ -839,8 +920,13 @@ namespace MPFever
                 case "restart": case "reload":
                     RestartWorld();
                     break;
-                case "stop": case "exit": case "quit":
-                    StopServer();
+                case "stop":
+                    if (!serverStarted) { Log.Warn(T("Le serveur est déjà arrêté.", "The server is already stopped.")); break; }
+                    StopServer(false);
+                    break;
+                case "exit": case "quit":
+                    if (!serverStarted) { serverClosed = true; Close(); break; }
+                    StopServer(true);
                     break;
                 default:
                     Log.Warn(F("Commande inconnue « {0} » : tapez help.", "Unknown command « {0} »: type help.", cmd));
@@ -854,10 +940,12 @@ namespace MPFever
             var res = new List<string>();
             bool st, paused; int sp;
             lock (sessionGate) { st = started; paused = pauseAt.HasValue; sp = speed; }
-            string state = !st ? (worldMissing ? T("monde introuvable", "world not found") : T("chargement du monde", "loading the world"))
+            string state = !serverStarted ? T("serveur arrêté", "server stopped")
+                : !st ? (worldMissing ? T("monde introuvable", "world not found") : T("chargement du monde", "loading the world"))
                 : paused ? (autoPaused ? T("en pause, en attente de joueurs", "paused, waiting for players") : T("en pause", "paused"))
                 : F("en marche, x{0}", "running, x{0}", sp);
-            res.Add(F("Monde « {0} » : {1}", "World « {0} »: {1}", server.World, state));
+            res.Add(F("Monde « {0} » : {1}", "World « {0} »: {1}", server.World, state)
+                + (!serverStarted ? "" : serverHeadless ? T(" (sans affichage)", " (without display)") : T(" (avec affichage)", " (with display)")));
             var peers = relay?.Admitted() ?? new Peer[0];
             string[] ready; lock (players) ready = players.ToArray();
             res.Add(F("Joueurs : {0}/{1}", "Players: {0}/{1}", peers.Length, server.MaxPlayers));
@@ -870,15 +958,38 @@ namespace MPFever
 
         // ---------------------------------------------------------------- window
 
-        /// <summary>The left card of the window in server mode: the settings in use and the server's buttons.</summary>
+        Card serverCard;
+        Panel serverIdle, serverRunning;
+        ModernButton serverStopBtn;
+        CheckBox autoStartBox;
+
+        /// <summary>The left card of the window in server mode: the settings in use and the server's buttons (the two start
+        /// buttons and the automatic start while it is stopped; save, restart and stop while it runs).</summary>
         Card BuildServerCard()
         {
             var card = new Card();
+            serverCard = card;
             serverInfo = new Label { AutoSize = false, Height = Theme.S(170), ForeColor = Theme.Text, Font = Theme.Ui(9.5f) };
+            var startDisplayBtn = new ModernButton(ButtonKind.Primary) { Text = "▶  " + T("Démarrer avec affichage", "Start with display") };
+            var startHeadlessBtn = new ModernButton(ButtonKind.Secondary) { Text = "▶  " + T("Démarrer sans affichage", "Start without display") };
+            autoStartBox = new CheckBox
+            {
+                Text = T("Démarrer le serveur à l'ouverture de MPFever (dans le dernier mode choisi)", "Start the server when MPFever opens (in the last mode chosen)"),
+                Checked = ServerAutoStart, AutoSize = false, Height = Theme.S(44), Font = Theme.Ui(9.25f), ForeColor = Theme.Text,
+            };
+            startDisplayBtn.Click += (s, e) => ServerCommand("start");
+            startHeadlessBtn.Click += (s, e) => ServerCommand("start headless");
+            autoStartBox.CheckedChanged += (s, e) =>
+            {
+                SaveSetting("serverautostart", autoStartBox.Checked ? "1" : "0");
+                Log.W(autoStartBox.Checked ? T("Le serveur démarrera à l'ouverture de MPFever.", "The server will start when MPFever opens.")
+                                           : T("Le serveur ne démarrera plus à l'ouverture de MPFever.", "The server will no longer start when MPFever opens."));
+            };
             var saveBtn = new ModernButton(ButtonKind.Primary) { Text = T("Sauvegarder maintenant", "Save now") };
             var restartBtn = new ModernButton(ButtonKind.Secondary) { Text = T("Redémarrer le monde", "Restart the world") };
             var settingsBtn = new ModernButton(ButtonKind.Ghost) { Text = T("Ouvrir les paramètres", "Open the settings") };
             var stopBtn = new ModernButton(ButtonKind.Ghost) { Text = T("Arrêter le serveur", "Stop the server") };
+            serverStopBtn = stopBtn;
             saveBtn.Click += (s, e) => ServerCommand("save");
             restartBtn.Click += (s, e) =>
             {
@@ -887,7 +998,7 @@ namespace MPFever
             };
             stopBtn.Click += (s, e) =>
             {
-                if (MessageBox.Show(this, T("Arrêter le serveur ? Le monde est sauvegardé d'abord.", "Stop the server? The world is saved first."),
+                if (MessageBox.Show(this, T("Arrêter le serveur ? Le monde est sauvegardé d'abord, puis la fenêtre attend un nouveau démarrage.", "Stop the server? The world is saved first, then the window waits for a new start."),
                     "MPFever", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes) ServerCommand("stop");
             };
             settingsBtn.Click += (s, e) =>
@@ -895,20 +1006,47 @@ namespace MPFever
                 try { Process.Start("notepad.exe", "\"" + ServerConfig.DefaultPath + "\""); }
                 catch (Exception ex) { Log.W(ex.Message); }
             };
-            Ui.StackTop(card, Ui.Caption(T("Serveur dédié", "Dedicated server")), serverInfo, Ui.Gap(8), saveBtn, Ui.Gap(8), restartBtn, Ui.Gap(8), settingsBtn, Ui.Gap(4), stopBtn);
-            Ui.FitHeight(card);
+            serverIdle = new Panel();
+            Ui.StackTop(serverIdle, startDisplayBtn, Ui.Gap(8), startHeadlessBtn, Ui.Gap(6), autoStartBox, Ui.Gap(4));
+            serverRunning = new Panel { Visible = false };
+            Ui.StackTop(serverRunning, saveBtn, Ui.Gap(8), restartBtn, Ui.Gap(8));
+            foreach (var p in new[] { serverIdle, serverRunning }) p.Height = p.Controls.Cast<Control>().Sum(c => c.Height);
+            Ui.StackTop(card, Ui.Caption(T("Serveur dédié", "Dedicated server")), serverInfo, Ui.Gap(8), serverIdle, serverRunning, settingsBtn, Ui.Gap(4), stopBtn);
+            stopBtn.Visible = false;
+            FitServerCard();
             UpdateServerCard();
             return card;
         }
 
+        /// <summary>The buttons of the server as it is: stopped (the start buttons) or running.</summary>
+        void UpdateServerButtons()
+        {
+            if (serverCard == null) return;
+            bool on = serverStarted && !serverStopping;
+            if (serverIdle.Visible == !on && serverRunning.Visible == on) return;
+            serverIdle.Visible = !on;
+            serverRunning.Visible = on;
+            serverStopBtn.Visible = on;
+            FitServerCard();
+        }
+
+        /// <summary>The card's height from what it shows.</summary>
+        void FitServerCard()
+        {
+            int h = serverCard.Padding.Vertical;
+            foreach (Control x in serverCard.Controls) if (x.Dock == DockStyle.Top && x.Visible) h += x.Height;
+            serverCard.Height = h;
+        }
+
         void UpdateServerCard()
         {
+            UpdateServerButtons();
             if (serverInfo == null || server == null) return;
             string next = server.AutosaveMinutes <= 0 ? T("désactivée", "off")
                 : F("toutes les {0} min", "every {0} min", server.AutosaveMinutes) + (lastSavedAt.HasValue ? F(" · dernière {0:HH:mm}", " · last {0:HH:mm}", lastSavedAt.Value) : "");
             var text = string.Join("\n", new[]
             {
-                server.Name,
+                server.Name + (!serverStarted ? T(" · arrêté", " · stopped") : serverHeadless ? T(" · sans affichage", " · without display") : T(" · avec affichage", " · with display")),
                 F("Monde : {0}", "World: {0}", server.World == "" ? "—" : server.World) + (worldMissing ? "  ✖" : ""),
                 F("Port : {0} · mot de passe : {1}", "Port: {0} · password: {1}", server.Port, server.Password == "" ? T("non", "no") : T("oui", "yes")),
                 F("Entreprises : {0} · {1} joueurs max.", "Companies: {0} · {1} players max.", server.CompanyMode == "separate" ? T("une par joueur", "one per player") : T("une pour tous", "one for everybody"), server.MaxPlayers),

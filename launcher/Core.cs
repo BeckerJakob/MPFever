@@ -564,6 +564,10 @@ namespace MPFever
         /// no company of its own there.</summary>
         public bool Server;
 
+        /// <summary>A dedicated server started without display: the native module hides the game's window, does not draw the
+        /// world and silences it (MPFEVER_HEADLESS=1).</summary>
+        public bool Headless;
+
         /// <summary>Name and role chosen in the main menu, read by the mod when the game loads (identity.txt).</summary>
         public void SetIdentity(string name, string role)
         {
@@ -725,6 +729,7 @@ namespace MPFever
             var sigs = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mpfever_sigs.txt");
             if (File.Exists(sigs)) psi.EnvironmentVariables["MPFEVER_SIGS"] = sigs;
             if (Server) psi.EnvironmentVariables["MPFEVER_SERVER"] = "1";
+            if (Headless) psi.EnvironmentVariables["MPFEVER_HEADLESS"] = "1";
             WriteLang();
             WriteSettings();
             // application script: starts the host's savegame after a resynchronisation (and loads the autotest save)

@@ -57,6 +57,6 @@ it is stable enough.
 
 Later - Persistent worlds
   [x] Dedicated server running the world without the host's PC (0.3.12: MPFever.exe --server, separate archive,
-      see SERVER.txt; to be tested in long real games)
+      see SERVER.txt; to be tested in long real games; 0.5.8: start buttons, without display)
   [ ] Persistent world that players join and leave at any time
   [ ] Larger player counts (MMO-like)

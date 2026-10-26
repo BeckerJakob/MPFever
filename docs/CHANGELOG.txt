@@ -1,6 +1,21 @@
 MPFever - Changelog
 ===================
 
+0.5.8 - the dedicated server starts with a button, with display or without
+  - Dedicated server: its window opens with the server stopped and two buttons, "Start with display" (the game's window shows
+    the world, as before) and "Start without display". The console has "start" and "start headless" too. The box "Start the
+    server when MPFever opens" (off at first) starts it by itself, in the way it was started last. "stop" (the console, the
+    button) now saves the world and stops the server, and the window waits for a new start; closing the window stops it and
+    closes MPFever as before. A server updated while it ran starts again as it was.
+  - Without display: the server's game runs hidden. It simulates the world and hosts the players exactly as before, but its
+    window is never shown (made hidden, never full screen), the 3D world is not drawn (CRenderer::Render skipped), it is
+    silent (every OpenAL gain at 0), and its frames are paced by a sleep at 60 per second at most (the game's own limiter
+    only spins; drawing for the screen held the loop before). A graphics card is still needed: the game starts its graphics
+    even so. MPFEVER_HEADLESS_FPS=n: another frame limit; MPFEVER_HEADLESS_NOUPDATE=1 (an experiment): the renderer's
+    preparation skipped too.
+  - The server's archive: its folder is called MPFever-Server (the players' one: MPFever), and its MPFever.exe opens the server's
+    window by itself (server-edition.txt next to it; start-server.bat does the same).
+
 0.5.7 - signals replayed as they were set, two players building at the same place
   - FIX (desync, a reload in a session of 2026-10-26): a signal's own settings (a path signal's one way, the year it was made)
     are construction parameters of the signal, which the replays of stops and signals did not copy: the replayed signal had none

@@ -95,8 +95,9 @@ Players can also join a game already running, and a lost connection reconnects b
 
 ### Dedicated server
 
-A PC of its own can run the world without anybody playing on it: download **`MPFever-<version>-server.zip`** and start `MPFever.exe --server`. It includes:
+A PC of its own can run the world without anybody playing on it: download **`MPFever-<version>-server.zip`**, open its `MPFever.exe` and click a start button. It includes:
 
+- a start with display (the game shows the world) or without (the game runs hidden and draws nothing: far fewer resources);
 - a password and a player limit;
 - autosaves with backups;
 - a restart after a crash;

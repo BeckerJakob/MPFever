@@ -56,8 +56,10 @@ namespace MPFever
             // started by the game from a Steam invitation: join that host at once
             int j = Array.IndexOf(args, "--join");
             if (j >= 0 && j + 1 < args.Length) MainForm.JoinAtStart = args[j + 1];
-            // dedicated server: this PC's game runs the world for the players, nobody plays on it (mpfever_server.properties)
-            MainForm.ServerMode = !auto && args.Contains("--server");
+            // dedicated server: this PC's game runs the world for the players, nobody plays on it (mpfever_server.properties);
+            // the server's archive opens its window by itself (server-edition.txt next to MPFever.exe)
+            MainForm.ServerMode = !auto && (args.Contains("--server") || File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, MainForm.ServerEditionFile)));
+            if (MainForm.ServerMode) MainForm.ServerArgs(args, updated);
             Application.Run(new MainForm(auto));
             return 0;
         }
@@ -65,7 +67,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.5.7";
+        public const string Version = "0.5.8";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -761,7 +763,13 @@ namespace MPFever
                     var known = pendingUpdate;
                     if (known != null && Updater.CompareVersions(Updater.ParseVersion(u.Version), Updater.ParseVersion(known.Version)) <= 0) return;
                     pendingUpdate = u;
-                    if (ServerMode)
+                    if (ServerMode && !serverStarted)
+                    {
+                        // (a stopped server: nobody to wait for)
+                        Log.Ok(F("MPFever {0} est publié : le serveur arrêté l'installe maintenant.", "MPFever {0} is published: the stopped server installs it now.", u.Version));
+                        try { BeginInvoke((Action)(() => ServerSelfUpdate(u))); } catch { }
+                    }
+                    else if (ServerMode)
                         Log.Ok(F("MPFever {0} est publié : le serveur l'installera et redémarrera dès que personne n'est connecté.", "MPFever {0} is published: the server installs it and restarts as soon as nobody is connected.", u.Version));
                     else
                     {
@@ -873,7 +881,7 @@ namespace MPFever
             try { if (LoadSettings().TryGetValue("savedirs", out var sd)) GameInstall.AddGameSaveDirs(sd.Split('|')); } catch { }
             if (ServerMode)
             {
-                StartServerMode();
+                OpenServerWindow();
                 return;
             }
             if (MenuModeDefault && !autotest)

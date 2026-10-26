@@ -94,8 +94,8 @@ Developer mode (MPFever.exe --dev) keeps the old window with the Host / Join but
 and the local test.
 
 A world can also run on a dedicated server, a PC of its own that nobody plays on
-(MPFever.exe --server): download the separate archive MPFever-<version>-server.zip,
-which adds start-server.bat and SERVER.txt (how to set it up).
+: download the separate archive MPFever-<version>-server.zip (its folder is called
+MPFever-Server, its MPFever.exe opens the server's window) and read SERVER.txt in it.
 
 
 TROUBLESHOOTING
