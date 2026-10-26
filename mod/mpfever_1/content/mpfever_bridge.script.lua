@@ -10276,10 +10276,13 @@ H.pmix = function(from, p)
 	end
 	if not pick then AUTO.results[#AUTO.results + 1] = "pmix: no vehicle with a depot"; return autoFinish() end
 	local before = #R.entitiesWith("TRANSPORT_VEHICLE")
+	-- (read once: a component read from the engine points into its storage, which the next vehicle bought moves; read again a
+	-- second later it crashed the game)
+	local depot, cfg = pick.tv.depot, C.marshal(pick.tv.transportVehicleConfig)
 	local n = 0
 	local function buyOne()
 		n = n + 1
-		uiRequest("makeVehicleBuyCmd", { n = 3, [1] = me, [2] = pick.tv.depot, [3] = C.marshal(pick.tv.transportVehicleConfig) })
+		uiRequest("makeVehicleBuyCmd", { n = 3, [1] = me, [2] = depot, [3] = C.deser(C.ser(cfg)) })
 		if n < 8 then G.waits[#G.waits + 1] = { at = G.frames + 30, fn = buyOne } end
 	end
 	buyOne()
@@ -14452,7 +14455,6 @@ local function guiUpdate(userParams, state, guiState)
 		if not okn then log("emissions: " .. tostring(errn)) end
 		send("hello", { name = C.NAME, role = C.ROLE, build = getBuildVersion and getBuildVersion() or "?", time = gameTime() })
 	end
-
 	for _, line in ipairs(readLines("in.log", "inOff")) do
 		local kind, from, payload = parseLine(line)
 		if kind then
