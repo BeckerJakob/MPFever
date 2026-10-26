@@ -54,6 +54,9 @@ def strip_paused(payload):
 
 
 def main():
+    # (the events file in UTF-8 whatever the console's code page: the launcher reads it so, and names like "Vendôme Signal n°12"
+    # came to the games mangled)
+    sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
     ap.add_argument("--launcher", required=True)
     ap.add_argument("--out", action="append", required=True)

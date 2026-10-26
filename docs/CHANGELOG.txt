@@ -1,6 +1,37 @@
 MPFever - Changelog
 ===================
 
+0.5.7 - signals replayed as they were set, two players building at the same place
+  - FIX (desync, a reload in a session of 2026-10-26): a signal's own settings (a path signal's one way, the year it was made)
+    are construction parameters of the signal, which the replays of stops and signals did not copy: the replayed signal had none
+    and was another signal on the other games. 20 signals set to one way from their window made the track network of the
+    replaying game differ (2063 of its parts), the next track build there numbered its segments otherwise (67898 against the
+    builder's 67897), the trains went apart and the games were reloaded. Every replayed stop and signal now gets its builder's
+    parameters (a field of the script's edge object the API does not list; checked: the replayed world then has the builder's
+    signals and track network, part for part). MPFEVER_EOPARAMS=0: as before.
+  - FIX (desync): the streets and tracks a replay builds had no emission emitter (their noise and pollution): the engine does
+    not give one to a script's segment, the tools give one to theirs. Every replayed segment of that session (25, a plain track
+    build included) had its pollution on the builder's game only. Every replayed segment now gets its builder's emitter
+    (MPFEVER_EMITTERS=0: as before). With this and the signals' parameters, that session replayed from its savegame gives the
+    builder's world entity for entity, and the track build that went apart gets the builder's ids (58814, 65981, 67897).
+    (A new junction node still has no emitter on the replaying games: the API gives a node none.)
+  - A signal on any track (not only on a bridge or in a tunnel) is now replayed as the signal tool's own proposal, with its
+    maps of the segment it replaces: replayed by script, a test had other junction configurations than the builder's.
+    MPFEVER_NATIVESIGNAL=0: as before.
+  - FIX (desync, the known issue of 0.5.6): two players changing the same place within about two seconds. A tool's build is
+    computed when the player clicks, then held two seconds; another player's build landing meanwhile changed the place, the
+    builder applied its computation of the click and the other games computed the build again (town statistics, entity ids:
+    a reload). Now, when another player's build or world action was applied since the click, the held build is shipped and
+    this game replays it too, the same way as the others: every game computes it at the same moment from the same data (a
+    build that no longer fits is then left out on every game alike). Not in the separate companies mode yet.
+    MPFEVER_RESTALE=0: as before.
+  - FIX (desync): builds of two players stamped with the same step were applied in another order on each game (each game its
+    own first): two streets of one junction upgraded at once got other ids on each game and the towns went apart. Every game
+    now applies the builds of one step in one order, by player. MPFEVER_SAMESTEP=0: as before.
+  - A signal changed from its own window is replayed with the window's "ignore errors", as the window sends it.
+  - TESTS: scenario restale (two players changing one junction at once, MPFEVER_TOGETHER=1); census MPFEVER_CENSUS=IDS (the
+    entities of every listable type, to compare two games' worlds); dsignal probes of the signal's parameters and emitter.
+
 0.5.6 - builds no longer land late after the engine stalls, paused actions in one order
   - FIX (desyncs: 4 reloads in the friends' sessions of 2026-10-25): a game stopping at another player's build asks the engine
     for the exact steps left. While the simulation stood in a long step (10 to 13 s on a large map: a lane modifier or industry

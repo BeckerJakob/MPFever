@@ -3335,6 +3335,7 @@ end
 H.act = function(from, p)
 	logMargin(p.native and "act(native)" or "act", p.at, p.origin, p.lead)
 	p.recvFrame = G.frames
+	pcall(G.noteOthers, p)
 	-- (a player announced while the session is paused: its turn among the others' announcements, see G.joinTurn)
 	if p.fn == "mpfCoJoin" and p.paused and G.joinTurns then G.ptIssue(p.origin, G.joinTurnId(p)) end
 	if G.uiEdit(p) then
@@ -3385,6 +3386,8 @@ local function replaySend(cmd, cb)
 	if counted then G.replayCounted = G.replayCounted - 1 end
 	G.replayOut = (G.replayOut or 0) + 1
 	G.replaySince = G.frames
+	-- (another player's build reaches the engine here: a build this game holds was computed before it, see G.restale)
+	G.worldFrame = G.frames
 	local who, rf = G.actor, G.refund
 	O.sendCommand(cmd, function(...)
 		G.replayOut = math.max(0, (G.replayOut or 1) - 1)
@@ -3761,6 +3764,13 @@ end
 -- bulldozer on a stop, nor the stops placed again after a street build, plan.after: what their builder paid is not known; the
 -- bookings still even out any difference). MPFEVER_REPLACEFREE=0: as before; MPFEVER_REPLACEFREE=builder (tests): the replays as
 -- before, the dstop scenario's builder still priced like the tool.
+-- Whether the builder's tool sent its build with ignoreErrors (bit 8 of a.ctx: a signal's own window, which changes the signal
+-- in place, does; the tools do not). MPFEVER_EOIGNORE=1 (tests): every replayed stop and signal as if it did
+G.toolIgnoresErrors = function(a)
+	local bits = tonumber(a and a.ctx)
+	return (bits ~= nil and bits >= 32 and math.floor(bits / 8) % 2 == 1) or os.getenv("MPFEVER_EOIGNORE") == "1"
+end
+
 G.toolCosts = function(a, plan)
 	local bits = tonumber(a and a.ctx)
 	local sw = os.getenv("MPFEVER_REPLACEFREE")
@@ -3911,6 +3921,12 @@ local function replayStop(a, plan, variant)
 	se.precedenceNode0 = (plan.seg.streetEdge and plan.seg.streetEdge.precedenceNode0) or 2
 	se.precedenceNode1 = (plan.seg.streetEdge and plan.seg.streetEdge.precedenceNode1) or 2
 	e.streetEdge = se
+	-- the segment's noise and pollution as the stop or signal tool gave its copy (a script's segment gets none, see C.rebuild's
+	-- SegmentAndEntity); MPFEVER_EMITTERS=0: as before
+	if type(plan.seg.emissionEmitter) == "table" and os.getenv("MPFEVER_EMITTERS") ~= "0" then
+		local oke, erre = pcall(function() e.emissionEmitter = C.rebuild("EmissionEmitter", plan.seg.emissionEmitter) end)
+		if not oke and not G.emitterErr then G.emitterErr = true; log("NATIVE REPLAY stop: the segment's emission emitter not copied (" .. shortErr(erre) .. ")") end
+	end
 	local eos = {}
 	for k, o in ipairs(plan.objs) do
 		local eo = api.type.SimpleStreetProposal.EdgeObject.new()
@@ -3922,6 +3938,7 @@ local function replayStop(a, plan, variant)
 		eo.model = (variant == 2) and o.model or (o.model:gsub("^::/", ""))
 		eo.playerEntity = api.engine.util.getPlayer()
 		pcall(function() eo.name = o.name or "" end)
+		C.setEdgeObjectParams(eo, o)
 		eos[k] = eo
 	end
 	local ncr = {}
@@ -3964,8 +3981,9 @@ local function replayStop(a, plan, variant)
 		-- (there, a builder's build that left the towns alike is replayed as a script's build, which the towns ignore as they
 		-- ignored the builder's: G.stopNoTown. Issue #85: signals on track bridges, "TOWN STATS DIFFER" and a reload each time)
 		local pi = not (a and ((type(c.type) == "number") and c.type or 0) ~= 0 and G.stopNoTown(a))
-		if free then return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, pi, true) end
-		return api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, pi)
+		local ign = not plan.after and G.toolIgnoresErrors(a)
+		if free then return api.cmd.makeWorldBuildProposalCmd(sp, ctx, ign, pi, true) end
+		return api.cmd.makeWorldBuildProposalCmd(sp, ctx, ign, pi)
 	end)
 		if okf and cmd then log("NATIVE REPLAY " .. tostring(a.uid) .. " stop context: tool flags " .. tostring(a.ctx)) end
 	if not okf or not cmd then
@@ -4813,6 +4831,7 @@ G.eoDryRun = function(m, opts)
 			eo.model = (o.model:gsub("^::/", ""))
 			eo.playerEntity = api.engine.util.getPlayer()
 			pcall(function() eo.name = o.name or "" end)
+			C.setEdgeObjectParams(eo, o)
 			eos[#eos + 1] = eo
 		end
 	end
@@ -4936,17 +4955,19 @@ end
 -- exactly. What this way cannot make goes to replayStop as before (never to a resynchronisation); a native stop applied with
 -- another number of stops than the builder's asks for one at once. On by default for the stops on bridges and in tunnels since the
 -- game test of 2026-10-25 (132: the native stops on bridge segments built, and their town statistics were the builder's); the
--- signals there too since 0.5.3 (issue #85: signals on track bridges, the towns drifted after each; MPFEVER_NATIVESIGNAL=0: as
--- before); MPFEVER_NATIVESTOP=all: every stop and signal (tests); MPFEVER_NATIVESTOP=0: as before (replayStop for every stop).
+-- signals there too since 0.5.3 (issue #85: signals on track bridges, the towns drifted after each), and on every track since
+-- 0.5.7 (MPFEVER_NATIVESIGNAL=0: as before); MPFEVER_NATIVESTOP=all: every stop and signal (tests); MPFEVER_NATIVESTOP=0: as before (replayStop for every stop).
 G.nativeStopWanted = function(a, plan)
 	local sw = os.getenv("MPFEVER_NATIVESTOP")
 	if sw == "0" then return false end
 	if type(plan) ~= "table" or plan.after or type(plan.E) ~= "number" or type(a.args) ~= "table" then return false end
 	if #(plan.objs or {}) == 0 and next(plan.removeIdx or {}) == nil then return false end
 	if sw == "all" then return true end
+	-- (a signal on any track since 0.5.7: the script's replay of a plain track's segment carries none of the tool's maps; a test
+	-- replayed that way had other node configurations than the builder's, the tool's own proposal none, 2026-10-26)
+	if plan.segType == 1 then return os.getenv("MPFEVER_NATIVESIGNAL") ~= "0" end
 	local okc, c = pcall(function() return api.engine.getComponent(plan.E, api.type.ComponentType.BASE_EDGE) end)
 	if not (okc and c) or ((type(c.type) == "number") and c.type or 0) == 0 then return false end
-	if plan.segType == 1 and os.getenv("MPFEVER_NATIVESIGNAL") == "0" then return false end
 	return true
 end
 
@@ -5001,18 +5022,19 @@ G.replayNativeStop = function(a, plan)
 		if not pi then log("NATIVE REPLAY " .. uid .. " native stop: the builder's build left the towns alike: replayed as a script's build (the towns ignore it)") end
 		-- (priced like the tool's build, as replayStop: the replaced segment free)
 		local free = G.toolCosts(a, plan) and (sc.roadTemplate == nil or sc.roadTemplate == c.roadTemplate)
+		local ign = G.toolIgnoresErrors(a)
 		local okk, cmd, label = false, nil, nil
 		for _, variant in ipairs({ {}, { noConfigs = true }, { noConfigs = true, noMaps = true } }) do
 			C.errors = {}
 			variant.toolNodes = toolNodes
-			if eo then variant.withObjects = eo; variant.eoByRank = true end
+			if eo then variant.withObjects = eo; variant.eoByRank = true; variant.eoMaps = os.getenv("MPFEVER_EOMAPS") ~= "0" end
 			label = (variant.noMaps and "without node configurations and id maps") or (variant.noConfigs and "without node configurations") or "complete"
 			local okp, P = pcall(C.rebuildNativeWithConstruction, m, nil, rm, variant)
 			if okp and P then
-				if free then okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, pi, true) end) end
+				if free then okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, ign, pi, true) end) end
 				if not (okk and cmd) then
 					free = false
-					okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, pi) end)
+					okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, ign, pi) end)
 				end
 				log("NATIVE REPLAY " .. uid .. " native stop (" .. label .. "): " .. ((okk and cmd) and "command made" or shortErr(cmd))
 					.. (#C.errors > 0 and (" [" .. table.concat(C.errors, " ; "):sub(1, 200) .. "]") or ""))
@@ -5923,6 +5945,7 @@ end
 H.nat_pending = function(from, p)
 	if p.origin == G.me then return end
 	if p.paused then G.ptIssue(p.origin, p.id) end
+	pcall(G.noteOthers, { origin = p.origin, at = p.at, native = true })
 	logMargin("nat_pending", p.at, p.origin, p.lead)
 	G.natWait[#G.natWait + 1] = { origin = p.origin, id = p.id, at = p.at, since = G.frames, lead = p.lead }
 	if p.lead then
@@ -6036,7 +6059,8 @@ local function pollNativeEvents()
 				local at = paused and pausedStamp(now) or (stampFor(now) + STEP)
 				-- (paused: released in its turn, see G.pt)
 				local pt = paused and G.ptOn or nil
-				G.natRelease[#G.natRelease + 1] = { id = id, at = at, paused = pt, frame0 = G.frames }
+				-- (t0, copy: see G.restale)
+				G.natRelease[#G.natRelease + 1] = { id = id, at = at, paused = pt, frame0 = G.frames, t0 = now, copy = G.takeToolCopy() }
 				if pt then G.ptIssue(G.me, id) end
 				send("nat_pending", { origin = G.me, at = at, id = id, paused = pt })
 				log("native build " .. id .. " held by the DLL, released at t=" .. at .. " (now " .. now .. ") [frame " .. G.frames .. "]")
@@ -6050,9 +6074,122 @@ local function pollNativeEvents()
 	end
 end
 
+-- A tool's build is computed when the player clicks (the ground it aligns, the town buildings it takes away: the proposal itself
+-- carries them), held about two seconds, then applied as it was computed. Another player's build landing in between (19 industry
+-- extensions next to a track the player was taking away, 2026-10-25; two streets of one junction upgraded at once, the restale
+-- scenario) changed the place: the builder applied its computation of the click, every other game computed the build again from
+-- what was shipped, and the games went apart (town statistics, entity ids: a reload). Now the proposal the tool applied is kept
+-- (its compact form, the one a capture ships), and when another player's build or world action was applied here since the click,
+-- or is stamped between the click and the release, the held build is not given to the engine: it is shipped as it is and this
+-- game replays it too, by the same way as the others (as the edits from a window, G.uiEdit): every game computes it at the same
+-- moment from the same data. Not in the separate companies mode, where the tool's proposal names the savegame's company (the
+-- native module gives its build this player's company, not a replay). MPFEVER_RESTALE=0: as before.
+G.restaleOn = os.getenv("MPFEVER_RESTALE") ~= "0"
+G.othersAt = {}
+G.worldFrame = 0
+-- the tool's event when it applies a build ({proposal, data} by position or by name): its compact form, for G.restale
+G.toolApplied = function(param)
+	if not G.restaleOn or not G.session.started or G.cmode == "separate" then return end
+	local pr = type(param) == "table" and (param[1] or param.proposal) or nil
+	if pr == nil then return end
+	local ok, compact = pcall(C.compactProposal, pr)
+	-- (a copy with nothing in it is never used: replayed, the player's build would be lost on every game)
+	local function hasContent(m)
+		if #(m.toAdd or {}) > 0 or #(m.toRemove or {}) > 0 then return true end
+		for _, k in ipairs({ "addedNodes", "addedSegments", "removedNodes", "removedSegments", "edgeObjectsToAdd", "edgeObjectsToRemove" }) do
+			if #((m.proposal or {})[k] or {}) > 0 then return true end
+		end
+		return false
+	end
+	if ok and type(compact) == "table" and hasContent(compact) then
+		G.toolCopy = { frame = G.frames, compact = compact }
+	else
+		G.toolCopy = nil
+		if not G.toolCopyErr then
+			G.toolCopyErr = true
+			log("held builds: the tool's proposal could not be read (" .. (ok and "nothing in it" or shortErr(compact)) .. "): not replayed here when another player builds meanwhile")
+		end
+	end
+end
+-- the copy of the build the tool applied in this frame or just before (the native module reports a held build a frame or two
+-- after the tool's event)
+G.takeToolCopy = function()
+	local t = G.toolCopy
+	G.toolCopy = nil
+	if t and G.frames - t.frame <= 5 then return t.compact end
+	return nil
+end
+-- an action of another player that changes the world (a build, an industry extension, a terrain edit, a mod's command), at its
+-- game time: a build held here since before that time was computed without it
+G.isWorldAct = function(p)
+	if type(p) ~= "table" then return false end
+	local fn = tostring(p.fn or "")
+	return p.native == true or p.terrain == true or p.fn == nil or fn:find("Proposal", 1, true) ~= nil or fn:find("Terrain", 1, true) ~= nil
+		or fn:find("^makeTown") ~= nil or fn:find("Bulldozable", 1, true) ~= nil or fn:find("^asset") ~= nil or fn == "makeScriptingSendEventCmd"
+end
+G.noteOthers = function(p)
+	if not G.restaleOn or type(p) ~= "table" or p.origin == G.me or type(p.at) ~= "number" or not G.isWorldAct(p) then return end
+	G.othersAt[#G.othersAt + 1] = { at = p.at, origin = p.origin }
+	while #G.othersAt > 64 do table.remove(G.othersAt, 1) end
+end
+-- whether the world changed here under a held build since the tool computed it: another player's build or action applied in a
+-- frame after the click (G.worldFrame, the replays and the actions of a pause), or stamped between the click's time and the release
+G.restaleWhy = function(r, at)
+	if (G.worldFrame or 0) > (r.frame0 or math.huge) then return "another player's build applied here since the click" end
+	-- (one at the release's own step counts when its player is ranked before this one: it is applied first, see G.sameStepWait)
+	for _, o in ipairs(G.othersAt) do
+		if r.t0 and o.at >= r.t0 and (o.at < at or (o.at == at and tostring(o.origin) < tostring(G.me))) then
+			return "another player's build or action at t=" .. o.at .. " (clicked at t=" .. r.t0 .. ")"
+		end
+	end
+	return nil
+end
+-- at the release of the held build r: true when it was shipped and queued here as a replay instead (an error leaves the build as
+-- the tool computed it)
+G.restale = function(r, at)
+	local ok, res = pcall(G.restaleBody, r, at)
+	if not ok then log("native build " .. tostring(r.id) .. ": not replayed here (" .. tostring(res):sub(1, 200) .. ")") end
+	return ok and res == true
+end
+G.restaleBody = function(r, at)
+	-- (MPFEVER_RESTALELOG=1, tests: why a held build is or is not replayed here)
+	if os.getenv("MPFEVER_RESTALELOG") == "1" then
+		log("restale check " .. tostring(r.id) .. ": copy " .. tostring(r.copy ~= nil) .. ", t0 " .. tostring(r.t0) .. ", at " .. tostring(at)
+			.. ", frame0 " .. tostring(r.frame0) .. ", world frame " .. tostring(G.worldFrame) .. ", others " .. C.ser(G.othersAt):sub(1, 200))
+	end
+	if not G.restaleOn or type(r.copy) ~= "table" or r.lead or G.cmode == "separate" then return false end
+	local why = G.restaleWhy(r, at)
+	if not why then return false end
+	-- the act a capture of this build would have shipped (the compact proposal, its references translated as the capture does)
+	local args = { n = 4, [1] = C.deser(C.ser(r.copy)), [2] = { __player = true }, [3] = false, [4] = true }
+	R.translateOut("makeWorldBuildProposalCmd", args, G.rev or {})
+	args = C.deser(C.ser(args))
+	G.oseq = G.oseq + 1
+	local a = { fn = "makeWorldBuildProposalCmd", args = args, at = at, origin = G.me, oseq = G.oseq, uid = G.me .. ":" .. G.oseq,
+		native = true, natId = r.id, paused = r.paused and true or nil, co = G.myCo, lt = G.loadId,
+		ctx = G.natCtx and G.natCtx[r.id] or nil, refund = G.natRefund and G.natRefund[r.id] or nil }
+	if G.natCtx then G.natCtx[r.id] = nil end
+	if G.natRefund then G.natRefund[r.id] = nil end
+	if a.paused then a.pseq = G.pt.of[G.ptKey(G.me, r.id)] end
+	-- (the tool's command, held by the native module, is never given to the engine: dropped there at the next command)
+	if not r.fn then nativeCtl("dropid " .. r.id) end
+	send("act", a)
+	-- (here: in the replays' queue at once; in a pause it keeps its turn, which the queue takes when it applies it, so that no
+	-- later turn goes before it here)
+	local here = C.deser(C.ser(a))
+	here.recvFrame = G.frames
+	G.nativeQueue[#G.nativeQueue + 1] = here
+	G.restaled = (G.restaled or 0) + 1
+	log("native build " .. r.id .. " shipped as " .. a.uid .. " and replayed here as the others replay it: " .. why)
+	-- (an autotest's build: its answer, as the replay's)
+	if r.cb then G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function() pcall(r.cb, nil, true) end } end
+	return true
+end
+
 -- autotest: a scripted build follows the tools' path (announced, every game holds at its time, then it is sent)
 G.autoBuildSeq = 0
-local function deferredSend(cmd, cb)
+-- (proposal: the native proposal the command was made from, kept as a tool's is with MPFEVER_RESTALETEST=1, see G.restale)
+local function deferredSend(cmd, cb, proposal)
 	-- (as a tool's build: refused during a resynchronisation, see G.resyncRefuse)
 	if G.resyncRefuse("autotest build") then
 		if cb then G.waits[#G.waits + 1] = { at = G.frames + 1, fn = function() pcall(cb, nil, false) end } end
@@ -6088,7 +6225,10 @@ local function deferredSend(cmd, cb)
 	end
 	local at = paused and pausedStamp(now) or (stampFor(now) + STEP)
 	local pt = paused and G.ptOn or nil
-	G.natRelease[#G.natRelease + 1] = { id = id, at = at, fn = function() O.sendCommand(cmd, cb) end, paused = pt, frame0 = G.frames }
+	-- (MPFEVER_RESTALETEST=1: kept like a tool's proposal, made again at its release when another player built meanwhile, see
+	-- G.restale)
+	G.natRelease[#G.natRelease + 1] = { id = id, at = at, fn = function() O.sendCommand(cmd, cb) end, paused = pt, frame0 = G.frames,
+		t0 = now, cb = cb, copy = (os.getenv("MPFEVER_RESTALETEST") == "1" and proposal ~= nil) and select(2, pcall(C.compactProposal, proposal)) or nil }
 	if pt then G.ptIssue(G.me, id) end
 	markPending(id, { x = 0, y = 0 })
 	log("autotest build " .. id .. " held, released at t=" .. at .. " (now " .. now .. ") [frame " .. G.frames .. "]")
@@ -6229,13 +6369,16 @@ local function runNativeRelease()
 			local busy = (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0)
 			if (seq and G.ptMayGo(seq) and not busy) or (not seq and G.frames - (r.frame0 or 0) > 600) then
 				log("native build " .. r.id .. (seq and (": turn " .. seq) or ": no turn from the host in 10 s, released now (desync risk)"))
-				releaseOne(r, now)
-				G.ptDone(seq)
+				-- (replayed here instead: its turn is taken by the replays' queue when it applies it, see G.restale)
+				if not G.restale(r, now) then
+					releaseOne(r, now)
+					G.ptDone(seq)
+				end
 			else
 				keep[#keep + 1] = r
 			end
-		elseif now >= r.at and gameSpeed() == 0 and not (G.eoHoldOwn and G.frames < (G.replayQuiet or 0)) then
-			releaseOne(r, now)
+		elseif now >= r.at and gameSpeed() == 0 and not (G.eoHoldOwn and G.frames < (G.replayQuiet or 0)) and not G.sameStepWait(r.at, G.me) then
+			if not G.restale(r, now) then releaseOne(r, now) end
 		else
 			keep[#keep + 1] = r
 		end
@@ -6830,6 +6973,22 @@ G.sendStillWait = function(a, now)
 	return true
 end
 
+-- Builds of several players stamped with the same step: every game applies them in one order, by player (the name), whatever
+-- order they arrive in. A game applied its own build at once and the other's when it came, the other game the other way round:
+-- two streets of one junction upgraded at once got other ids on each game and the towns went apart (the restale scenario,
+-- 2026-10-26). A build at time t waits here while a build of a player ranked before its own is announced for t and not applied
+-- yet (its announcement holds every game at t; a build cancelled or never sent stops holding as before). MPFEVER_SAMESTEP=0: as
+-- before.
+G.sameStepWait = function(at, origin)
+	if os.getenv("MPFEVER_SAMESTEP") == "0" then return false end
+	-- (in a pause every build has the pause's time: the host's turns give their order, see G.pt)
+	if G.session.pauseAt ~= nil and at >= G.session.pauseAt then return false end
+	for _, w in ipairs(G.natWait) do
+		if w.at == at and w.origin ~= origin and tostring(w.origin) < tostring(origin) then return true end
+	end
+	return false
+end
+
 local function runNativeReplays()
 	pumpTerrain()
 	pumpCompanies()
@@ -6855,6 +7014,8 @@ local function runNativeReplays()
 			keep[#keep + 1] = a      -- the previous one is still being handed to the engine (or its turn has not been given yet)
 		elseif a.at <= now and seq and not G.ptMayGo(seq) then
 			keep[#keep + 1] = a      -- a paused build whose turn has not come here yet
+		elseif a.at <= now and not seq and a.native and G.sameStepWait(a.at, a.origin) then
+			keep[#keep + 1] = a      -- a build of a player ranked before this one, at this same step, comes first
 		elseif a.at <= now and a.fn ~= "mpfCoJoin" and G.sendStillWait(a, now) then
 			keep[#keep + 1] = a      -- the engine may still be making a step (see G.sendStillWait)
 		elseif a.at <= now then
@@ -7063,6 +7224,17 @@ local function census(tag)
 		for _, e in ipairs(found[k] or {}) do G_.cons[#G_.cons + 1] = e end
 	end
 	table.sort(universe)
+	-- (MPFEVER_CENSUS=IDS: only which entities each listable type has, fast: two games' entity sets compared)
+	if only == "IDS" then
+		for _, name in ipairs(CENSUS_TYPES) do
+			local list = found[name] or {}
+			table.sort(list)
+			for _, e in ipairs(list) do f:write(name, "\t", tostring(e), "\t0\t-\n") end
+		end
+		f:close()
+		log(string.format("census %s: entity ids of %d entities in %.1f s", tostring(tag), #universe, os.clock() - c0))
+		return
+	end
 	local WHERE = {
 		BASE_EDGE = { "edges" }, BASE_EDGE_STREET = { "edges" }, BRIDGE = { "edges" }, BASE_PARALLEL_STRIP = { "edges" }, SIGNAL_LIST = { "edges" },
 		TICK_EPOCH = { "edges" }, BASE_NODE = { "nodes" }, BASE_NODE_CONFIG = { "nodes" }, BASE_NODE_TRAFFIC_LIGHT = { "nodes" }, RAILROAD_CROSSING = { "nodes" },
@@ -7487,6 +7659,8 @@ local function runPausedActions()
 					toSim("replaying", { sig = okg and sig or nil, nots = true })
 				end
 				-- paused: the engine answers in a callback, a frame later; the result is reported then
+				-- (another player's change of the world: a build held here was computed before it, see G.restale)
+				if a.origin ~= G.me and G.isWorldAct(a) then G.worldFrame = G.frames end
 				local creates = (a.fn == "makeVehicleBuyCmd" or a.fn == "makeLineCreateCmd") and os.getenv("MPFEVER_OLDPAUSED") ~= "1"
 				if creates then
 					G.pausedCreating = { uid = a.uid, frame = G.frames }
@@ -7646,6 +7820,88 @@ local function autoFinish()
 	G.autoPoints = G.autoPoints or {}
 	for _, q in ipairs(AUTO.points) do G.autoPoints[#G.autoPoints + 1] = q end
 	send("autotest_done", { role = C.ROLE, results = AUTO.results, points = AUTO.points })
+end
+
+-- Two players building at the same place within the build margin (MPFEVER_SCENARIO=restale with MPFEVER_TOGETHER=1): two town
+-- street segments meet at one junction; both games upgrade one of them at once (the engine's own upgrade proposal, as the
+-- street upgrade tool makes it), the host the first and the client the second, each held the usual two seconds. Both change
+-- the junction: the one released second was computed before the other was there (MPFEVER_RESTALETEST=1: it is made again at
+-- its release, see G.restale; MPFEVER_RESTALE=0: as before 0.5.7).
+H.restale = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local ok, err = pcall(function()
+		-- the junctions of exactly two plain town street segments, in a fixed order (the same on both games)
+		local nodes = {}
+		for n, segs in pairs(api.engine.system.streetSystem.getNode2SegmentMap() or {}) do
+			local list = {}
+			pcall(function() for i = 1, #segs do list[#list + 1] = segs[i] end end)
+			if #list == 2 then
+				local good = true
+				for _, e in ipairs(list) do
+					local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+					if not (c and c.type == 0 and #c.objects == 0 and tostring(c.roadTemplate):find("town", 1, true)) then good = false end
+				end
+				table.sort(list)
+				if good then nodes[#nodes + 1] = { n = n, segs = list } end
+			end
+		end
+		table.sort(nodes, function(x, y) return x.n < y.n end)
+		if #nodes == 0 then error("no junction of two town streets") end
+		local k = tonumber(os.getenv("MPFEVER_RESTALE_NODE") or "7") or 7
+		local pick = nodes[(k * 37) % #nodes + 1]
+		local E = pick.segs[(C.ROLE == "host") and 1 or 2]
+		local cur = tostring(api.engine.getComponent(E, api.type.ComponentType.BASE_EDGE).roadTemplate)
+		-- (another town template: the first one of the save's town streets that is not this one)
+		local target = nil
+		for _, e in ipairs(R.allEdges()) do
+			local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+			local t = c and tostring(c.roadTemplate) or ""
+			if t ~= cur and t:find("town", 1, true) and not t:find("entrance", 1, true) and (target == nil or t < target) then target = t end
+		end
+		if not target then error("no other town template") end
+		log("RESTALE " .. C.ROLE .. ": segment " .. E .. " at junction " .. pick.n .. " upgraded from " .. cur .. " to " .. target)
+		AUTO.points[#AUTO.points + 1] = nodePosition(pick.n)
+		local P = api.engine.util.proposal.replaceSegment(E, target)
+		local ctx = api.type.Context.new()
+		ctx.checkTerrainAlignment = false
+		ctx.cleanupStreetGraph = false
+		ctx.gatherBuildings = false
+		ctx.gatherFields = true
+		ctx.player = api.engine.util.getPlayer()
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true), function(res, success)
+			local why = ""
+			if not success and res then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+			local line = "upgrade of segment " .. E .. " at junction " .. pick.n .. ": " .. (success and "built" or ("refused " .. why))
+			log("RESTALE " .. line)
+			AUTO.results[#AUTO.results + 1] = line
+			G.waits[#G.waits + 1] = { at = G.frames + 150, fn = function()
+				-- (the segments of the junction now, on this game: ids, templates and emission emitters)
+				pcall(function()
+					local list = {}
+					for node, segs in pairs(api.engine.system.streetSystem.getNode2SegmentMap() or {}) do
+						if node == pick.n then for i = 1, #segs do list[#list + 1] = segs[i] end end
+					end
+					table.sort(list)
+					for _, s in ipairs(list) do
+						local c = api.engine.getComponent(s, api.type.ComponentType.BASE_EDGE)
+						local em = api.engine.getComponent(s, api.type.ComponentType.EMISSION_EMITTER)
+						local l2 = "segment " .. s .. " at the junction: " .. tostring(c and c.roadTemplate) .. ", emission emitter " .. (em and "yes" or "NONE")
+						log("RESTALE " .. l2)
+						AUTO.results[#AUTO.results + 1] = l2
+					end
+				end)
+				autoFinish()
+			end }
+		end, P)
+	end)
+	if not ok then
+		log("RESTALE error " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "restale error " .. tostring(err)
+		autoFinish()
+	end
 end
 
 local function runScenario(p)
@@ -12451,6 +12707,12 @@ H.dsignal = function(from, p)
 	AUTO.running = true
 	AUTO.results = {}
 	AUTO.points = {}
+	-- (MPFEVER_DSIG_ROLE=host or client: only that game puts a signal, the other only replays it)
+	local onlyRole = os.getenv("MPFEVER_DSIG_ROLE")
+	if onlyRole and onlyRole ~= C.ROLE then
+		AUTO.results[#AUTO.results + 1] = "dsignal: not this game's turn (MPFEVER_DSIG_ROLE=" .. onlyRole .. ")"
+		return autoFinish()
+	end
 	local ok, err = pcall(function()
 		local list = {}
 		for _, e in ipairs(R.allEdges()) do
@@ -12462,7 +12724,8 @@ H.dsignal = function(from, p)
 			end
 		end
 		if #list == 0 then AUTO.results[#AUTO.results + 1] = "dsignal: no free track segment"; return autoFinish() end
-		local E = list[((C.ROLE == "host") and 7 or 23) % #list + 1]
+		-- (MPFEVER_DSIG_INDEX: which of the free segments, the same on every game)
+		local E = list[(tonumber(os.getenv("MPFEVER_DSIG_INDEX") or "") or ((C.ROLE == "host") and 7 or 23)) % #list + 1]
 		local c = api.engine.getComponent(E, api.type.ComponentType.BASE_EDGE)
 		local sp = api.type.SimpleProposal.new()
 		local ssp = sp.streetProposal
@@ -12482,6 +12745,16 @@ H.dsignal = function(from, p)
 		e.comp = cc
 		local se = e.streetEdge; se.precedenceNode0 = 2; se.precedenceNode1 = 2; e.streetEdge = se
 		local po = C.newOf("PlayerOwned"); po.player = api.engine.util.getPlayer(); e.playerOwned = po
+		-- (MPFEVER_DSIGEMIT=1, diagnostic: the segment's emission emitter given to its copy, as the signal tool's proposal has it)
+		if os.getenv("MPFEVER_DSIGEMIT") == "1" then
+			local oke, ee = pcall(function()
+				local em = api.engine.getComponent(E, api.type.ComponentType.EMISSION_EMITTER)
+				if not em then return "none on the segment" end
+				e.emissionEmitter = em
+				return "copied"
+			end)
+			log("DSIGNAL emission emitter: " .. (oke and tostring(ee) or shortErr(ee)))
+		end
 		local eo = api.type.SimpleStreetProposal.EdgeObject.new()
 		eo.edgeEntity = -1
 		eo.param = 0.5
@@ -12490,6 +12763,13 @@ H.dsignal = function(from, p)
 		eo.model = "infrastructure/signal/signal_path_a.con"
 		eo.playerEntity = api.engine.util.getPlayer()
 		eo.name = "MPF signal"
+		-- (MPFEVER_DSIGPARAMS=1, diagnostic: whether a script's signal can carry the construction params the signal tool gives it)
+		if os.getenv("MPFEVER_DSIGPARAMS") == "1" then
+			local okm, mem = pcall(C.members, eo)
+			log("DSIGNAL edge object members: " .. (okm and type(mem) == "table" and table.concat(mem, ",") or tostring(mem)))
+			local okp, ep = pcall(function() eo.params = { oneWay = 1, year = 1948, seed = 0 } end)
+			log("DSIGNAL params written: " .. tostring(okp) .. (okp and "" or (" " .. tostring(ep):sub(1, 160))))
+		end
 		ssp.edgesToRemove = { E }
 		ssp.edgesToAdd = { e }
 		ssp.edgeObjectsToAdd = { eo }
@@ -12530,6 +12810,29 @@ H.dsignal = function(from, p)
 			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
 			log("DSIGNAL build: " .. (success and "BUILT" or ("refused " .. why)))
 			AUTO.results[#AUTO.results + 1] = "signal on segment " .. E .. ": " .. (success and "built" or ("refused " .. why))
+			if success and os.getenv("MPFEVER_DSIGPARAMS") == "1" then
+				-- (the nodes' ids now: a component is never kept across frames)
+				local n0, n1 = cc.node0, cc.node1
+				G.waits[#G.waits + 1] = { at = G.frames + 30, fn = function()
+					pcall(function()
+						for _, s in ipairs(R.allEdges()) do
+							local be = api.engine.getComponent(s, api.type.ComponentType.BASE_EDGE)
+							if be and be.node0 == n0 and be.node1 == n1 then
+								local em = api.engine.getComponent(s, api.type.ComponentType.EMISSION_EMITTER)
+								local eline = "DSIGNAL new segment " .. s .. " emission emitter " .. (em and C.ser(C.marshal(em)):sub(1, 200) or "NONE")
+								log(eline)
+								AUTO.results[#AUTO.results + 1] = eline
+								for _, o in ipairs(be.objects) do
+									local ec = api.engine.getComponent(o[1], api.type.ComponentType.EDGE_OBJECT)
+									local line = "DSIGNAL new signal " .. o[1] .. " params " .. C.ser(C.marshal(ec and ec.params))
+									log(line)
+									AUTO.results[#AUTO.results + 1] = line
+								end
+							end
+						end
+					end)
+				end }
+			end
 			G.waits[#G.waits + 1] = { at = G.frames + 90, fn = autoFinish }
 		end)
 	end)
@@ -14693,7 +14996,7 @@ local function guiHandleEvent(userParams, state, guiState, src, id, name, param)
 	if not C.ACTIVE then return end
 	-- (what this player's tool shows, for the others' games: see G.previewOut)
 	if name == "builder.proposalCreate" then pcall(G.previewOut, tostring(id), param)
-	elseif name == "builder.proposalApply" then pcall(G.previewGone) end
+	elseif name == "builder.proposalApply" then pcall(G.previewGone); pcall(G.toolApplied, param) end
 	if type(name) == "string" and name:find("^builder%.") then
 		G.evSeen = G.evSeen or {}
 		local key = tostring(id) .. "/" .. name

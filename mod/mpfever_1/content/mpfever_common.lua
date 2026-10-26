@@ -405,6 +405,7 @@ C.CTOR = {
 	StationTerminal = { "api.type.StationTerminal" },
 	Context = { "api.type.Context" },
 	StreetEdgeObject = { "api.type.SimpleStreetProposal.EdgeObject" },
+	EmissionEmitter = { "api.type.EmissionEmitter" },
 	Waypoint = { "api.type.Waypoint" },
 	EdgePos = { "api.type.EdgePos" },
 	EdgeId = { "api.type.EdgeId" },
@@ -413,10 +414,15 @@ C.CTOR = {
 }
 
 -- fields needing a specific type; false = derived by the engine, never copied; absent = copied generically
+-- (a segment's emission emitter, its noise and pollution: the engine does not derive it for a script's segment, which had none
+-- on the replaying games while the builder's had one, a stop's or a signal's segment included (2026-10-26: 21 track segments
+-- of the session without their pollution on the other game). MPFEVER_EMITTERS=0: as before, never copied)
 local SCHEMA = {
 	NodeAndEntity = { comp = "BaseNode" },
 	BaseNode = { position = "Vec3f" },
-	SegmentAndEntity = { comp = "BaseEdge", streetEdge = "BaseEdgeStreet", playerOwned = "PlayerOwned", emissionEmitter = false, params = false },
+	SegmentAndEntity = { comp = "BaseEdge", streetEdge = "BaseEdgeStreet", playerOwned = "PlayerOwned",
+		emissionEmitter = (os.getenv("MPFEVER_EMITTERS") ~= "0") and "EmissionEmitter" or false, params = false },
+	EmissionEmitter = { position = "Vec3f" },
 	BaseEdge = { position0 = "Vec3f", position1 = "Vec3f", tangent0 = "Vec3f", tangent1 = "Vec3f", laneConfigs = false, laneConfigs_native = false, laneConfig = false, distance = false },
 	TransportVehicleConfig = { vehicles = { list = "TransportVehiclePart" } },
 	TransportVehiclePart = { part = "VehiclePart" },
@@ -1036,6 +1042,7 @@ function C.rebuildProposal(m, opts)
 				if type(pl) ~= "number" or pl < 0 then pl = api.engine.util.getPlayer() end
 				eo.playerEntity = pl
 				pcall(function() eo.name = o.name or "" end)
+				C.setEdgeObjectParams(eo, o)
 				objs[#objs + 1] = eo
 			else
 				C.errors[#C.errors + 1] = "edge object " .. i .. " without model (not replicated)"
@@ -1241,6 +1248,21 @@ function C.nativeEdgeObjects(list, native, how)
 		out[i] = eo
 	end
 	return out
+end
+
+-- The construction params of a replayed stop or signal (o.params, read from its EDGE_OBJECT on the builder's game: a path
+-- signal's oneWay, its year), written on a script's edge object (a field the API does not list, kept by the engine). Without
+-- them the replayed signal had {seed = 0} only, the builder's {oneWay = 2, seed = 0, year = 1948}: another signal on every
+-- replaying game, which numbered its next entities otherwise (2026-10-26, 20 signals changed in their window, a reload).
+-- MPFEVER_EOPARAMS=0: as before.
+function C.setEdgeObjectParams(eo, o)
+	if type(o) ~= "table" or type(o.params) ~= "table" or os.getenv("MPFEVER_EOPARAMS") == "0" then return false end
+	local p = {}
+	for k, v in pairs(o.params) do
+		if type(k) == "string" and k:sub(1, 2) ~= "__" and (type(v) == "number" or type(v) == "string" or type(v) == "boolean") then p[k] = v end
+	end
+	if next(p) == nil then return false end
+	return (pcall(function() eo.params = p end))
 end
 
 function C.rebuildNativeWithConstruction(m, conv, rm, opts)

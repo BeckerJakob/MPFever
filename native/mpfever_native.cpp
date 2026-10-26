@@ -1771,12 +1771,13 @@ extern "C" void* AddDetour(void* list, void* out, void* cmd, void* done, void* p
                 memset(out, 0, 0x10);
                 g_held[g_heldTail % 64] = h;
                 g_heldTail++;
-                // (with the tool's Context flags: the other games rebuild it with the same ones, issue #20)
+                // (with the tool's Context flags: the other games rebuild it with the same ones, issue #20; 8: ignoreErrors, which a
+                // signal's own window sends its changes with)
                 u32 cbits = 0;
                 {
                     u8* pay = *(u8**)h->cmd;
                     if (pay && Readable(pay, 0x9c0) && *(u8*)(pay + 0x9b8) == 52)
-                        cbits = (pay[0x358] ? 1u : 0) | (pay[0x360] ? 2u : 0) | (pay[0x362] ? 4u : 0) | 32u;
+                        cbits = (pay[0x358] ? 1u : 0) | (pay[0x360] ? 2u : 0) | (pay[0x362] ? 4u : 0) | (pay[0x3d1] ? 8u : 0) | 32u;
                 }
                 Buf b; b.str("deferred build ").dec(h->id).str(" from tool site ").hex(caller).str(" context ").dec(cbits); LogLine(b);
                 Buf e; e.str("deferred ").dec(h->id).str(" ").dec(cbits); AppendEvent(e);

@@ -134,7 +134,7 @@ The mods tested so far are listed in [MODS](docs/MODS.md).
 - **One company per player:** a merger into the savegame's company leaves the merged company's loans behind (they are the game's own loans).
 - **Steam and Windows only.**
 - **Small drifts of vehicles and passengers** can happen. They are repaired by a reload if they last.
-- **Two players changing the same place within about two seconds** (one building where the other just did) can lead to a reload: MPFever notices it and reloads the games.
+- **Two players changing the same place within about two seconds**, with one company per player: it can lead to a reload (MPFever notices it and reloads the games). With a shared company, the build made second is computed again on every game; if it no longer fits the place, it is left out everywhere and has to be made again.
 
 What's planned: [ROADMAP](docs/ROADMAP.txt). What changed: [CHANGELOG](docs/CHANGELOG.txt).
 
