@@ -46,6 +46,13 @@ def strip_turn(payload):
     return re.sub(r',?\["pseq"\]=\d+', "", payload)
 
 
+def strip_paused(payload):
+    # an action made in a pause of the session that the replay does not have (a resynchronisation's, see PAUSE): sent to running
+    # games, it must be stamped as a running one (the launcher stamps a paused one at the games' latest time, which a running game
+    # passes before it arrives: built a step late on that game)
+    return re.sub(r'\["paused"\]=true,|,\["paused"\]=true', "", payload)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--launcher", required=True)
@@ -85,8 +92,8 @@ def main():
         ev.append("pauseat\t" + str(at - 30 * STEP))
         for origin, _, uid, payload, nat in group:
             if nat in pending:
-                ev.append("msg\tnat_pending\t" + origin + "\t" + pending.pop(nat))
-            ev.append("msg\tact\t" + origin + "\t" + strip_turn(payload))
+                ev.append("msg\tnat_pending\t" + origin + "\t" + strip_paused(pending.pop(nat)))
+            ev.append("msg\tact\t" + origin + "\t" + strip_paused(strip_turn(payload)))
         ev.append("speed\t" + str(st["speed"]))
         for _, _, uid, _, _ in group:
             ev.append("waitact\t" + uid + "\t600")
