@@ -1,13 +1,23 @@
 MPFever - Changelog
 ===================
 
-0.5.6 - builds no longer land late after the engine stalls
+0.5.6 - builds no longer land late after the engine stalls, paused actions in one order
   - FIX (desyncs: 4 reloads in the friends' sessions of 2026-10-25): a game stopping at another player's build asks the engine
     for the exact steps left. While the simulation stood in a long step (10 to 13 s on a large map: a lane modifier or industry
     extensions, the engine recomputing routes), the interface saw no handshake, took the request for lost after 2 s and asked
     again: 3 steps asked 5 times ran 15 steps, and the builds held there landed 4 to 8 steps late (towns, terrain, a reload).
     A request is now given up only once the engine is proven idle since it (two handshakes with the same step count), else after
     30 s; a request given up is logged ("STEPS ... given up"). In those sessions no other request (about 190) was ever repeated.
+  - FIX (desyncs: the reload of 22:13 in the friends' session of 2026-10-25): in a pause, each player's build takes a turn from
+    the host and every game builds in that order, but the other actions did not: each game applied its own at once (a line
+    edited, a vehicle bought) and the others' when they came. A line edited on the host just before a stop of the other player
+    was built there, and just after it on that player's game: the build took other free entity ids on each game, every vehicle
+    bought afterwards got another id (72528 here, 62302 there) and the games were reloaded 3 minutes later. Every action made in
+    a pause now takes its turn among the builds, and every game applies them all in that one order (the game stays where it is
+    while one waits for its turn). MPFEVER_ACTTURNS=0: as before.
+  - Tests: the replay of a session (recplay) writes the keys of the vehicles and lines made by an action it stamped again with
+    their new time (the later actions found none: every vehicle bought in a pause was "unresolved"); scenario pmix (paused
+    purchases and builds of two players at once).
 
 0.5.5 - no reload for the build ids check
   - FIX: even read at a fixed game time, at a speed above 1 the games read a build's new ids at different steps (one after the

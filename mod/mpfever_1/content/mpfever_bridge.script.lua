@@ -2854,6 +2854,8 @@ end
 
 local function queueLocal(a)
 	if a.paused then
+		-- (its turn among the paused builds, given by the host: see G.actTurn)
+		if G.actTurns and a.fn ~= "mpfCoJoin" and a.kind ~= "hash" then G.ptIssue(a.origin, G.actTurnId(a)) end
 		G.pendingPaused[#G.pendingPaused + 1] = a
 	else
 		toSim("queue", a)
@@ -3322,6 +3324,8 @@ H.act = function(from, p)
 	if G.uiEdit(p) then
 		p.native, p.uiEdit = true, true
 		log("action " .. tostring(p.uid) .. ": the edit of a construction from a window, replayed by the engine's replacement on every game")
+		-- (in a pause: its turn among the paused builds and actions, see G.actTurn)
+		if p.paused and G.actTurns then G.ptIssue(p.origin, G.actTurnId(p)) end
 	end
 	if p.native then
 		G.nativeQueue[#G.nativeQueue + 1] = p
@@ -5827,7 +5831,7 @@ G.ptIssue = function(origin, id)
 	local seq = G.pt.next
 	G.ptTicket(origin, id, seq)
 	send("nat_ticket", { origin = origin, id = id, seq = seq })
-	log("paused build " .. G.ptKey(origin, id) .. ": turn " .. seq)
+	log((tostring(id):match("^a%d") and "paused action " or "paused build ") .. G.ptKey(origin, id) .. ": turn " .. seq)
 end
 G.ptAdvance = function()
 	while G.pt.skip[G.pt.done + 1] do G.pt.skip[G.pt.done + 1] = nil; G.pt.done = G.pt.done + 1 end
@@ -5868,6 +5872,28 @@ G.joinTurn = function(a)
 	if seq then return seq end
 	if G.frames - (a.recvFrame or G.frames) > 600 then
 		if not a.turnLogged then log("companies: no turn from the host for the announcement " .. tostring(a.uid) .. " in 10 s: applied as before") end
+		a.turnLogged = true
+		return nil
+	end
+	return false
+end
+
+-- Every other action made in a pause (a line edited, a vehicle bought, a name) took no turn: each game applied its own at once and
+-- the others' when they came, so an action and another player's build went in a different order on each game. A line edited on
+-- the host just before a stop of the client's was built there, and just after it on the client's (a session of the friends,
+-- 2026-10-25 22:10:47): the build took other free entity ids on each game, every vehicle bought after it got another id, and the
+-- games were reloaded 3 minutes later. Each paused action now takes a turn from the host among the paused builds (G.pt), and every
+-- game applies it in that order; one whose turn has not come in 10 s goes as before. MPFEVER_ACTTURNS=0: as before.
+G.actTurns = G.ptOn and os.getenv("MPFEVER_ACTTURNS") ~= "0"
+G.actTurnId = function(a) return "a" .. tostring(a.oseq) end
+-- the turn of a paused action: its number, false while it has none yet (wait), nil when it needs none
+G.actTurn = function(a)
+	if not a.paused or not G.actTurns or a.kind == "hash" or a.fn == "mpfCoJoin" or a.oseq == nil then return nil end
+	local seq = G.pt.of[G.ptKey(a.origin, G.actTurnId(a))]
+	if seq then return seq end
+	a.turnSince = a.turnSince or G.frames
+	if G.frames - a.turnSince > 600 then
+		if not a.turnLogged then log("paused action " .. tostring(a.uid) .. ": no turn from the host in 10 s, applied as before (desync risk)") end
 		a.turnLogged = true
 		return nil
 	end
@@ -6782,9 +6808,12 @@ local function runNativeReplays()
 		-- (a player's announcement in a pause: its turn from the host, see G.joinTurn)
 		local jt = G.joinTurn(a)
 		if jt then seq = jt end
+		-- (a construction edited from a window in a pause: its turn among the paused actions, see G.actTurn)
+		local et = a.uiEdit and G.actTurn(a) or nil
+		if et then seq = et end
 		if a.at <= now and ((a.fn == "terrainEdit" and G.terrainBusy) or (a.fn == "mpfCoJoin" and (G.coBusy or jt == false or G.frames - (a.recvFrame or 0) < K.JOIN_GATHER))
-			or (a.fn ~= "terrainEdit" and a.fn ~= "mpfCoJoin" and replayBusy())) then
-			keep[#keep + 1] = a      -- the previous one is still being handed to the engine
+			or (a.fn ~= "terrainEdit" and a.fn ~= "mpfCoJoin" and replayBusy()) or et == false) then
+			keep[#keep + 1] = a      -- the previous one is still being handed to the engine (or its turn has not been given yet)
 		elseif a.at <= now and seq and not G.ptMayGo(seq) then
 			keep[#keep + 1] = a      -- a paused build whose turn has not come here yet
 		elseif a.at <= now then
@@ -7147,6 +7176,7 @@ local function stampHeld()
 			send("act", a)
 			if edit then
 				a.recvFrame = G.frames
+				if a.paused and G.actTurns then G.ptIssue(a.origin, G.actTurnId(a)) end
 				G.nativeQueue[#G.nativeQueue + 1] = a
 			else
 				queueLocal(a)
@@ -7353,7 +7383,8 @@ local function runPausedActions()
 	local now = gameTime()
 	local minAt = natAt
 	for _, a in ipairs(G.pendingPaused) do
-		if a.at > now and (minAt == nil or a.at < minAt) then minAt = a.at end
+		-- (an action waiting for its turn holds the game at its time too, as a paused build does: the session may be resumed meanwhile)
+		if (a.at > now or (a.at == now and G.actTurn(a) ~= nil)) and (minAt == nil or a.at < minAt) then minAt = a.at end
 	end
 	if minAt and G.holdAt ~= minAt then
 		G.holdAt = minAt
@@ -7382,7 +7413,12 @@ local function runPausedActions()
 			creating = true
 			if G.coHashWaitLogged ~= a.n then G.coHashWaitLogged = a.n; log("checkpoint " .. tostring(a.n) .. " waits for a company join under way here") end
 		end
-		if a.at <= now and not creating then
+		-- (in its turn among the paused builds and actions, see G.actTurn; not while a build before it is still being handed to the
+		-- engine here, a stop's replay is several commands)
+		local turn = G.actTurn(a)
+		local busy = turn and ((G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0) or G.stopsAfterBusy ~= nil)
+		if a.at <= now and not creating and turn ~= false and (turn == nil or (not busy and G.ptMayGo(turn))) then
+			if turn then G.ptDone(turn) end
 			if a.at < now then log("paused action " .. tostring(a.uid) .. " for t=" .. tostring(a.at) .. " applied at " .. now .. " (desync risk)") end
 			if a.kind == "hash" then
 				local okA, auth = pcall(authValues, G.co)
@@ -10218,6 +10254,42 @@ H.buymany = function(from, p)
 		AUTO.results[#AUTO.results + 1] = "buymany error " .. tostring(err)
 		autoFinish()
 	end
+end
+
+-- Paused builds and actions of two players at once (MPFEVER_SCENARIO=pmix with MPFEVER_TOGETHER=1 and MPFEVER_PAUSED=1): the host
+-- buys a vehicle every half second while the client puts stops on streets (H.dstop). Each game applied its own paused actions at
+-- once and the others' when they came, the builds in their turns, so purchases and builds went in another order on each game and
+-- took other entity ids (the friends' session of 2026-10-25, see G.actTurn). Every game must give the vehicles the same ids.
+H.pmix = function(from, p)
+	if p.role ~= C.ROLE then return end
+	if C.ROLE ~= "host" then return H.dstop(from, p) end
+	if AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local me = api.engine.util.getPlayer()
+	local pick = nil
+	for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+		local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+		if not pick and tv and type(tv.depot) == "number" and tv.depot >= 0 and api.engine.entityExists(tv.depot)
+			and (G.cmode ~= "separate" or R.ownerOf(v) == me) then pick = { v = v, tv = tv } end
+	end
+	if not pick then AUTO.results[#AUTO.results + 1] = "pmix: no vehicle with a depot"; return autoFinish() end
+	local before = #R.entitiesWith("TRANSPORT_VEHICLE")
+	local n = 0
+	local function buyOne()
+		n = n + 1
+		uiRequest("makeVehicleBuyCmd", { n = 3, [1] = me, [2] = pick.tv.depot, [3] = C.marshal(pick.tv.transportVehicleConfig) })
+		if n < 8 then G.waits[#G.waits + 1] = { at = G.frames + 30, fn = buyOne } end
+	end
+	buyOne()
+	log("AUTOTEST pmix: 8 copies of vehicle " .. pick.v .. ", one every 30 frames (" .. before .. " vehicles)")
+	G.waits[#G.waits + 1] = { at = G.frames + 30 * 8 + 600, fn = function()
+		local line = "pmix: vehicles " .. before .. " -> " .. #R.entitiesWith("TRANSPORT_VEHICLE")
+		log("AUTOTEST " .. line)
+		AUTO.results[#AUTO.results + 1] = line
+		autoFinish()
+	end }
 end
 
 -- Purchases then line assignments (issue #36, run with MPFEVER_PAUSED=1): three copies of a vehicle on a line requested at

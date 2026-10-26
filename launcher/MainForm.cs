@@ -3776,6 +3776,10 @@ namespace MPFever
 
         void RecPlayEvents(string[] lines, Func<string, bool> appliedEverywhere)
         {
+            // (an action stamped again: the vehicles and lines it made are bound here under its new time, "V<uid>@<time>", and the
+            // later actions name them by the session's: those keys are written with the new time too. Without it every vehicle
+            // bought in a pause the games stopped a step later was "unresolved" for the rest of the replay)
+            var restamped = new Dictionary<string, KeyValuePair<long, long>>();
             for (int li = 0; li < lines.Length; li++)
             {
                 var raw = lines[li];
@@ -3797,8 +3801,17 @@ namespace MPFever
                                 long want;
                                 if (payload.Contains("[\"paused\"]=true")) lock (clocks) want = clocks.Count == 0 ? 0 : clocks.Values.Max(c => c.T);
                                 else want = FutureStamp();
-                                if (want > was) payload = payload.Substring(0, mt.Groups[1].Index) + want + payload.Substring(mt.Groups[1].Index + mt.Groups[1].Length);
+                                if (want > was)
+                                {
+                                    payload = payload.Substring(0, mt.Groups[1].Index) + want + payload.Substring(mt.Groups[1].Index + mt.Groups[1].Length);
+                                    var mu = System.Text.RegularExpressions.Regex.Match(payload, @"\[""uid""\]=""([^""]+)""");
+                                    if (mu.Success) restamped[mu.Groups[1].Value] = new KeyValuePair<long, long>(was, want);
+                                }
                             }
+                            // (a key is one letter, V for a vehicle or L for a line, the uid and the time)
+                            payload = System.Text.RegularExpressions.Regex.Replace(payload, @"(\[""key""\]=""[A-Z])([^""@]+)@(\d+)""", m =>
+                                restamped.TryGetValue(m.Groups[2].Value, out var s) && m.Groups[3].Value == s.Key.ToString(CultureInfo.InvariantCulture)
+                                    ? m.Groups[1].Value + m.Groups[2].Value + "@" + s.Value.ToString(CultureInfo.InvariantCulture) + "\"" : m.Value);
                             HostSend(Msg.Make(p[1], p[2], payload));
                             break;
                         }

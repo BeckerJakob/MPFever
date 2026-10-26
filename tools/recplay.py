@@ -116,6 +116,12 @@ def main():
             if clock <= a.start or clock > a.end:
                 continue
             flush_saves(clock)
+            if st["paused"] and '["paused"]=true' not in payload:
+                # (an action stamped for a running game while the session stood: made around a resynchronisation, which the
+                # replay does not do; the games run on to it, as they did after the reload)
+                flush_group()
+                st["paused"] = False
+                ev.append("speed\t" + str(st["speed"]))
             if not st["paused"]:
                 if group and group[0][1] != at:
                     flush_group()
@@ -144,6 +150,10 @@ def main():
                     pending[(org.group(1), nid.group(1))] = m.group(3)
             continue
         m = PAUSE.match(line)
+        if m and "resynchroni" in line:
+            # (the pause of a resynchronisation: the replay reloads nothing, the games run on; the actions stamped after it were
+            # running ones, waited for in a pause they were never applied)
+            continue
         if m:
             flush_saves(clock)
             flush_group()

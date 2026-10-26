@@ -286,10 +286,12 @@ class Host:
                     ah = int(payload.split('["ah"]=')[1].split(",")[0].split("}")[0]) if '["ah"]=' in payload else 3
                     self.clock[g.name] = t
                     self.broadcast("peerclock", '{["name"]="%s",["t"]=%d,["ah"]=%d}' % (g.name, t, ah), exclude=g)
-                elif kind == "act":
+                elif kind in ("act", "nat_ticket", "nat_pending", "nat_cancel"):
+                    # (the turns of the paused builds and actions, given by the host game, go to every other game as the
+                    # launcher sends them)
                     for o in self.games:
                         if o is not g:
-                            o.write("act" + TAB + g.name + TAB + payload)
+                            o.write(kind + TAB + g.name + TAB + payload)
             self.offsets[g.name] = len(lines)
 
 
@@ -396,6 +398,14 @@ def run():
     tick(10)
     a, b = A.applied(), B.applied()
     check(a[-1] == b[-1] == "makeVehicleBuyCmd@%d" % host.pauseAt, "purchase during the pause applied at the pause time on both: %s / %s" % (a[-1:], b[-1:]))
+    # two players' purchases in the same frame of the pause: each game applied its own at once and the other's when it came (the
+    # vehicles took the free ids in another order on each game); in the host's turns they go in one order on both
+    A.L.execute("local api = UI.api; api.cmd.sendCommand(api.cmd.makeVehicleBuyCmd(7, 55, { vehicles = { 1 } }), function() end)")
+    B.L.execute("local api = UI.api; api.cmd.sendCommand(api.cmd.makeVehicleBuyCmd(7, 55, { vehicles = { 2 } }), function() end)")
+    tick(15)
+    order = "(function() local r = {} for _, a in ipairs(GAME.applied) do if a.name == 'makeVehicleBuyCmd' and type(a.args[3]) == 'table' and a.args[3].vehicles and a.args[3].vehicles[1] then r[#r + 1] = tostring(a.args[3].vehicles[1]) end end return table.concat(r, ',') end)()"
+    oa, ob = A.L.eval(order), B.L.eval(order)
+    check(oa == ob and len(oa.split(",")) == 2, "two purchases made at once in the pause applied in the same order on both games (%s / %s)" % (oa, ob))
     host.pauseAt, host.speed = None, 2
     host.session()
     tick(30)
