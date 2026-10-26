@@ -540,13 +540,29 @@ local ENTITY_ARGS = {
 
 local function missingEntities(fn, margs)
 	local missing = {}
-	local function check(e, what)
+	-- (kind: the component the entity must have. A vehicle command given an entity that is no vehicle here stopped the engine
+	-- on an assertion: a sale of 8 vehicles by their ids, one of them another kind of entity on this game, crashed both games of
+	-- a replay at once, 2026-10-26. MPFEVER_ARGKIND=0: existence only, as before)
+	local function check(e, what, kind)
+		if type(e) == "table" then
+			for k, v in ipairs(e) do check(v, what .. "[" .. k .. "]", kind) end
+			return
+		end
 		if type(e) == "number" and e >= 0 then
 			local ok, exists = pcall(function() return api.engine.entityExists(e) end)
-			if ok and exists == false then missing[#missing + 1] = what .. "=" .. e end
+			if ok and exists == false then missing[#missing + 1] = what .. "=" .. e; return end
+			if kind and os.getenv("MPFEVER_ARGKIND") ~= "0" then
+				local okc, comp = pcall(function() return api.engine.getComponent(e, api.type.ComponentType[kind]) end)
+				if okc and comp == nil then missing[#missing + 1] = what .. "=" .. e .. " (no " .. kind .. ")" end
+			end
 		end
 	end
-	for _, i in ipairs(ENTITY_ARGS[fn] or {}) do check(margs[i], "arg" .. i) end
+	local vehicleCmd = type(fn) == "string" and fn:find("^makeVehicle") ~= nil and fn ~= "makeVehicleBuyCmd"
+	for _, i in ipairs(ENTITY_ARGS[fn] or {}) do
+		local kind = nil
+		if vehicleCmd and i == 1 then kind = "TRANSPORT_VEHICLE" elseif fn == "makeVehicleSetLineCmd" and i == 2 then kind = "LINE" end
+		check(margs[i], "arg" .. i, kind)
+	end
 	if fn == "makeLineCreateCmd" or fn == "makeLineUpdateCmd" then
 		local line = margs[fn == "makeLineCreateCmd" and 4 or 2]
 		if type(line) == "table" then
@@ -5456,6 +5472,11 @@ local function replayNative(a, formIndex)
 			end
 		end
 		local removal = (#missing == 0) and removalPlan(probe) or nil
+		-- (tests, MPFEVER_NATIVEREMOVAL=1: the tool's own removal, as a native street proposal without a second street cleanup)
+		if removal and os.getenv("MPFEVER_NATIVEREMOVAL") == "1" and not hasConstructionSegments(a.args[1]) and #(R.removedConstructions(probe) or {}) == 0 then
+			log("NATIVE REPLAY " .. tostring(a.uid) .. ": removal of " .. table.concat(removal, ",") .. " as the tool's native proposal (MPFEVER_NATIVEREMOVAL=1)")
+			return replayNativeStreet(a)
+		end
 		if removal then
 			return engineReplay(a, "removal of " .. table.concat(removal, ","), function()
 				return api.engine.util.proposal.makeSegmentsRemoveProposal(removal)

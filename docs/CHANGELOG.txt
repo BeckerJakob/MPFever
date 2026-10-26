@@ -22,6 +22,10 @@ MPFever - Changelog
     Each game now sends the turns it has applied with its check, and games at different turns are not compared (the next
     check is); nor does a game correct its money from the host's at a check the host took at another turn (it was undone at
     the next check, and the money kept moving while a player built in a pause). MPFEVER_TURNCHECK=0: as before.
+  - FIX (crash): a vehicle command (sale, line, depot...) naming an entity that is not a vehicle on a game, or a line that is no
+    line there, stopped that game's engine on an assertion ("it != components.end()"): a sale of 8 vehicles by their numbers
+    crashed both games of a replay at once. Such a command is now skipped on that game and reported, as a missing vehicle
+    already was (a list of vehicles is checked one by one). MPFEVER_ARGKIND=0: as before.
   - Tests: the replay of a session (recplay) writes the keys of the vehicles and lines made by an action it stamped again with
     their new time (the later actions found none: every vehicle bought in a pause was "unresolved"); scenario pmix (paused
     purchases and builds of two players at once).
