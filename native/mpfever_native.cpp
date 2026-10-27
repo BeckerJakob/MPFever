@@ -3765,12 +3765,16 @@ static void WriteStopState(u32 S, u32 n)
 }
 // Test (MPFEVER_TESTSPLIT=1): the batches above 1x are cut into other sizes (1 to the speed, by the step's number), as another
 // game's would be near its stop points: do the games' scripts (the engine's events reach them per batch?) then drift apart?
+// (only once the game has stood still once: the batch the engine makes right after loading, at the savegame's speed, is left whole,
+// else the two games did not start at the same time)
 static int g_testSplit = -1;
+static bool g_splitArmed = false;
 extern "C" u32 StepsForBatch(void* time, u32 speed, u32 asked)
 {
     u32 sp = speed > asked ? speed : asked;
     if (g_testSplit < 0) { g_testSplit = GetEnvironmentVariableA("MPFEVER_TESTSPLIT", 0, 0) > 0 ? 1 : 0; if (g_testSplit) { Buf l; l.str("stop point: TEST batches split (MPFEVER_TESTSPLIT)"); LogLine(l); } }
-    if (g_testSplit && sp > 1 && asked <= speed && g_getUpdRva && time) {
+    if (g_testSplit && sp == 0) g_splitArmed = true;
+    if (g_testSplit && g_splitArmed && sp > 1 && asked <= speed && g_getUpdRva && time) {
         u32 S0 = ((u32(*)(u64))(g_base + g_getUpdRva))((u64)time);
         sp = 1 + (S0 * 7 + S0 / 3) % sp;
     }
