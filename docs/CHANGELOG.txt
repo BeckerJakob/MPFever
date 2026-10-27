@@ -1,16 +1,14 @@
 MPFever - Changelog
 ===================
 
-0.5.11 - sessions of separate companies run again, no crash in the next game after one
+0.5.11 - sessions of separate companies run again
   - FIX (games frozen at the start, 0.5.10): a session with one company per player never ran. At the start the host's rules go
     to the games as a paused action in its turn, and the games hold at its step. With the native stop point a game stands at a
     hold at its speed, while paused actions were applied at speed 0 only: both games waited for ever (the host sent its rules
     again every few seconds). Paused actions are now applied too when the game stands at the native stop point.
-  - FIX (crash, issue #88): after a session with one company per player, a new game (or another savegame) started without
-    restarting Transport Fever 3 crashed after about 30 s. The game keeps its scripting interface from one game to the next, and
-    the replacement of getPlayer() MPFever installs for the companies stayed there: the new game asked the company of the game
-    before (in the report a group of trees there), the game's notifications failed ("companyState" nil) and the engine stopped
-    when it booked money on it. A game without companies now gets the game's own getPlayer() back.
+  - Issue #88 (a new game started after a session with one company per player, without restarting Transport Fever 3, crashes
+    after about 30 s): a first part, the game gets its own getPlayer() back in a game without companies. Not fixed yet: restart
+    the game through MPFever.exe before another game.
 
 0.5.10 - builds of other players without the slow approach
   - NEW (native stop point): a game stops for another player's build (or its own held build, or the session's pause) exactly at
