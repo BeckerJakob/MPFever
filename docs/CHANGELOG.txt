@@ -40,7 +40,8 @@ MPFever - Changelog
     of a build at its first script update two steps after it, and at x4 the script runs once per batch of steps: one game
     read after the next build had split a segment (-1), the other before. The ids are now also read just before a later
     build is applied, at the same step on every game. (Found with the builder leading at x4: the free-id queues of the two
-    games stayed the same at every step, MPFEVER_FREEQLOG.) MPFEVER_IDREADEARLY=0: as before.
+    games stayed the same at every step, MPFEVER_FREEQLOG.) MPFEVER_IDREADEARLY=0: as before. Fewer, not none: a segment a
+    town splits between the two reads still shows (no reload follows, the free ids stay the same).
 
 0.5.8 -the dedicated server starts with a button, with display or without
   - Dedicated server: its window opens with the server stopped and two buttons, "Start with display" (the game's window shows
