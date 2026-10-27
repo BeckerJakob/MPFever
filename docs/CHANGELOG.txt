@@ -23,6 +23,8 @@ MPFever - Changelog
     made by the native stop point can skip that call (MPFEVER_STANDSKIP=1), off at first: with it, 4 of about 17 tests drifted
     (towns, vehicles), none of 14 without. The native stop point itself already removes the stands of the exact steps, where it
     happened (the same tests on 0.5.10: in sync).
+  - The checks no longer show "slight drift (buildIds)": the build ids are a diagnostic (never a reason to reload since 0.5.3),
+    and the warning came back check after check for nothing. They stay in the launcher's log as a muted line.
   - Diagnostic MPFEVER_BATCHLOG=1: the engine's batches, their steps and the commands they apply (native.log, "bl ...").
 
 0.5.9 - a public list of dedicated servers, building no longer blocked after MPFever was disabled in a lobby

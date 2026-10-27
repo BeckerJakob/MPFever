@@ -212,6 +212,7 @@ namespace MPFever
         // a speed above 1 the games read it at different steps (one after the next build had replaced the segment): the friends'
         // session of 2026-10-25 22:32 reloaded for nothing (every action's result was the same on both games)
         static readonly HashSet<string> DiagnosticParts = new HashSet<string> { "buildIds" };
+        string lastDiagDiffs = "";
         // game state that is never a local measure, even when it differs right after a reload (a company a game missed must be seen)
         static readonly HashSet<string> NeverLocalParts = new HashSet<string> { "companies", "money", "owners", "loans", "edges", "ages", "buildIds", "constructions", "lines" };
         // the simulation's own state (passengers boarding, vehicle positions, the towns and what follows them): it used to drift
@@ -3195,6 +3196,13 @@ namespace MPFever
                 if (local.Count > 0) Log.Warn(T("Mesures propres à chaque jeu (ignorées désormais) : ", "Local measures (ignored from now on): ") + string.Join(", ", local));
             }
             diffs = diffs.Where(d => !ignoredParts.Contains(DiffKey(d))).ToList();
+            // the diagnostic parts go to the log only, muted and once until they change: they are no drift, and the players
+            // saw "slight drift (buildIds)" check after check for nothing (test of 2026-10-27, the host's list stayed at 88)
+            var diag = diffs.Where(d => DiagnosticParts.Contains(DiffKey(d))).ToList();
+            string diagNow = string.Join(";", diag);
+            if (diagNow != lastDiagDiffs) foreach (var d in diag) Log.Dim("    (diagnostic) " + d);
+            lastDiagDiffs = diagNow;
+            diffs = diffs.Where(d => !DiagnosticParts.Contains(DiffKey(d))).ToList();
             // the expensive parts take turns (issue #32): a part checked at this checkpoint is equal or different (its streak:
             // how many of its own checks in a row differed); a part not checked keeps its state until it is checked again
             var nowDiff = new HashSet<string>(diffs.Select(d => DiffKey(d)));
