@@ -3152,10 +3152,14 @@ local function pacing()
 	end
 	G.wantSteps = nil
 	if stopAt then
-		if now >= stopAt then return slowed(0) end
 		-- the native module keeps the stop point (G.nstop): the batches end there exactly, so the game runs at its speed up to it,
-		-- with no pause short of it and no exact steps
-		if G.nstopOk() then return want end
+		-- with no pause short of it and no exact steps, and stands there at that speed (it goes on in the batch after the stop point
+		-- moves, with no speed change to wait for). The session's own pause still pauses the game.
+		if G.nstopOk() and not (s.pauseAt ~= nil and now >= s.pauseAt and not catchUp) then
+			if now >= stopAt then slowed(0) end
+			return want
+		end
+		if now >= stopAt then return slowed(0) end
 		-- near a stop point, running at a speed would overshoot it (N steps per frame, a speed change takes a frame):
 		-- the game pauses and the engine performs exactly the steps left
 		-- (only for real stop points: the barrier keeps a reserve for the overshoot and moves all the time)

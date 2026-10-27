@@ -3681,7 +3681,8 @@ static void InstallSmoothPacing()
 // little before it and ask the engine for the exact steps left (GamePerformSimulationSteps), each request a handshake round trip:
 // every build of another player slowed or stopped the game for one to three seconds. The number of steps a batch of the
 // simulation makes is the game speed (the GameTime component's speed, read once per batch by the steps function, 0x1593e0 on
-// build 40425: max(speed, the exact steps asked for), one step of 200 ms each). That reading is redirected here: the mod writes
+// build 40425: max(speed, the exact steps asked for), one step of 200 ms each). That reading and the max are replaced by a thunk
+// that calls StepsForBatch(time, speed, exact steps asked for), whose answer is the batch's number of steps: the mod writes
 // its next stop point in native_stop.txt ("<step> <sequence>", the step being the game time / 200, the updateCount of the
 // engine; -1: none), and a batch never runs past it: it makes the steps left up to it, then none while the stop point stays
 // there (as a paused game does). The game stands exactly at the step, at once, with no request; the mod then sends the build,
@@ -3762,9 +3763,9 @@ static void WriteStopState(u32 S, u32 n)
     WriteFile(g_stopState, b.s, (DWORD)b.n, &w, 0);
     SetEndOfFile(g_stopState);
 }
-extern "C" u32 SpeedForBatch(void* time)
+extern "C" u32 StepsForBatch(void* time, u32 speed, u32 asked)
 {
-    u32 sp = g_speedGet(time);
+    u32 sp = speed > asked ? speed : asked;
     ReadStop();
     if (g_stopSeq < 0 || !g_getUpdRva || !time || !StopAlive()) return sp;
     u32 S = ((u32(*)(u64))(g_base + g_getUpdRva))((u64)time);
@@ -3773,6 +3774,7 @@ extern "C" u32 SpeedForBatch(void* time)
         if ((long)S >= g_stopAt) n = 0;
         else if ((long)(S + sp) > g_stopAt) n = (u32)(g_stopAt - (long)S);
     }
+    if (n != sp && sp > 0 && asked > speed) { Buf l; l.str("stop point: exact steps asked for (").dec((long)asked).str(") cut at the stop point"); LogLine(l); }
     if (n != sp && sp > 0) {
         long c = _InterlockedIncrement(&g_stopClamps);
         if (c <= 40 || c % 500 == 0) { Buf l; l.str("stop point: batch at step ").dec((long)S).str(" makes ").dec((long)n).str(" step(s) instead of ").dec((long)sp).str(" (stop point ").dec(g_stopAt).str(", ").dec(c).str(" so far)"); LogLine(l); }
@@ -3786,7 +3788,7 @@ static void InstallNativeStop()
     char v[4] = {};
     if (GetEnvironmentVariableA("MPFEVER_STOPPOINT", v, 3) > 0 && v[0] == '0') { Buf b; b.str("stop point: off (MPFEVER_STOPPOINT=0)"); LogLine(b); return; }
     // the steps function's reading of the speed: "mov rcx,[rbp+8] / mov rcx,[rcx+28h] / call speed / cmp eax,ebx / mov r12d,eax /
-    // cmovl r12d,ebx / test r12d,r12d / jne"
+    // cmovl r12d,ebx / test r12d,r12d / jne" (ebx: the exact steps asked for, taken from their counter just before)
     u32 at = FindSigRva("48 8B 4D 08 48 8B 49 28 E8 ?? ?? ?? ?? 3B C3 44 8B E0 44 0F 4C E3 45 85 E4 75");
     if (!at) { Buf b; b.str("stop point: off (the steps function's speed reading not found)"); LogLine(b); return; }
     u8* site = (u8*)(g_base + at + 8);
@@ -3794,21 +3796,35 @@ static void InstallNativeStop()
     // (the getter: "sub rsp,28h / mov rax,[rcx+10h] / mov rcx,[rcx+8] / mov edx,[rax] / call / mov eax,[rax+4]")
     static const u8 GETTER[] = { 0x48, 0x83, 0xEC, 0x28, 0x48, 0x8B, 0x41, 0x10, 0x48, 0x8B, 0x49, 0x08, 0x8B, 0x10, 0xE8 };
     if (site[0] != 0xE8 || memcmp(target, GETTER, sizeof(GETTER)) != 0 || target[19] != 0x8B || target[20] != 0x40 || target[21] != 0x04) { Buf b; b.str("stop point: off (the call at ").hex(at + 8).str(" is not the speed getter expected)"); LogLine(b); return; }
-    u8* thunk = AllocNear(64);
-    if (!thunk) { Buf b; b.str("stop point: off (no memory near the game's code)"); LogLine(b); return; }
+    u8* t = AllocNear(128);
+    if (!t) { Buf b; b.str("stop point: off (no memory near the game's code)"); LogLine(b); return; }
     g_speedGet = (SpeedGetF)target;
-    WriteAbsJump(thunk, (uptr)&SpeedForBatch);
-    FlushInstructionCache(GetCurrentProcess(), thunk, 14);
+    // The 14 bytes "call speed / cmp eax,ebx / mov r12d,eax / cmovl r12d,ebx" become a jump to this thunk (rsp is 16-aligned there):
+    //   sub rsp,30h / mov [rsp+28h],rcx / mov rax,getter / call rax / mov edx,eax / mov r8d,ebx / mov rcx,[rsp+28h] /
+    //   mov rax,StepsForBatch / call rax / add rsp,30h / mov r12d,eax / jmp back
+    static const u8 A[] = { 0x48, 0x83, 0xEC, 0x30, 0x48, 0x89, 0x4C, 0x24, 0x28, 0x48, 0xB8 };
+    static const u8 B[] = { 0xFF, 0xD0, 0x89, 0xC2, 0x41, 0x89, 0xD8, 0x48, 0x8B, 0x4C, 0x24, 0x28, 0x48, 0xB8 };
+    static const u8 C[] = { 0xFF, 0xD0, 0x48, 0x83, 0xC4, 0x30, 0x44, 0x8B, 0xE0, 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 };
+    int k = 0;
+    for (u8 x : A) t[k++] = x;
+    *(u64*)(t + k) = (u64)target; k += 8;
+    for (u8 x : B) t[k++] = x;
+    *(u64*)(t + k) = (u64)&StepsForBatch; k += 8;
+    for (u8 x : C) t[k++] = x;
+    *(u64*)(t + k) = (u64)(site + 14); k += 8;
+    FlushInstructionCache(GetCurrentProcess(), t, k);
     DWORD old;
-    if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &old)) return;
-    *(i32*)(site + 1) = (i32)(thunk - (site + 5));
-    VirtualProtect(site, 5, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), site, 5);
+    if (!VirtualProtect(site, 14, PAGE_EXECUTE_READWRITE, &old)) return;
+    for (int i = 5; i < 14; i++) site[i] = 0x90;
+    site[0] = 0xE9;
+    *(i32*)(site + 1) = (i32)(t - (site + 5));
+    VirtualProtect(site, 14, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, 14);
     // (a stop point of the game before: none until the mod writes one)
     char path[400];
     PathOf(path, "native_stop.txt");
     DeleteFileA(path);
-    Buf b; b.str("stop point: the steps function's speed reading at ").hex(at + 8).str(" redirected (stop points of native_stop.txt)"); LogLine(b);
+    Buf b; b.str("stop point: the steps function's number of steps at ").hex(at + 8).str(" decided here (stop points of native_stop.txt)"); LogLine(b);
 }
 
 // ---------------------------------------------------------------- dedicated server without display (MPFEVER_HEADLESS=1)
