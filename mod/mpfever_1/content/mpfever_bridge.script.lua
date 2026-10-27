@@ -3293,7 +3293,8 @@ H.peerclock = function(from, p)
 		local tl = tonumber(p.tl) or 0
 		-- (bl: the game takes part in BUILDLEAD, 1; 2: and it follows another game's lead now; only sent with the switch on)
 		local bl = tonumber(p.bl)
-		G.peers[p.name] = { t = p.t, ah = p.ah, tl = tl > 0 and tl or nil, bl = bl and bl > 0 and bl or nil }
+		-- (ns: that game keeps its stop points natively, see G.nstop)
+		G.peers[p.name] = { t = p.t, ah = p.ah, tl = tl > 0 and tl or nil, bl = bl and bl > 0 and bl or nil, ns = tonumber(p.ns) == 1 }
 		if (tl > 0) ~= (was > 0) then
 			log(tostring(p.name) .. (tl > 0 and (" has a tool in hand that leads (level " .. tl .. "): the game that used it last leads") or " put its leading tool away"))
 		end
@@ -15063,7 +15064,15 @@ local function guiUpdate(userParams, state, guiState)
 		local spd = math.max(1, math.min(4, G.session.speed or 1))
 		G.window = spd + 2
 		if G.lastSpd ~= spd then G.lastSpd = spd; G.consumed = {} end
-		G.ahead = adaptAhead(G.window + (2 * spd + 1) + 1)
+		-- (every game keeping its stop points natively, G.nstop: none passes the barrier, so no overshoot reserve is needed, one step
+		-- of room is kept; MPFEVER_SHORTSTAMP=0: the full reserve as before)
+		local reserve = 2 * spd + 1
+		if G.nstopOk() and os.getenv("MPFEVER_SHORTSTAMP") ~= "0" then
+			local all = true
+			for _, pc in pairs(G.peers) do if not pc.ns then all = false end end
+			if all then reserve = 1 end
+		end
+		G.ahead = adaptAhead(G.window + reserve + 1)
 		-- (another player leads with a terrain tool: it may be that much further ahead of this game)
 		if otherLeads() then G.ahead = G.ahead + terrainLeadSteps() end
 		local okt, t = pcall(gameTime)
@@ -15073,12 +15082,14 @@ local function guiUpdate(userParams, state, guiState)
 		-- when every other game says 2 (nothing is sent without the switch)
 		local bl = nil
 		if G.buildLead then bl = otherLeads() and 2 or 1 end
-		if okt and (t ~= G.lastClock or G.frames % 30 == 0 or tl ~= G.lastTl or bl ~= G.lastBl) then
+		local ns = G.nstopOk() and 1 or nil
+		if okt and (t ~= G.lastClock or G.frames % 30 == 0 or tl ~= G.lastTl or bl ~= G.lastBl or ns ~= G.lastNs) then
 			G.lastClock = t
 			G.lastTl = tl
 			G.lastBl = bl
+			G.lastNs = ns
 			G.stampFloor = math.max(G.stampFloor, t + G.ahead * STEP)
-			send("clock", { t = t, sp = gameSpeed(), ah = G.ahead, tl = tl, bl = bl })
+			send("clock", { t = t, sp = gameSpeed(), ah = G.ahead, tl = tl, bl = bl, ns = ns })
 		end
 	end
 

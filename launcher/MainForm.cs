@@ -2987,8 +2987,10 @@ namespace MPFever
                             int tl = t.TryGetValue("tl", out var lv) && lv is double ld ? (int)ld : 0;
                             // bl (MPFEVER_BUILDLEAD): that game takes part in the builder's lead (1), and follows another game's lead (2)
                             int bl = t.TryGetValue("bl", out var bv) && bv is double bd ? (int)bd : 0;
+                            // ns: that game keeps its stop points natively (0.5.10), the others may stamp their builds closer
+                            bool ns = t.TryGetValue("ns", out var nv) && nv is double nd && nd == 1;
                             var pc = Msg.Make("peerclock", hostName, "{[\"name\"]=" + LuaLit.Quote(m.From) + ",[\"t\"]=" + (long)td + ",[\"ah\"]=" + ah
-                                + (tl > 0 ? ",[\"tl\"]=" + tl : "") + (bl > 0 ? ",[\"bl\"]=" + bl : "") + "}");
+                                + (tl > 0 ? ",[\"tl\"]=" + tl : "") + (bl > 0 ? ",[\"bl\"]=" + bl : "") + (ns ? ",[\"ns\"]=1" : "") + "}");
                             lock (sendGate)
                             {
                                 if (from != null) hostGame?.ToGame(pc);

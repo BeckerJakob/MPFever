@@ -7,6 +7,11 @@ MPFever - Changelog
     and a proof that the engine stood still). The native module makes the engine's batches end at the stop point the mod writes
     in native_stop.txt (the steps function's reading of the game speed, build 40425); the game runs at its speed up to it.
     MPFEVER_STOPPOINT=0: as before.
+  - The build of another player goes to the engine as the simulation comes to its step (the native module says the batch under
+    way ends there), not once this interface sees that step: it lands at that step, one or two handshakes sooner.
+    MPFEVER_STOPEARLY=0: as before.
+  - When every game keeps its stop points natively, builds are stamped closer (no overshoot reserve: 8 steps ahead at 4x instead
+    of 16, 5 at 1x instead of 7): a build held on its builder's game shows sooner. MPFEVER_SHORTSTAMP=0: as before.
   - Diagnostic MPFEVER_BATCHLOG=1: the engine's batches, their steps and the commands they apply (native.log, "bl ...").
 
 0.5.9 - a public list of dedicated servers, building no longer blocked after MPFever was disabled in a lobby
