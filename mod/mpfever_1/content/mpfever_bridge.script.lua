@@ -1483,6 +1483,32 @@ function DET.wrapModEvents()
 	end
 end
 
+-- Diagnostic (MPFEVER_EVSTEPLOG=1, tests): the step at which the contracts' script receives each engine event ("evstep <name>
+-- t=<time> n=<entries>"), to compare two games: does an event reach the scripts at the same step on every game, whatever the
+-- engine's batches? (a contract completed one step apart on two games, 2026-10-27, tests 522 and 525)
+SIM.evStepInstall = function()
+	local sub = type(game) == "table" and game["::/game_mechanics/subventions/subventions.script"]
+	if type(sub) ~= "table" or type(sub.handleEvent) ~= "function" or sub.__mpfEvStep then return end
+	sub.__mpfEvStep = true
+	local oh, ou = sub.handleEvent, sub.update
+	local function t()
+		local ok, gt = pcall(function() return api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME).gameTime end)
+		return ok and gt or -1
+	end
+	sub.handleEvent = function(u, st, src, id, name, param, ...)
+		if id ~= "Subvention" then log("evstep " .. tostring(name) .. " t=" .. tostring(t()) .. " n=" .. tostring(type(param) == "table" and #param or "-")) end
+		return oh(u, st, src, id, name, param, ...)
+	end
+	if type(ou) == "function" then
+		sub.update = function(u, st, dt, ...)
+			SIM.evUp = (SIM.evUp or 0) + 1
+			if SIM.evUp % 20 == 1 then log("evstep update t=" .. tostring(t()) .. " dt=" .. tostring(dt) .. " #" .. SIM.evUp) end
+			return ou(u, st, dt, ...)
+		end
+	end
+	log("evstep: the contracts' script events are logged with their step")
+end
+
 -- (probe) how the game's scripts are reached: the global table `game` keeps every script module by its file name
 local function contractProbe()
 	if SIM.probeDone then return end
@@ -1648,6 +1674,7 @@ local function update(userParams, state, dt)
 		SIM.coRegistry = st0 and st0.co or nil
 		-- (again from time to time: the game loads the script of a type of contract when it first needs it)
 		SIM.ctTick = (SIM.ctTick or 0) + 1
+		if SIM.ctTick % 50 == 1 and os.getenv("MPFEVER_EVSTEPLOG") == "1" then pcall(SIM.evStepInstall) end
 		if SIM.coRegistry and SIM.coRegistry.mode == "separate" and SIM.ctTick % 50 == 1 then
 			CO.installContracts({ log = log, registry = function() return SIM.coRegistry end, localCo = simLocalCo })
 		end
