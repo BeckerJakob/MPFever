@@ -3,10 +3,9 @@ MPFever - Changelog
 
 0.5.11 - sessions of separate companies run again, no crash in the next game after one
   - FIX (games frozen at the start, 0.5.10): a session with one company per player never ran. At the start the host's rules go
-    to the games as a paused action in its turn, and the start's "speed x1" came right after it and lifted the hold. Before
-    0.5.10 the games ran on and applied the action a little late; with the native stop point the game stood at that step at
-    speed 1, while paused actions are applied at speed 0 only: both games waited for ever (the host sent its rules again every
-    few seconds). A session resumed now keeps the hold of a paused action or build still waiting.
+    to the games as a paused action in its turn, and the games hold at its step. With the native stop point a game stands at a
+    hold at its speed, while paused actions were applied at speed 0 only: both games waited for ever (the host sent its rules
+    again every few seconds). Paused actions are now applied too when the game stands at the native stop point.
   - FIX (crash, issue #88): after a session with one company per player, a new game (or another savegame) started without
     restarting Transport Fever 3 crashed after about 30 s. The game keeps its scripting interface from one game to the next, and
     the replacement of getPlayer() MPFever installs for the companies stayed there: the new game asked the company of the game

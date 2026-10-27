@@ -3330,10 +3330,7 @@ H.session = function(from, p)
 	end
 	if p.pauseAt ~= G.session.pauseAt then
 		G.session.pauseAt = p.pauseAt
-		-- (a resume keeps the hold of a paused action or build waiting here, see runPausedActions: the start of a session with
-		-- companies resumed it right after the host's rules had been put in their turn, the native stop point kept the game at
-		-- that step at speed 1 and the paused actions, applied at speed 0 only, waited for ever: the games never ran, 0.5.10)
-		if p.pauseAt then toSim("pause_at", { at = p.pauseAt }) elseif G.holdAt then toSim("pause_at", { at = G.holdAt }) else toSim("resume", {}) end
+		if p.pauseAt then toSim("pause_at", { at = p.pauseAt }) else toSim("resume", {}) end
 	end
 end
 
@@ -7781,7 +7778,9 @@ local function runPausedActions()
 		G.holdAt = minAt
 		toSim("pause_at", { at = minAt })
 	end
-	if gameSpeed() ~= 0 then return end
+	-- (or standing at the native stop point: the game stands there at its speed, see pacing. Applied at speed 0 only, the paused
+	-- actions waited for ever there: a session with companies, whose host's rules go in their turn at the start, never ran, 0.5.10)
+	if gameSpeed() ~= 0 and not (G.nstopOk() and G.lastStopAt and now >= G.lastStopAt) then return end
 	local keep = {}
 	table.sort(G.pendingPaused, before)
 	-- An action that creates something (a vehicle, a line) is known to the later actions only once the engine has answered,
