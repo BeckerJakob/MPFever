@@ -908,11 +908,23 @@ end
 -- interface plays: the savegame's company ("canon"), or the company of the action being replayed (SIM.actor, set around the
 -- replay). The replacement is installed in every simulation Lua state that runs this script; it is never installed in the shared
 -- mode, where nothing changes.
+-- The game keeps api.engine.util from one game to the next in the same run: without companies (a new game, a savegame played
+-- alone or shared) the game's own getPlayer() comes back, else the next game asked the company of the game before (issue #88: a
+-- new game after a session of companies, getPlayer() gave entity 68473, a group of trees there, and the game crashed).
 local function installSimPlayer(st)
 	local reg = st and st.co
-	if not (reg and reg.canon) then return end
-	SIM.canon = reg.canon
 	local util = api.engine.util
+	if util.mpfRealGetPlayer == nil then pcall(function() util.mpfRealGetPlayer = util.getPlayer end) end
+	if not (reg and reg.canon) then
+		local real = util.mpfRealGetPlayer
+		if real and util.getPlayer ~= real then
+			util.getPlayer = real
+			SIM.wrapper = nil
+			log("companies: getPlayer() given back to the game (no company here)")
+		end
+		return
+	end
+	SIM.canon = reg.canon
 	if SIM.wrapper and util.getPlayer == SIM.wrapper then return end
 	SIM.wrapper = function()
 		if SIM.actor then return SIM.actor end
@@ -1296,7 +1308,7 @@ local function simApplyDue(state)
 		st.watches = keepW
 		changed = true
 	end
-	if st.co then installSimPlayer(st) end
+	installSimPlayer(st)
 	if st.pauseAt and now >= st.pauseAt and not st.pausedAt then
 		st.pausedAt = now
 		api.cmd.sendCommand(api.cmd.makeGameSetSpeedCmd(0))

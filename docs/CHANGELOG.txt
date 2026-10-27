@@ -1,7 +1,14 @@
 MPFever - Changelog
 ===================
 
-0.5.10 - (in progress) builds of other players without the slow approach
+0.5.11 - no crash in the next game after a session of separate companies
+  - FIX (crash, issue #88): after a session with one company per player, a new game (or another savegame) started without
+    restarting Transport Fever 3 crashed after about 30 s. The game keeps its scripting interface from one game to the next, and
+    the replacement of getPlayer() MPFever installs for the companies stayed there: the new game asked the company of the game
+    before (in the report a group of trees there), the game's notifications failed ("companyState" nil) and the engine stopped
+    when it booked money on it. A game without companies now gets the game's own getPlayer() back.
+
+0.5.10 - builds of other players without the slow approach
   - NEW (native stop point): a game stops for another player's build (or its own held build, or the session's pause) exactly at
     the build's step, without pausing short of it and asking the engine for the exact steps left (one handshake round trip each,
     and a proof that the engine stood still). The native module makes the engine's batches end at the stop point the mod writes
