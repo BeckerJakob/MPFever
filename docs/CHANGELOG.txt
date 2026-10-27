@@ -20,7 +20,9 @@ MPFever - Changelog
   - FIX (desyncs): a game standing at a stop point ran the game's scripts in a batch of no step (the engine calls them with a
     duration of 0) while the other games ran on: a contract that reached its goal there was completed one step sooner on that
     game ("script:subventions" for minutes, then a reload; reproduced twice on the same savegame, tests 522 and 525). A stand
-    made by the native stop point now skips that call, as a running game does not make it. MPFEVER_STANDSKIP=0: as before.
+    made by the native stop point can skip that call (MPFEVER_STANDSKIP=1), off at first: with it, 4 of about 17 tests drifted
+    (towns, vehicles), none of 14 without. The native stop point itself already removes the stands of the exact steps, where it
+    happened (the same tests on 0.5.10: in sync).
   - Diagnostic MPFEVER_BATCHLOG=1: the engine's batches, their steps and the commands they apply (native.log, "bl ...").
 
 0.5.9 - a public list of dedicated servers, building no longer blocked after MPFever was disabled in a lobby

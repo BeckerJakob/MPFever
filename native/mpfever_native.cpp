@@ -3797,9 +3797,10 @@ extern "C" u32 StepsForBatch(void* time, u32 speed, u32 asked)
     // still batch's update of the game's scripts (the engine calls them with a duration of 0 when a batch makes no step). A game
     // standing at its stop point ran its scripts at that time and another game did not: a contract that reached its goal there
     // was completed one step sooner on the standing game (tests 522 and 525 of 2026-10-27, "script:subventions"). The engine's own
-    // work of that batch (0xbb28a0 with 0) still runs. MPFEVER_STANDSKIP=0: as before.
+    // work of that batch (0xbb28a0 with 0) still runs. OFF at first since 2026-10-27 evening (MPFEVER_STANDSKIP=1: on): with it,
+    // 4 of about 17 tests drifted (towns, vehicles), none of 14 without; the call probably does more than the scripts.
     static int standSkip = -1;
-    if (standSkip < 0) { char sv[4] = {}; standSkip = (GetEnvironmentVariableA("MPFEVER_STANDSKIP", sv, 3) > 0 && sv[0] == '0') ? 0 : 1; }
+    if (standSkip < 0) { char sv[4] = {}; standSkip = (GetEnvironmentVariableA("MPFEVER_STANDSKIP", sv, 3) > 0 && sv[0] == '1') ? 1 : 0; }
     if (n == 0 && sp > 0 && standSkip && g_standSkipOn) { WriteStopState(S, 0); return 0xFFFFFFFFu; }
     if (n != sp && sp > 0 && asked > speed) { Buf l; l.str("stop point: exact steps asked for (").dec((long)asked).str(") cut at the stop point"); LogLine(l); }
     if (n != sp && sp > 0) {
