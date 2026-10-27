@@ -10,8 +10,10 @@ MPFever - Changelog
   - The build of another player goes to the engine as the simulation comes to its step (the native module says the batch under
     way ends there), not once this interface sees that step: it lands at that step, one or two handshakes sooner.
     MPFEVER_STOPEARLY=0: as before.
-  - When every game keeps its stop points natively, builds are stamped closer (no overshoot reserve: 8 steps ahead at 4x instead
-    of 16, 5 at 1x instead of 7): a build held on its builder's game shows sooner. MPFEVER_SHORTSTAMP=0: as before.
+  - The barrier of the other games' clocks keeps its reserve for the overshoot (the native stop point stands at the barrier plus
+    that reserve): held exactly at the barrier, each game waited for the other's next clock and the games ran at half speed at
+    4x (10 steps a second instead of 20). The stamp distance keeps that reserve as before (MPFEVER_SHORTSTAMP=1, tests: the
+    shorter stamp of an exact barrier).
   - Responsive builds (host setting) now ON at first: a player's builds show at once on its own game, and it can attach the next
     piece right away. Checked with the native stop point at 4x (streets through towns, roads, upgrades: in sync). A host who
     turned it off keeps it off.

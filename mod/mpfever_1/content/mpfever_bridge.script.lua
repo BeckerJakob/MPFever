@@ -3162,9 +3162,17 @@ local function pacing()
 			log("BUILDLEAD cap: this game stops at t=" .. G.leadCapAt .. " (now " .. now .. ") until the build released at once has been shipped [frame " .. G.frames .. "]")
 		end
 	end
+	-- (the native stop point, see G.nstop: exact at the holds and the session's pause, but the barrier keeps its reserve for the
+	-- overshoot as before: held exactly at the barrier, each game waited for the other's next clock and the games ran at half
+	-- speed at 4x, 10 steps a second instead of 20, tests 602-639 of 2026-10-27. The stamp distance keeps that reserve too.)
+	local nativeAt = stopAt
+	if barrier then
+		local soft = barrier + overshootReserve() * STEP
+		if nativeAt == nil or soft < nativeAt then nativeAt = soft end
+	end
+	G.lastStopAt = nativeAt
 	if barrier and (stopAt == nil or barrier < stopAt) then stopAt = barrier end
 	G.lastBarrier = barrier
-	G.lastStopAt = stopAt
 	local want = s.speed
 	if s.pauseAt == nil and G.holdAt then want = math.max(1, want) end
 	if catchUp then want = 1 end
@@ -15091,10 +15099,10 @@ local function guiUpdate(userParams, state, guiState)
 		local spd = math.max(1, math.min(4, G.session.speed or 1))
 		G.window = spd + 2
 		if G.lastSpd ~= spd then G.lastSpd = spd; G.consumed = {} end
-		-- (every game keeping its stop points natively, G.nstop: none passes the barrier, so no overshoot reserve is needed, one step
-		-- of room is kept; MPFEVER_SHORTSTAMP=0: the full reserve as before)
+		-- (MPFEVER_SHORTSTAMP=1, tests: with every game keeping its stop points natively and exactly at the barrier, one step of room
+		-- instead of the overshoot reserve. Off: the barrier keeps its reserve, see pacing)
 		local reserve = 2 * spd + 1
-		if G.nstopOk() and os.getenv("MPFEVER_SHORTSTAMP") ~= "0" then
+		if G.nstopOk() and os.getenv("MPFEVER_SHORTSTAMP") == "1" then
 			local all = true
 			for _, pc in pairs(G.peers) do if not pc.ns then all = false end end
 			if all then reserve = 1 end
