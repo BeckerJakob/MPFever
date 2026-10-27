@@ -12,6 +12,10 @@ MPFever - Changelog
     MPFEVER_STOPEARLY=0: as before.
   - When every game keeps its stop points natively, builds are stamped closer (no overshoot reserve: 8 steps ahead at 4x instead
     of 16, 5 at 1x instead of 7): a build held on its builder's game shows sooner. MPFEVER_SHORTSTAMP=0: as before.
+  - FIX (desyncs): a game standing at a stop point ran the game's scripts in a batch of no step (the engine calls them with a
+    duration of 0) while the other games ran on: a contract that reached its goal there was completed one step sooner on that
+    game ("script:subventions" for minutes, then a reload; reproduced twice on the same savegame, tests 522 and 525). A stand
+    made by the native stop point now skips that call, as a running game does not make it. MPFEVER_STANDSKIP=0: as before.
   - Diagnostic MPFEVER_BATCHLOG=1: the engine's batches, their steps and the commands they apply (native.log, "bl ...").
 
 0.5.9 - a public list of dedicated servers, building no longer blocked after MPFever was disabled in a lobby

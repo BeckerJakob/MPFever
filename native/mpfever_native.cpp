@@ -3769,6 +3769,7 @@ static void WriteStopState(u32 S, u32 n)
 // else the two games did not start at the same time)
 static int g_testSplit = -1;
 static bool g_splitArmed = false;
+static bool g_standSkipOn = false;     // (the thunk's path for a stand was installed, see InstallNativeStop)
 extern "C" u32 StepsForBatch(void* time, u32 speed, u32 asked)
 {
     u32 sp = speed > asked ? speed : asked;
@@ -3786,6 +3787,14 @@ extern "C" u32 StepsForBatch(void* time, u32 speed, u32 asked)
         if ((long)S >= g_stopAt) n = 0;
         else if ((long)(S + sp) > g_stopAt) n = (u32)(g_stopAt - (long)S);
     }
+    // A batch with no step because of the stop point (the game runs at a speed): StepsForBatch answers ~0, and the thunk skips the
+    // still batch's update of the game's scripts (the engine calls them with a duration of 0 when a batch makes no step). A game
+    // standing at its stop point ran its scripts at that time and another game did not: a contract that reached its goal there
+    // was completed one step sooner on the standing game (tests 522 and 525 of 2026-10-27, "script:subventions"). The engine's own
+    // work of that batch (0xbb28a0 with 0) still runs. MPFEVER_STANDSKIP=0: as before.
+    static int standSkip = -1;
+    if (standSkip < 0) { char sv[4] = {}; standSkip = (GetEnvironmentVariableA("MPFEVER_STANDSKIP", sv, 3) > 0 && sv[0] == '0') ? 0 : 1; }
+    if (n == 0 && sp > 0 && standSkip && g_standSkipOn) { WriteStopState(S, 0); return 0xFFFFFFFFu; }
     if (n != sp && sp > 0 && asked > speed) { Buf l; l.str("stop point: exact steps asked for (").dec((long)asked).str(") cut at the stop point"); LogLine(l); }
     if (n != sp && sp > 0) {
         long c = _InterlockedIncrement(&g_stopClamps);
@@ -3816,7 +3825,16 @@ static void InstallNativeStop()
     //   mov rax,StepsForBatch / call rax / add rsp,30h / mov r12d,eax / jmp back
     static const u8 A[] = { 0x48, 0x83, 0xEC, 0x30, 0x48, 0x89, 0x4C, 0x24, 0x28, 0x48, 0xB8 };
     static const u8 B[] = { 0xFF, 0xD0, 0x89, 0xC2, 0x41, 0x89, 0xD8, 0x48, 0x8B, 0x4C, 0x24, 0x28, 0x48, 0xB8 };
-    static const u8 C[] = { 0xFF, 0xD0, 0x48, 0x83, 0xC4, 0x30, 0x44, 0x8B, 0xE0, 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 };
+    //   cmp eax,-1 / je stand / ... ; stand: the still batch's own engine call (copied: "mov rcx,[rbp+8] / xor r8d,r8d /
+    //   mov edx,[rcx+208h] / mov rcx,[rcx+18h] / call 0xbb28a0"), not its scripts' update, then the jump to the function's end
+    static const u8 C[] = { 0xFF, 0xD0, 0x48, 0x83, 0xC4, 0x30, 0x83, 0xF8, 0xFF, 0x74, 0x11, 0x44, 0x8B, 0xE0, 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 };
+    static const u8 STILL[] = { 0x45, 0x85, 0xE4, 0x75, 0x00, 0x48, 0x8B, 0x4D, 0x08, 0x45, 0x33, 0xC0, 0x8B, 0x91, 0x08, 0x02, 0x00, 0x00, 0x48, 0x8B, 0x49, 0x18, 0xE8 };
+    u8* still = site + 14;
+    bool stillOk = true;
+    for (int i = 0; i < (int)sizeof(STILL); i++) if (i != 4 && still[i] != STILL[i]) stillOk = false;
+    u8* stillCall = still + 22;                                   // the call of 0xbb28a0
+    u8* stillJmp = still + 0x37;                                  // "jmp" to the function's end after the scripts' update
+    if (stillOk && (stillJmp[0] != 0xE9 || stillJmp[-3] != 0xFF || stillJmp[-2] != 0x50 || stillJmp[-1] != 0x58)) stillOk = false;
     int k = 0;
     for (u8 x : A) t[k++] = x;
     *(u64*)(t + k) = (u64)target; k += 8;
@@ -3824,6 +3842,17 @@ static void InstallNativeStop()
     *(u64*)(t + k) = (u64)&StepsForBatch; k += 8;
     for (u8 x : C) t[k++] = x;
     *(u64*)(t + k) = (u64)(site + 14); k += 8;
+    if (stillOk) {
+        for (int i = 5; i < 22; i++) t[k++] = still[i];
+        t[k++] = 0x48; t[k++] = 0xB8; *(u64*)(t + k) = (u64)(stillCall + 5 + *(i32*)(stillCall + 1)); k += 8;
+        t[k++] = 0xFF; t[k++] = 0xD0;
+        t[k++] = 0xFF; t[k++] = 0x25; t[k++] = 0; t[k++] = 0; t[k++] = 0; t[k++] = 0;
+        *(u64*)(t + k) = (u64)(stillJmp + 5 + *(i32*)(stillJmp + 1)); k += 8;
+        g_standSkipOn = true;
+    } else {
+        // (the still batch not as expected: a stand never asks for the skip, the code after "je" is never reached)
+        t[k++] = 0xCC;
+    }
     FlushInstructionCache(GetCurrentProcess(), t, k);
     DWORD old;
     if (!VirtualProtect(site, 14, PAGE_EXECUTE_READWRITE, &old)) return;
@@ -3836,7 +3865,7 @@ static void InstallNativeStop()
     char path[400];
     PathOf(path, "native_stop.txt");
     DeleteFileA(path);
-    Buf b; b.str("stop point: the steps function's number of steps at ").hex(at + 8).str(" decided here (stop points of native_stop.txt)"); LogLine(b);
+    Buf b; b.str("stop point: the steps function's number of steps at ").hex(at + 8).str(" decided here (stop points of native_stop.txt)").str(g_standSkipOn ? "; a stand skips the scripts' update" : "; the still batch not as expected, a stand runs the scripts as before"); LogLine(b);
 }
 
 // ---------------------------------------------------------------- dedicated server without display (MPFEVER_HEADLESS=1)
