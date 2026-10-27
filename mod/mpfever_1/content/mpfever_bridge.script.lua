@@ -6153,13 +6153,38 @@ G.restale = function(r, at)
 	if not ok then log("native build " .. tostring(r.id) .. ": not replayed here (" .. tostring(res):sub(1, 200) .. ")") end
 	return ok and res == true
 end
+-- the chat tells everybody that a player's build was left out (said by every game: only the host's game reaches the chat, the
+-- launcher of a player's game does not pass it on)
+G.sameSpotSay = function(origin)
+	G.coSay(C.Tf("La construction de %s a été annulée : un autre joueur a construit au même endroit au même moment. Refaites-la.",
+		"%s's build was cancelled: another player built at the same place at the same moment. Please make it again.", tostring(origin)))
+end
 G.restaleBody = function(r, at)
 	-- (MPFEVER_RESTALELOG=1, tests: why a held build is or is not replayed here)
 	if os.getenv("MPFEVER_RESTALELOG") == "1" then
 		log("restale check " .. tostring(r.id) .. ": copy " .. tostring(r.copy ~= nil) .. ", t0 " .. tostring(r.t0) .. ", at " .. tostring(at)
 			.. ", frame0 " .. tostring(r.frame0) .. ", world frame " .. tostring(G.worldFrame) .. ", others " .. C.ser(G.othersAt):sub(1, 200))
 	end
-	if not G.restaleOn or type(r.copy) ~= "table" or r.lead or G.cmode == "separate" then return false end
+	if not G.restaleOn or r.lead then return false end
+	-- One company per player: the tool's copy names the savegame's company (the native module gives the build this player's
+	-- company at the tool's command only), so it cannot be replayed. The build is left out on every game instead, as a refused
+	-- one (the others stop holding for it, its turn of a pause is skipped), and the chat tells its player to make it again:
+	-- before, it was applied as computed and the games reloaded. MPFEVER_RESTALESEP=0: as before.
+	if G.cmode == "separate" then
+		if os.getenv("MPFEVER_RESTALESEP") == "0" then return false end
+		local whyS = G.restaleWhy(r, at)
+		if not whyS then return false end
+		if not r.fn then nativeCtl("dropid " .. r.id) end
+		local seq = G.pt.of[G.ptKey(G.me, r.id)]
+		send("nat_cancel", { origin = G.me, id = r.id, pseq = seq, samespot = true })
+		if r.paused and seq then G.ptDone(seq) end
+		G.restaled = (G.restaled or 0) + 1
+		log("native build " .. r.id .. " left out on every game (one company per player, it cannot be replayed): " .. whyS)
+		G.sameSpotSay(G.me)
+		if r.cb then G.waits[#G.waits + 1] = { at = G.frames + 1, fn = function() pcall(r.cb, nil, false) end } end
+		return true
+	end
+	if type(r.copy) ~= "table" then return false end
 	local why = G.restaleWhy(r, at)
 	if not why then return false end
 	-- the act a capture of this build would have shipped (the compact proposal, its references translated as the capture does)
@@ -6322,6 +6347,8 @@ local function expireShipIds()
 end
 
 H.nat_cancel = function(from, p)
+	-- (a build left out because another player built at the same place meanwhile, see G.restaleBody)
+	if p.samespot then G.sameSpotSay(p.origin) end
 	if p.origin == G.me then return end
 	if type(p.pseq) == "number" and p.pseq > G.pt.done then G.pt.skip[p.pseq] = true end
 	local keep = {}

@@ -994,6 +994,9 @@ static void WatchArm(u8* gs)
     }
 }
 
+static int g_freeqLog = -1;       // (MPFEVER_FREEQLOG, see FreeqLine)
+static void FreeqLine(u8* gs);
+
 extern "C" u64 PreIterDetour(void* a)
 {
     g_iter++;
@@ -1002,6 +1005,8 @@ extern "C" u64 PreIterDetour(void* a)
     if (g_iter == 1) { Buf t; t.str("simulation thread ").dec(GetCurrentThreadId()).str(", interface thread ").dec(g_mainTid); LogLine(t); }
     ClearOthersIn(a ? *(u8**)((u8*)a + 8) : 0, true);
     if (a && *(u8**)((u8*)a + 8)) { g_slot = *(void**)((u8*)a + 8); ApplyLocalPlayer("iteration"); }
+    if (g_freeqLog < 0) g_freeqLog = GetEnvironmentVariableA("MPFEVER_FREEQLOG", 0, 0) > 0 ? 1 : 0;
+    if (g_freeqLog) FreeqLine(a ? *(u8**)((u8*)a + 8) : 0);
     WatchArm(a ? *(u8**)((u8*)a + 8) : 0);
     // commands moved aside (exact-iteration builds, or the MPFEVER_DEFER_ITERS test) whose iteration has come, in queue order
     for (unsigned i = g_defHead; i != g_defTail; i++) {
@@ -3069,6 +3074,40 @@ static void FixNeedsPath(SavedRegs* r)
 // game) and commandIndex and subIndex 0: segments of one step are ordered by their entity ids, which every game gives alike. cmp word [rdi+0x31c],0 (whether the engine stamps it) finds it stamped.
 static u32 g_getUpdRva = 0;                         // GameTime's updateCount getter, called with the state's time (state+0x28)
 static volatile long g_tickLogged = 0;
+// Diagnostic (MPFEVER_FREEQLOG=1, tests): the free-id queue of the simulation's engine at the start of every 50th step, by the
+// step's number (GameTime.updateCount, the same on every game): "freeq step <s> size <n> sum <sum of ids> head <next id>". Two
+// games in step give the same line; the first step where they differ is within 50 steps of the action that shifted the ids
+// (entities made or removed on one game only), long before the vehicles or the towns drift. Compared by tools/freeq_diff.py.
+static u32 g_freeqLast = 0xFFFFFFFFu;
+static void FreeqLine(u8* gs)
+{
+    if (!gs || !g_getUpdRva || !Readable(gs + 0x18, 0x18)) return;
+    u64 time = *(u64*)(gs + 0x28);
+    u8* eng = *(u8**)(gs + 0x18);
+    if (!time || !eng || !Readable((void*)time, 0x18)) return;
+    u32 step = ((u32(*)(u64))(g_base + g_getUpdRva))(time);
+    if (step % 50 != 0 || step == g_freeqLast) return;
+    g_freeqLast = step;
+    u8* q = eng + 0xd8;
+    if (!Readable(q, 0x28)) return;
+    AcquireSRWLockExclusive(&g_fqLock);
+    u64 map = *(u64*)(q + 8), ms = *(u64*)(q + 0x10), off = *(u64*)(q + 0x18), n = *(u64*)(q + 0x20);
+    u64 sum = 0; i32 head = -1; bool ok = true;
+    if (n && (!map || !ms || (ms & (ms - 1)) || n > ms * 4 || n > (32u << 20) || !Readable((void*)map, ms * 8))) ok = false;
+    for (u64 i = 0; ok && i < n; i++) {
+        u64 j = off + i;
+        i32* blk = *(i32**)(map + ((j >> 2) & (ms - 1)) * 8);
+        if (!blk || ((u64)blk & 3)) { ok = false; break; }
+        i32 v = blk[j & 3];
+        if (i == 0) head = v;
+        sum += (u32)v;
+    }
+    ReleaseSRWLockExclusive(&g_fqLock);
+    Buf b; b.str("freeq step ").dec((long)step);
+    if (ok) b.str(" size ").dec((long)n).str(" sum ").dec((long)(sum & 0x7fffffff)).str(" head ").dec(head); else b.str(" unreadable");
+    LogLine(b);
+}
+
 static void FixTickEpoch(SavedRegs* r)
 {
     _InterlockedIncrement(&g_orderSorts[10]);

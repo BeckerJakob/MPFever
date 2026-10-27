@@ -1134,7 +1134,7 @@ local function setup()
 			body[#body + 1] = box(H, {
 				text(T("Serveurs publics", "Public servers"), "font-scale-title-1"),
 				hfill(),
-				button(T("Actualiser", "Refresh"), function() request("servers") end, { enabled = not busy }),
+				button(T("Actualiser", "Refresh"), function() request("servers") end, { enabled = not busy, size = { 220, 36 } }),
 			})
 			body[#body + 1] = gap(1, 6)
 			body[#body + 1] = text(T("Les serveurs dédiés que leurs propriétaires ont rendus publics. Il faut la même version de MPFever et du jeu que le serveur.",

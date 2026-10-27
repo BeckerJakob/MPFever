@@ -10777,6 +10777,19 @@
       "ko": "다른 MPFever 버전: ",
       "zh-CN": "其他 MPFever 版本:",
       "zh-TW": "其他 MPFever 版本:"
+    },
+    "%s's build was cancelled: another player built at the same place at the same moment. Please make it again.": {
+      "de": "Der Bau von %s wurde abgebrochen: Ein anderer Spieler hat im selben Moment an derselben Stelle gebaut. Bitte erneut bauen.",
+      "es": "La construcción de %s se ha cancelado: otro jugador construyó en el mismo lugar en el mismo momento. Vuelve a hacerla.",
+      "it": "La costruzione di %s è stata annullata: un altro giocatore ha costruito nello stesso punto nello stesso momento. Rifalla.",
+      "nl": "De bouw van %s is geannuleerd: een andere speler bouwde op hetzelfde moment op dezelfde plek. Bouw het opnieuw.",
+      "pl": "Budowa gracza %s została anulowana: inny gracz budował w tym samym miejscu w tym samym momencie. Zbuduj ją ponownie.",
+      "pt-BR": "A construção de %s foi cancelada: outro jogador construiu no mesmo lugar no mesmo momento. Faça-a de novo.",
+      "ru": "Постройка игрока %s отменена: другой игрок строил в том же месте в тот же момент. Постройте ещё раз.",
+      "ja": "%s の建設は取り消されました: 別のプレイヤーが同じ瞬間に同じ場所で建設しました。もう一度建設してください。",
+      "ko": "%s의 건설이 취소되었습니다: 다른 플레이어가 같은 순간에 같은 곳에 건설했습니다. 다시 건설해 주세요.",
+      "zh-CN": "%s 的建造已取消:另一位玩家在同一时刻于同一地点建造。请重新建造。",
+      "zh-TW": "%s 的建造已取消:另一位玩家在同一時刻於同一地點建造。請重新建造。"
     }
   }
 }
