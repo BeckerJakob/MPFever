@@ -29,7 +29,7 @@ namespace MPFever
             // ---- session (the host's choice)
             new Opt { Key = "MPFEVER_BUILDLEAD", Session = true, DefaultOn = false, OnValue = "1",
                 Name = () => T("Constructions réactives (expérimental)", "Responsive builds (experimental)"),
-                Help = () => T("À vitesse ×1, vos constructions apparaissent tout de suite chez vous au lieu d'attendre les autres jeux.", "At 1x, your builds show at once on your game instead of waiting for the other games.") },
+                Help = () => T("Vos constructions apparaissent tout de suite chez vous au lieu d'attendre les autres jeux : vous pouvez y raccrocher la suite aussitôt.", "Your builds show at once on your game instead of waiting for the other games: you can attach the next piece right away.") },
             new Opt { Key = "MPFEVER_NOREFUND", Session = true, DefaultOn = true, OffValue = "1",
                 Name = () => T("Remboursements équilibrés", "Balanced refunds"),
                 Help = () => T("Une construction démolie juste après coûte la même chose sur tous les jeux.", "A build demolished right after costs the same on every game.") },

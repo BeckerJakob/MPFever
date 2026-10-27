@@ -16,6 +16,25 @@ MPFever - Changelog
     until it comes back. MPFEVER_ALIVE_STALE=<seconds>: another delay.
   - FIX (dedicated server without display): its world's savegame picture was black (nothing is drawn). The picture of before
     is kept, else one is made with the server's name and world.
+  - FIX (one company per player, the known issue of 0.5.7): two players changing the same place within about two seconds
+    led to a reload. The build made second, computed before the other one was there, is now left out on every game (the
+    others stop holding for it, its turn of a pause is skipped) and the chat tells its player to make it again. (With one
+    shared company it is rebuilt on every game, as in 0.5.7: one company per player cannot, the tool's copy names the
+    savegame's company.) MPFEVER_RESTALESEP=0: as before.
+  - Diagnostic (tests): MPFEVER_FREEQLOG=1 writes the free-id queue of the simulation every 50 steps in native.log, by step;
+    tools\freeq_diff.py finds the first step where two games differ (entities made or removed on one game only), long
+    before the vehicles or the towns drift.
+  - Host setting "Responsive builds" (experimental, off at first; MPFEVER_BUILDLEAD): now at every speed, no longer 1x only.
+    A build shows at once on its builder's game (the next piece can be attached right away) and the others apply it at the
+    same step. It was kept to 1x since 0.3.12 because the towns drifted at 2x and 4x; that came from the seeds counting the
+    frames a game stood still, which the tick epochs of 0.5.3 fixed. Checked: streets through towns at 4x and 2x, new roads and
+    upgrades at 4x, in sync with the same free ids at every step; with the tick epochs turned off the same test goes apart
+    again (towns, buildings, money). MPFEVER_BUILDLEADX1=1: 1x only, as before.
+  - FIX (checks): a false "slight drift (buildIds)" when two builds came a few steps apart at x2 or x4. Each game read the ids
+    of a build at its first script update two steps after it, and at x4 the script runs once per batch of steps: one game
+    read after the next build had split a segment (-1), the other before. The ids are now also read just before a later
+    build is applied, at the same step on every game. (Found with the builder leading at x4: the free-id queues of the two
+    games stayed the same at every step, MPFEVER_FREEQLOG.) MPFEVER_IDREADEARLY=0: as before.
 
 0.5.8 -the dedicated server starts with a button, with display or without
   - Dedicated server: its window opens with the server stopped and two buttons, "Start with display" (the game's window shows

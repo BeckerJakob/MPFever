@@ -101,7 +101,8 @@ A PC of its own can run the world without anybody playing on it: download **`MPF
 - a password and a player limit;
 - autosaves with backups;
 - a restart after a crash;
-- a console.
+- a console;
+- if you want, a place in the public server list (`public=true`): players then find it in the **Public servers** tab of the multiplayer page. The list is a small service of its own, see [serverlist](serverlist/README.md).
 
 See [SERVER](docs/SERVER.txt).
 

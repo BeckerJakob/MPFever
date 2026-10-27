@@ -5890,19 +5890,6 @@
       "zh-CN": "刚建好就拆除的建筑在所有游戏中费用相同。",
       "zh-TW": "剛建好就拆除的建築在所有遊戲中費用相同。"
     },
-    "At 1x, your builds show at once on your game instead of waiting for the other games.": {
-      "de": "Bei 1x erscheinen deine Bauten sofort in deinem Spiel, statt auf die anderen Spiele zu warten.",
-      "es": "A 1x, tus construcciones aparecen al instante en tu partida en vez de esperar a las demás.",
-      "it": "A 1x, le tue costruzioni appaiono subito nella tua partita invece di attendere le altre.",
-      "nl": "Op 1x verschijnen je bouwwerken meteen in je spel in plaats van te wachten op de andere spellen.",
-      "pl": "Przy 1x twoje budowy pojawiają się od razu w twojej grze, zamiast czekać na inne gry.",
-      "pt-BR": "Em 1x, suas construções aparecem na hora no seu jogo em vez de esperar pelos outros.",
-      "ru": "На скорости 1x ваши постройки сразу появляются у вас, не дожидаясь других игр.",
-      "ja": "1倍速では、他のゲームを待たずに自分の建設がすぐに表示されます。",
-      "ko": "1배속에서 다른 게임을 기다리지 않고 내 건설이 바로 표시됩니다.",
-      "zh-CN": "在 1 倍速下，你的建筑会立即在你的游戏中出现，而不必等待其他游戏。",
-      "zh-TW": "在 1 倍速下，你的建築會立即在你的遊戲中出現，而不必等待其他遊戲。"
-    },
     "Automatic update": {
       "de": "Automatische Aktualisierung",
       "es": "Actualización automática",
@@ -10790,6 +10777,19 @@
       "ko": "%s의 건설이 취소되었습니다: 다른 플레이어가 같은 순간에 같은 곳에 건설했습니다. 다시 건설해 주세요.",
       "zh-CN": "%s 的建造已取消:另一位玩家在同一时刻于同一地点建造。请重新建造。",
       "zh-TW": "%s 的建造已取消:另一位玩家在同一時刻於同一地點建造。請重新建造。"
+    },
+    "Your builds show at once on your game instead of waiting for the other games: you can attach the next piece right away.": {
+      "de": "Deine Bauten erscheinen sofort in deinem Spiel, statt auf die anderen Spiele zu warten: Du kannst das nächste Stück gleich anschließen.",
+      "es": "Tus construcciones aparecen al instante en tu partida en lugar de esperar a las demás: puedes enlazar la siguiente pieza enseguida.",
+      "it": "Le tue costruzioni compaiono subito nella tua partita invece di aspettare le altre: puoi collegare subito il pezzo successivo.",
+      "nl": "Je bouwwerken verschijnen meteen in je spel in plaats van op de andere spellen te wachten: je kunt het volgende stuk direct aansluiten.",
+      "pl": "Twoje budowy pojawiają się od razu w twojej grze, zamiast czekać na pozostałe gry: możesz od razu dołączyć kolejny odcinek.",
+      "pt-BR": "Suas construções aparecem na hora no seu jogo em vez de esperar pelos outros jogos: você pode ligar a próxima peça imediatamente.",
+      "ru": "Ваши постройки сразу появляются в вашей игре, не дожидаясь других игр: следующий участок можно присоединить сразу.",
+      "ja": "建設したものは他のゲームを待たずにすぐ自分のゲームに表示され、次の区間をすぐにつなげられます。",
+      "ko": "건설한 것이 다른 게임을 기다리지 않고 바로 내 게임에 나타나, 다음 구간을 곧바로 이을 수 있습니다.",
+      "zh-CN": "你的建造会立即出现在你的游戏中,无需等待其他游戏:可以马上接上下一段。",
+      "zh-TW": "你的建造會立即出現在你的遊戲中,無需等待其他遊戲:可以馬上接上下一段。"
     }
   }
 }

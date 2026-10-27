@@ -1700,51 +1700,7 @@ local function update(userParams, state, dt)
 	end
 	local ok, err = pcall(simApplyDue, state)
 	if not ok then log("simulation apply failed: " .. tostring(err)) end
-	if SIM.idChecks then
-		local keep = {}
-		-- (read two steps after the build, at that game time on every game: read two script updates after it, one game read
-		-- after the next build had removed the segment (-1) and the other before, a false "buildIds" difference, 2026-10-25)
-		local okT, tCk = pcall(gameTime)
-		for _, ck in ipairs(SIM.idChecks) do
-			ck.ticks = ck.ticks + 1
-			if okT and tCk >= ck.at + 2 * STEP then
-				local si, ni = R.idsAt(ck.segs, ck.nodes)
-				-- (and how many of its new nodes have a node configuration: issue #50's drift, nodeConfigs 7418 / 7420 after
-				-- a station of 200 nodes, compares here between the builder's game and the others)
-				local cfg = 0
-				for _, n in ipairs(ni) do
-					if type(n) == "number" and n >= 0 then
-						local okc, nc = pcall(function() return api.engine.getComponent(n, api.type.ComponentType.BASE_NODE_CONFIG) end)
-						if okc and nc then cfg = cfg + 1 end
-					end
-				end
-				log("build ids t=" .. ck.at .. ": segments " .. table.concat(si, ",") .. " nodes " .. table.concat(ni, ",") .. " (node configurations " .. cfg .. ")")
-				-- (and summed for the checks, part "buildIds": every game gives a build the same ids, or the games went apart
-				-- right there - an entity one game made and not the other, 2026-10-25 11:03 - long before it shows elsewhere. In
-				-- the simulation's state: the script runs in more than one Lua state, and the interface's checks read it too)
-				local okI, errI = pcall(function()
-					local st = state:get() or {}
-					local b = type(st.buildIds) == "table" and st.buildIds or {}
-					b.n0, b.s0 = tonumber(b.n0) or 0, tonumber(b.s0) or 0
-					local list = type(b.list) == "table" and b.list or {}
-					list[#list + 1] = { at = ck.at, h = C.hashStr(0, ck.at .. ":" .. table.concat(si, ",") .. "|" .. table.concat(ni, ",")) }
-					-- (the old ones folded into one sum: the checks count them all the same)
-					local keep, old = {}, gameTime() - 600 * STEP
-					for _, e in ipairs(list) do
-						if (tonumber(e.at) or 0) <= old then b.n0 = b.n0 + 1; b.s0 = (b.s0 + (tonumber(e.h) or 0)) % 4294967296 else keep[#keep + 1] = e end
-					end
-					b.list = keep
-					b.n, b.sum = nil, nil
-					st.buildIds = b
-					state:set(st)
-				end)
-				if not okI then log("build ids sum: " .. tostring(errI)) end
-			else
-				keep[#keep + 1] = ck
-			end
-		end
-		SIM.idChecks = (#keep > 0) and keep or nil
-	end
+	if SIM.idChecks then pcall(SIM.idResolve, state, false) end
 	local okl, errl = pcall(function()
 		local st = state:get()
 		if st and st.co and st.co.mode == "separate" and #st.co.list > 1 then
@@ -2083,7 +2039,60 @@ SIM.townClose = function(st, rc)
 	while #st.townDiffs > 8 do table.remove(st.townDiffs, 1) end
 end
 
+-- the build ids of the builds applied before ("build ids", part buildIds), read two steps after each build or, at the latest,
+-- when a later build is about to be applied (force): at x4 the script runs once per batch of steps, and one game read after
+-- the next build had split a segment (-1) while the other read before it (towncross with the builder leading, 2026-10-27).
+-- MPFEVER_IDREADEARLY=0: only two steps after, as before.
+SIM.idResolve = function(state, force)
+	if not SIM.idChecks then return end
+	local keep = {}
+	-- (read two steps after the build, at that game time on every game: read two script updates after it, one game read
+	-- after the next build had removed the segment (-1) and the other before, a false "buildIds" difference, 2026-10-25)
+	local okT, tCk = pcall(gameTime)
+	for _, ck in ipairs(SIM.idChecks) do
+		ck.ticks = ck.ticks + 1
+		if okT and (tCk >= ck.at + 2 * STEP or (force and ck.at <= tCk)) then
+			local si, ni = R.idsAt(ck.segs, ck.nodes)
+			-- (and how many of its new nodes have a node configuration: issue #50's drift, nodeConfigs 7418 / 7420 after
+			-- a station of 200 nodes, compares here between the builder's game and the others)
+			local cfg = 0
+			for _, n in ipairs(ni) do
+				if type(n) == "number" and n >= 0 then
+					local okc, nc = pcall(function() return api.engine.getComponent(n, api.type.ComponentType.BASE_NODE_CONFIG) end)
+					if okc and nc then cfg = cfg + 1 end
+				end
+			end
+			log("build ids t=" .. ck.at .. ": segments " .. table.concat(si, ",") .. " nodes " .. table.concat(ni, ",") .. " (node configurations " .. cfg .. ")")
+			-- (and summed for the checks, part "buildIds": every game gives a build the same ids, or the games went apart
+			-- right there - an entity one game made and not the other, 2026-10-25 11:03 - long before it shows elsewhere. In
+			-- the simulation's state: the script runs in more than one Lua state, and the interface's checks read it too)
+			local okI, errI = pcall(function()
+				local st = state:get() or {}
+				local b = type(st.buildIds) == "table" and st.buildIds or {}
+				b.n0, b.s0 = tonumber(b.n0) or 0, tonumber(b.s0) or 0
+				local list = type(b.list) == "table" and b.list or {}
+				list[#list + 1] = { at = ck.at, h = C.hashStr(0, ck.at .. ":" .. table.concat(si, ",") .. "|" .. table.concat(ni, ",")) }
+				-- (the old ones folded into one sum: the checks count them all the same)
+				local keep, old = {}, gameTime() - 600 * STEP
+				for _, e in ipairs(list) do
+					if (tonumber(e.at) or 0) <= old then b.n0 = b.n0 + 1; b.s0 = (b.s0 + (tonumber(e.h) or 0)) % 4294967296 else keep[#keep + 1] = e end
+				end
+				b.list = keep
+				b.n, b.sum = nil, nil
+				st.buildIds = b
+				state:set(st)
+			end)
+			if not okI then log("build ids sum: " .. tostring(errI)) end
+		else
+			keep[#keep + 1] = ck
+		end
+	end
+	SIM.idChecks = (#keep > 0) and keep or nil
+end
+
 local function captureNativeBuild(state, param)
+	-- (before this build changes the world: the ids of the builds before it, see SIM.idResolve)
+	if SIM.idChecks and os.getenv("MPFEVER_IDREADEARLY") ~= "0" then pcall(SIM.idResolve, state, true) end
 	local st = state:get() or {}
 	-- (a game without a lobby sends its builds to nobody: they are not kept, see H.solo)
 	if st.solo then SIM.replayBuildAt = nil; return end
@@ -3032,11 +3041,10 @@ G.buildLeadState = function()
 	if not G.buildLead then return false, "off" end
 	if not G.session.started then return false, "the session has not started" end
 	if G.session.pauseAt ~= nil then return false, "the session is paused" end
-	-- (above 1x the town development drifted: streets through a town released at once at 2x and 4x, then a minute of play,
-	-- desynchronised 4 of 5 runs (houses placed differently, same builds and ids); at 1x and held the usual way: in sync)
-	-- (MPFEVER_BUILDLEADFAST=1, tests: above 1x too, to see whether the tick epochs of 0.5.3 - the seeds no longer counting the
-	-- frames a game stood still - were what drifted)
-	if (G.session.speed or 1) > 1 and os.getenv("MPFEVER_BUILDLEADFAST") ~= "1" then return false, "the session runs faster than 1x" end
+		-- (at every speed since 0.5.9: what drifted was the seeds counting the frames a game stood still, fixed by the tick epochs of
+	-- 0.5.3 - towncross at 4x: 3 of 3 desynced in 0.3.12, in sync now, and desynced again with MPFEVER_NOTICKEPOCH=1, tests
+	-- 410-414 of 2026-10-27. MPFEVER_BUILDLEADX1=1: at 1x only, as before)
+	if (G.session.speed or 1) > 1 and os.getenv("MPFEVER_BUILDLEADX1") == "1" then return false, "the session runs faster than 1x" end
 	if G.leadYields() then return false, "the lead gives way to another game's build" end
 	local mine = leadLevel()
 	if mine == 0 then return false, "no tool in hand" end
