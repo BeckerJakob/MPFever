@@ -67,7 +67,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.5.8";
+        public const string Version = "0.5.9";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -982,6 +982,7 @@ namespace MPFever
             WindowState = FormWindowState.Minimized;
             Log.W(T("Le jeu démarre : choisissez « Multijoueur (MPFever) » dans son menu principal.", "The game is starting: choose « Multiplayer (MPFever) » in its main menu."));
             new Thread(MenuLoop) { IsBackground = true, Name = "Menu link" }.Start();
+            new Thread(ServerListFetchLoop) { IsBackground = true, Name = "Server list" }.Start();
             if (JoinAtStart != null)
             {
                 var addr = JoinAtStart;
@@ -1185,6 +1186,10 @@ namespace MPFever
                     ["modAskState"] = lobbyOpen ? "" : modAskState,
                     ["modRecv"] = lobbyOpen ? "" : modRecvText,
                     ["hostSave"] = lobbyOpen || hostSaveState == "" ? "" : hostSaveState + "|" + hostSaveName + "|" + (hostSaveSize / 1048576.0).ToString("0", CultureInfo.InvariantCulture),
+                    // the public server list (ServerList.cs): its tab shows only when a list is known
+                    ["serversOn"] = ServerMode || ServerListUrl() == "" ? "" : "1",
+                    ["servers"] = serverListView,
+                    ["version"] = Version,
                 });
             }
             catch (Exception e) { Log.W("menu_state: " + e.Message); }
@@ -1326,6 +1331,8 @@ namespace MPFever
 
         void OnMenuRequest(string cmd, string arg, string name, string option = "")
         {
+            // (the « Servers » tab opened or its refresh button: the public list read again now, see ServerListFetchLoop)
+            if (cmd == "servers") { serverListWanted = true; return; }
             name = new string((name ?? "").Trim().Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').ToArray());
             if (name == "") name = new string(Environment.UserName.Where(char.IsLetterOrDigit).ToArray());
             if (name == "") name = "Player";

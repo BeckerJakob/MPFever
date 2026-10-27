@@ -35,6 +35,8 @@ namespace MPFever
         public bool RestartOnCrash = true;
         public int WatchdogSeconds = 180;
         public string Motd = "";
+        public bool Public = false;
+        public string PublicAddress = "";
 
         public static string DefaultPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, FileName);
 
@@ -93,6 +95,13 @@ namespace MPFever
             "",
             "# Chat message every player receives when it joins (empty: none).",
             "motd=",
+            "",
+            "# true: the server is shown in the public server list of MPFever's multiplayer page (its name, address, players,",
+            "# world and motd), while its world runs. false: only those who know its address find it.",
+            "public=false",
+            "",
+            "# The address the list shows (a domain name, name:port). Empty: the public IP address the list sees, and port.",
+            "public-address=",
             "",
         });
 
@@ -154,6 +163,8 @@ namespace MPFever
                     if (WatchdogSeconds > 0 && WatchdogSeconds < 30) WatchdogSeconds = 30;   // (a save or a load takes some time)
                     return true;
                 case "motd": Motd = v; return true;
+                case "public": return Bool(v, ref Public);
+                case "public-address": PublicAddress = v.Length > 80 ? v.Substring(0, 80) : v; return true;
             }
             return false;
         }
@@ -310,6 +321,7 @@ namespace MPFever
             menuGame.Exited += OnServerGameExited;
             new Thread(MenuLoop) { IsBackground = true, Name = "Menu link" }.Start();
             new Thread(ServerLoop) { IsBackground = true, Name = "Server" }.Start();
+            new Thread(ServerListAnnounceLoop) { IsBackground = true, Name = "Server list" }.Start();
             if (!BeginServerWorld(true))
                 Log.Warn(T("Le serveur attend : corrigez mpfever_server.properties puis tapez « restart ».", "The server is waiting: fix mpfever_server.properties, then type « restart »."));
             try { BeginInvoke((Action)(() => { UpdateServerButtons(); cmdBox?.Focus(); })); } catch { }
@@ -507,6 +519,7 @@ namespace MPFever
             new Thread(() =>
             {
                 Log.W(T("=== Arrêt du serveur ===", "=== The server stops ==="));
+                ServerListRemove();
                 try
                 {
                     bool st; lock (sessionGate) st = started;
@@ -548,6 +561,7 @@ namespace MPFever
             new Thread(() =>
             {
                 Log.W(F("=== Mise à jour du serveur vers MPFever {0} ===", "=== The server updates to MPFever {0} ===", u.Version));
+                ServerListRemove();
                 try
                 {
                     bool st; lock (sessionGate) st = started;
@@ -709,6 +723,8 @@ namespace MPFever
                 if (!WaitUntil(() => { lock (clocks) return clocks.TryGetValue(hostName, out var c) && c.T >= at && c.Sp == 0; }, 60))
                     Log.Warn(T("Le jeu du serveur ne s'est pas arrêté : sauvegarde quand même.", "The server's game did not stop: saving anyway."));
                 int id = ServerSaveIdBase + Interlocked.Increment(ref serverSaveSeq);
+                // (without display the game saves a black picture with the world: the one there before is kept, see KeepPicture)
+                byte[] picture = serverHeadless ? WorldPicture() : null;
                 serverSaveDone = null;
                 hostGame.ToGame(Msg.Make("resync_save", hostName, "{[\"id\"]=" + id + ",[\"name\"]=" + LuaLit.Quote(server.World) + "}"));
                 bool answered = WaitUntil(() => serverSaveDone is Dictionary<object, object> d && d.TryGetValue("id", out var v) && v is double dv && (int)dv == id, 180);
@@ -717,6 +733,7 @@ namespace MPFever
                 if (ok)
                 {
                     Thread.Sleep(1000);   // the file is closed by the game after its callback
+                    if (serverHeadless) KeepPicture(picture);
                     savedActs = acts;
                     savedClock = clock;
                     lastSavedAt = DateTime.Now;
@@ -741,6 +758,63 @@ namespace MPFever
         }
 
         /// <summary>A copy of the world's files (name.sav and the files next to it) in server\backups\name, the newest kept.</summary>
+        /// <summary>The picture of the world's savegame (the .jpg next to it, shown in the game's load list), or null when
+        /// there is none or it is black (a save made without display).</summary>
+        byte[] WorldPicture()
+        {
+            try
+            {
+                var file = GameInstall.FindSave(server.World);
+                var jpg = file == null ? null : Path.ChangeExtension(file, ".jpg");
+                if (jpg == null || !File.Exists(jpg)) return null;
+                var bytes = File.ReadAllBytes(jpg);
+                using (var ms = new MemoryStream(bytes))
+                using (var bmp = new System.Drawing.Bitmap(ms))
+                {
+                    // (a few points across the picture: all dark, a picture of nothing)
+                    int bright = 0;
+                    for (int i = 1; i < 10; i++)
+                        for (int j = 1; j < 10; j++)
+                        {
+                            var c = bmp.GetPixel(bmp.Width * i / 10, bmp.Height * j / 10);
+                            if (c.R + c.G + c.B > 60) bright++;
+                        }
+                    return bright >= 8 ? bytes : null;
+                }
+            }
+            catch { return null; }
+        }
+
+        /// <summary>After a save without display: the world's picture of before, else one made here (the server's name and its
+        /// world on a dark background), instead of the black one the game wrote.</summary>
+        void KeepPicture(byte[] before)
+        {
+            try
+            {
+                var file = GameInstall.FindSave(server.World);
+                if (file == null) return;
+                var jpg = Path.ChangeExtension(file, ".jpg");
+                if (before != null) { File.WriteAllBytes(jpg, before); return; }
+                using (var bmp = new System.Drawing.Bitmap(1280, 720))
+                using (var g = System.Drawing.Graphics.FromImage(bmp))
+                using (var bg = new System.Drawing.Drawing2D.LinearGradientBrush(new System.Drawing.Rectangle(0, 0, 1280, 720),
+                    System.Drawing.Color.FromArgb(28, 38, 56), System.Drawing.Color.FromArgb(12, 16, 24), 90f))
+                using (var big = new System.Drawing.Font("Segoe UI", 54, System.Drawing.FontStyle.Bold))
+                using (var small = new System.Drawing.Font("Segoe UI", 28))
+                using (var accent = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(240, 160, 48)))
+                using (var white = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(230, 230, 230)))
+                {
+                    g.FillRectangle(bg, 0, 0, 1280, 720);
+                    g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+                    g.DrawString("MPFever", big, accent, 80, 230);
+                    g.DrawString(server.Name, small, white, 84, 340);
+                    g.DrawString(server.World + "  ·  " + DateTime.Now.ToString("g", CultureInfo.CurrentCulture), small, white, 84, 390);
+                    bmp.Save(jpg, System.Drawing.Imaging.ImageFormat.Jpeg);
+                }
+            }
+            catch (Exception e) { Log.Dim("world picture: " + e.Message); }
+        }
+
         void BackupWorld()
         {
             if (server.Backups <= 0) return;

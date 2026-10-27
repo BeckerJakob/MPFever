@@ -3034,7 +3034,9 @@ G.buildLeadState = function()
 	if G.session.pauseAt ~= nil then return false, "the session is paused" end
 	-- (above 1x the town development drifted: streets through a town released at once at 2x and 4x, then a minute of play,
 	-- desynchronised 4 of 5 runs (houses placed differently, same builds and ids); at 1x and held the usual way: in sync)
-	if (G.session.speed or 1) > 1 then return false, "the session runs faster than 1x" end
+	-- (MPFEVER_BUILDLEADFAST=1, tests: above 1x too, to see whether the tick epochs of 0.5.3 - the seeds no longer counting the
+	-- frames a game stood still - were what drifted)
+	if (G.session.speed or 1) > 1 and os.getenv("MPFEVER_BUILDLEADFAST") ~= "1" then return false, "the session runs faster than 1x" end
 	if G.leadYields() then return false, "the lead gives way to another game's build" end
 	local mine = leadLevel()
 	if mine == 0 then return false, "no tool in hand" end
@@ -14811,6 +14813,14 @@ local function guiUpdate(userParams, state, guiState)
 		local okn, errn = pcall(neutraliseEmissions)
 		if not okn then log("emissions: " .. tostring(errn)) end
 		send("hello", { name = C.NAME, role = C.ROLE, build = getBuildVersion and getBuildVersion() or "?", time = gameTime() })
+	end
+	-- the native module holds the tools' builds while this script runs, and hears from it here from its first frame on
+	-- (bridge_alive.txt, a counter rewritten every 2 s). A game loaded with MPFever disabled while a lobby was open has no such
+	-- script: the module stops holding after a minute of silence instead of keeping every build forever.
+	if os.getenv("MPFEVER_NOHEARTBEAT") ~= "1" and os.clock() - (G.aliveAt or -10) >= 2 then
+		G.aliveAt = os.clock(); G.aliveN = (G.aliveN or 0) + 1
+		local hb = C.IO.open(C.DIR .. BS .. "bridge_alive.txt", "wb")
+		if hb then hb:write(tostring(G.aliveN)); hb:close() end
 	end
 	for _, line in ipairs(readLines("in.log", "inOff")) do
 		local kind, from, payload = parseLine(line)

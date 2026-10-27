@@ -17,3 +17,4 @@ __pycache__/
 /.vscode
 dev-test.bat
 dev-test - Server.bat
+serverlist/obj/

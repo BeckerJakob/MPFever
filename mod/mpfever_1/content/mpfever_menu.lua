@@ -668,19 +668,27 @@ local function setup()
 
 		-- header: the two tabs, then the player's name ------------------------------------------------------------
 		local function tabButton(id, label, iconPath)
-			return button(label, function() tab:set(id) end, { primary = tab:old() == id, enabled = not busy, icon = iconPath, font = "font-scale-title-3" })
+			-- (the public servers' tab asks MPFever.exe to read the list again at once)
+			return button(label, function() tab:set(id); if id == "servers" then request("servers") end end, { primary = tab:old() == id, enabled = not busy, icon = iconPath, font = "font-scale-title-3" })
 		end
 		local header = {
 			tabButton("host", T("Héberger une partie", "Host a game"), "::/gui/menu/icons/list.tga"),
 			gap(8, 1),
 			tabButton("join", T("Rejoindre une partie", "Join a game"), "::/gui/menu/icons/start_mission.tga"),
+		}
+		-- (a third tab when MPFever.exe knows a public server list, see its ServerList.cs)
+		if st.serversOn == "1" then
+			header[#header + 1] = gap(8, 1)
+			header[#header + 1] = tabButton("servers", T("Serveurs publics", "Public servers"), "::/gui/menu/icons/list.tga")
+		end
+		for _, c in ipairs({
 			hfill(),
 			icon("::/gui/menu/icons/profile.tga"),
 			gap(8, 1),
 			text(T("Pseudo", "Player name"), "font-scale-title-4"),
 			gap(12, 1),
 			input(name:old(), T("Votre pseudo", "Your name"), function(v) name:set(v) end, 320),
-		}
+		}) do header[#header + 1] = c end
 
 		local body = {}
 		local hasError = st.phase == "error" and st.text and st.text ~= ""
@@ -1115,6 +1123,59 @@ local function setup()
 				body[#body + 1] = builtin.ScrollArea{
 					meta = { class = "tile-list-scroll", styleSheet = style{ size = { PAGE_W - 16, hasError and 440 or 500 } } },
 					content = builtin.Component{ layout = guiUtil.makeVerticalBox{ tiles.TileList{ elements = list, numRows = -1, numCols = 5 } } },
+					horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+					verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+				}
+			end
+		elseif tab:old() == "servers" and st.serversOn == "1" then
+			-- the « Public servers » tab: the dedicated servers of the public list (MPFever.exe reads it, menu_state servers=:
+			-- one server per char 30, its fields separated by char 31: name, address, players, max, password, version, mode,
+			-- world, motd) ---------------------------------------------------------------------------------------------
+			body[#body + 1] = box(H, {
+				text(T("Serveurs publics", "Public servers"), "font-scale-title-1"),
+				hfill(),
+				button(T("Actualiser", "Refresh"), function() request("servers") end, { enabled = not busy }),
+			})
+			body[#body + 1] = gap(1, 6)
+			body[#body + 1] = text(T("Les serveurs dédiés que leurs propriétaires ont rendus publics. Il faut la même version de MPFever et du jeu que le serveur.",
+				"The dedicated servers their owners made public. The same versions of MPFever and of the game as the server's are needed."), "font-scale-body", PAGE_W - 40)
+			body[#body + 1] = gap(1, 10)
+			local raw = st.servers or ""
+			if raw == "" or raw == "-" or raw:sub(1, 1) == "!" then
+				local msg = raw == "" and T("Lecture de la liste...", "Reading the list...")
+					or raw == "-" and T("Aucun serveur public pour l'instant.", "No public server for now.")
+					or (T("La liste des serveurs ne répond pas : ", "The server list does not answer: ") .. raw:sub(2))
+				body[#body + 1] = box(H, { text(msg, "font-scale-title-4", PAGE_W - 40) }, nil, { padding = { 24, 12, 24, 12 } })
+			else
+				local rows = {}
+				for entry in raw:gmatch("[^" .. string.char(30) .. "]+") do
+					local f = {}
+					for v in (entry .. string.char(31)):gmatch("(.-)" .. string.char(31)) do f[#f + 1] = v end
+					local sName, sAddr, sPlayers, sMax, sPw, sVer, sMode, sWorld, sMotd = f[1] or "", f[2] or "", f[3] or "0", f[4] or "0", f[5], f[6] or "", f[7] or "", f[8] or "", f[9] or ""
+					local sameVersion = sVer == "" or sVer == (st.version or sVer)
+					local info = sPlayers .. " / " .. sMax .. " " .. T("joueurs", "players")
+						.. "   ·   " .. (sMode == "separate" and T("une entreprise par joueur", "one company per player") or T("entreprise commune", "shared company"))
+						.. (sPw == "1" and ("   ·   " .. T("mot de passe", "password")) or "")
+						.. (sameVersion and "" or ("   ·   " .. T("autre version de MPFever : ", "other MPFever version: ") .. sVer))
+					rows[#rows + 1] = box(H, {
+						box(V, {
+							text(sName, "font-scale-title-3", PAGE_W - 360),
+							gap(1, 2),
+							text((sWorld ~= "" and (sWorld .. "   ·   ") or "") .. info, "font-scale-body", PAGE_W - 360),
+							sMotd ~= "" and text(sMotd, "font-scale-body", PAGE_W - 360) or gap(1, 1),
+						}),
+						hfill(),
+						-- (a password: the « Join » tab with the address filled in, where the password is typed)
+						button(T("Rejoindre", "Join"), function()
+							if sPw == "1" then addr:set(sAddr); tab:set("join")
+							else request("join", sAddr, playerName(), "") end
+						end, { primary = true, enabled = sameVersion and not busy, icon = "::/gui/menu/icons/menu_play.tga", font = "font-scale-title-3" }),
+					}, nil, { padding = { 8, 12, 8, 12 } })
+					rows[#rows + 1] = gap(1, 6)
+				end
+				body[#body + 1] = builtin.ScrollArea{
+					meta = { class = "tile-list-scroll", styleSheet = style{ size = { PAGE_W - 16, hasError and 400 or 460 } } },
+					content = box(V, rows),
 					horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
 					verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
 				}

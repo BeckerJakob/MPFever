@@ -392,6 +392,7 @@ static int g_dropId = 0;              // the last build held until then
 static volatile long g_dropIds[16];
 static volatile long g_nDropIds = 0;
 static bool IsDropped(int id) { for (long i = 0; i < g_nDropIds && i < 16; i++) if (g_dropIds[i] == id) return true; return false; }
+static u64 g_enabledAt = 0;           // when holding was turned on (GetTickCount64)
 static int g_deferNextTarget = 0, g_deferNextDone = 0;   // test mode: defer the mod's own next commands
 
 static void PathOf(char* out, const char* name)
@@ -594,7 +595,7 @@ static void ReadControl()
         const char* l = buf + i;
         int len = (int)(j - i);
         int v = 0;
-        if (len >= 8 && memcmp(l, "enable ", 7) == 0) g_enabled = l[7] == '1';
+        if (len >= 8 && memcmp(l, "enable ", 7) == 0) { bool was = g_enabled; g_enabled = l[7] == '1'; if (g_enabled && !was) g_enabledAt = GetTickCount64(); }
         else if (len >= 11 && memcmp(l, "defernext ", 10) == 0) {
             for (int k = 10; k < len && l[k] >= '0' && l[k] <= '9'; k++) v = v * 10 + (l[k] - '0');
             if (v > g_deferNextTarget) g_deferNextTarget = v;
@@ -1623,6 +1624,40 @@ static void DropOne()
     Buf b; b.str("held build ").dec(h->id).str(" dropped (made during a resynchronisation)"); LogLine(b);
 }
 
+// The mod's script releases the builds held here; it rewrites bridge_alive.txt every 2 s while holding is on. A game loaded with
+// MPFever disabled while a lobby was open (holding still on, no script to release anything) kept every build held: nothing could
+// be built. After a minute without the heartbeat (MPFEVER_ALIVE_STALE=<seconds>), the builds held go to the engine and the next
+// ones are not held, until the heartbeat comes back. Checked only while builds are held or one is about to be.
+static KeptFile g_aliveFile = { 0, 0 };
+static u64 g_aliveAt = 0;
+static char g_aliveLast[24];
+static int g_aliveLastN = -1;
+static bool g_bridgeGone = false;
+static bool BridgeGone()
+{
+    static u64 staleMs = 0;
+    if (!staleMs) { char v[16] = {}; DWORD n = GetEnvironmentVariableA("MPFEVER_ALIVE_STALE", v, sizeof(v) - 1); u64 s = 0; for (DWORD k = 0; k < n && v[k] >= '0' && v[k] <= '9'; k++) s = s * 10 + (v[k] - '0'); staleMs = (s > 0 ? s : 60) * 1000; }
+    u64 now = GetTickCount64();
+    HANDLE f = KeptHandle(g_aliveFile, "bridge_alive.txt");
+    if (f != INVALID_HANDLE_VALUE) {
+        char b[24]; DWORD got = 0;
+        SetFilePointer(f, 0, 0, 0);
+        if (ReadFile(f, b, sizeof(b), &got, 0) && got > 0 && ((int)got != g_aliveLastN || memcmp(b, g_aliveLast, got) != 0)) {
+            memcpy(g_aliveLast, b, got); g_aliveLastN = (int)got; g_aliveAt = now;
+        }
+    }
+    u64 last = g_aliveAt > g_enabledAt ? g_aliveAt : g_enabledAt;
+    bool gone = last && now - last > staleMs;
+    if (gone != g_bridgeGone) {
+        g_bridgeGone = gone;
+        Buf b;
+        if (gone) b.str("no word from the mod's script for ").dec((int)((now - last) / 1000)).str(" s (MPFever disabled in this game?): builds no longer held, ").dec(g_heldTail - g_heldHead).str(" held build(s) go to the engine");
+        else b.str("the mod's script is back: builds held again");
+        LogLine(b);
+    }
+    return gone;
+}
+
 static bool Writable(const void* p, u64 n)
 {
     u64 a = (u64)p, end = a + n;
@@ -1758,6 +1793,19 @@ extern "C" void* AddDetour(void* list, void* out, void* cmd, void* done, void* p
     // (test mode removed: the Lua sendCommand path reads the command back through Add's out handle, which a deferral
     // leaves empty; only the UI tool sites, which merely destroy that handle, can be held)
     if (IsUiSite(caller) || testDefer) {
+        // (holding on but the mod's script silent: what is held goes first, in its order, then this build, none held)
+        if (g_enabled && !testDefer && !g_inRelease && BridgeGone()) {
+            // (those of a game unloaded since are left alone, as below: their command list is gone)
+            if (g_dropHeld) {
+                while (g_heldHead != g_heldTail && g_held[g_heldHead % 64]->id <= g_dropId) g_heldHead++;
+                g_dropHeld = 0;
+                if (g_released < g_dropTarget) g_released = g_dropTarget;
+            }
+            g_inRelease = 1;
+            while (g_heldHead != g_heldTail) { if (g_nDropIds > 0 && IsDropped(g_held[g_heldHead % 64]->id)) DropOne(); else ReleaseOne(); g_released++; }
+            g_inRelease = 0;
+            return g_addOrig(list, out, cmd, done, progress);
+        }
         if ((g_enabled || testDefer) && g_heldTail - g_heldHead < 60) {
             Held* h = (Held*)HeapAlloc(GetProcessHeap(), 8, sizeof(Held));
             if (h) {

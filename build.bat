@@ -15,6 +15,8 @@ call native\build.bat || exit /b 1
 
 echo === 2/4 launcher
 "%MSBUILD%" launcher\MPFever.csproj -restore -p:Configuration=Release -v:minimal -nologo || exit /b 1
+rem the public server list (a service of its own, for the PC that keeps the list: not in the players' archive)
+"%MSBUILD%" serverlist\MPFeverServerList.csproj -restore -p:Configuration=Release -v:minimal -nologo || exit /b 1
 
 rem (the signatures next to the launcher of the build folder too: without them, on a game build the module does not know,
 rem every hook stays off and the games drift apart)
@@ -26,7 +28,7 @@ where python >nul 2>&1 || (echo Python not found: install Python 3 and lupa ^(pi
 python tests\run_all.py --exe launcher\bin\Release\MPFever.exe || (echo TESTS FAILED: no archive made & exit /b 1)
 
 echo === 4/4 package
-set "VERSION=0.5.8"
+set "VERSION=0.5.9"
 set "DIST=release\dist\MPFever"
 if exist release\dist rmdir /s /q release\dist
 mkdir "%DIST%" || exit /b 1
@@ -55,3 +57,14 @@ copy /y launcher\start-server.bat "%SDIST%\" >nul || exit /b 1
 if exist "release\MPFever-%VERSION%-server.zip" del "release\MPFever-%VERSION%-server.zip"
 powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path 'release\dist-server\MPFever-Server'), (Join-Path (Resolve-Path 'release') 'MPFever-%VERSION%-server.zip'), 'Optimal', $true)" || exit /b 1
 echo BUILD OK: release\MPFever-%VERSION%-server.zip
+
+rem the public server list service: MPFeverServerList.exe, its install scripts and README
+set "LDIST=release\dist-serverlist\MPFever-ServerList"
+if exist release\dist-serverlist rmdir /s /q release\dist-serverlist
+mkdir "%LDIST%" || exit /b 1
+copy /y serverlist\bin\Release\MPFeverServerList.exe "%LDIST%\" >nul || exit /b 1
+copy /y serverlist\bin\Release\MPFeverServerList.exe.config "%LDIST%\" >nul || exit /b 1
+for %%f in (install-service.bat uninstall-service.bat README.md) do copy /y serverlist\%%f "%LDIST%\" >nul || exit /b 1
+if exist "release\MPFever-ServerList-%VERSION%.zip" del "release\MPFever-ServerList-%VERSION%.zip"
+powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path 'release\dist-serverlist\MPFever-ServerList'), (Join-Path (Resolve-Path 'release') 'MPFever-ServerList-%VERSION%.zip'), 'Optimal', $true)" || exit /b 1
+echo BUILD OK: release\MPFever-ServerList-%VERSION%.zip
