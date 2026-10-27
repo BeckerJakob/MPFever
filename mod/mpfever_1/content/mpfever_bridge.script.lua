@@ -5749,6 +5749,18 @@ G.nstopStanding = function()
 	return ok and now == N.L * STEP
 end
 
+-- The simulation is about to stand at the stop point 'at' (or stands there): the module answered for the stop point written last,
+-- and its latest batch ends there. A build sent now goes into the engine's next batch, which starts at that step whichever batch
+-- that is (the stop point keeps every batch there at no step), before its steps: it lands exactly at 'at', without waiting for
+-- this interface to see that time (one or two handshakes sooner). MPFEVER_STOPEARLY=0: only once the interface sees it.
+G.nstopEarly = os.getenv("MPFEVER_STOPEARLY") ~= "0"
+G.nstopWillStand = function(at)
+	local N = G.nstop
+	if not (G.nstopEarly and N.on and N.ok) or N.L == false or N.L < 0 or N.L * STEP ~= at then return false end
+	local st = G.nstopRead()
+	return st ~= nil and st.seq == N.seq and st.L == N.L and (st.S == N.L or st.S + st.n == N.L)
+end
+
 -- the old rule (with MPFEVER_STEPLOG also timed next to the new one)
 G.stillOldRule = function()
 	return gameSpeed() == 0 and G.frames - (G.clockMovedAt or 0) >= 12 and os.clock() - (G.clockMovedClock or 0) >= 0.45
@@ -5907,7 +5919,11 @@ local function nativeHoldAt()
 	end
 	-- (stops and signals placed again after a build: all in its step, see G.placeStopsAfter; not more than a minute)
 	if G.stopsAfterBusy and G.frames - G.stopsAfterBusy > 3600 then log("stops placed again: still busy after a minute, hold released"); G.stopsAfterBusy = nil end
-	if (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0) or G.terrainBusy or G.coBusy or G.stopsAfterBusy then return now end
+	-- (at the time of the replay sent last when it was sent as the simulation came to it, see G.nstopWillStand)
+	if (G.replayOut or 0) > 0 or G.frames < (G.replayQuiet or 0) or G.terrainBusy or G.coBusy or G.stopsAfterBusy then
+		if G.replayAt and G.replayAt > now and G.replayAt <= now + 8 * STEP then return G.replayAt end
+		return now
+	end
 	-- (a player joining waits until the others announced at the same time have arrived too, see runNativeReplays; a replay due
 	-- now waits until the engine is proven still, see G.sendStillWait)
 	for _, a in ipairs(G.nativeQueue or {}) do
@@ -6473,8 +6489,10 @@ local function runNativeRelease()
 			else
 				keep[#keep + 1] = r
 			end
-		elseif now >= r.at and (gameSpeed() == 0 or (now == r.at and G.nstopStanding())) and not (G.eoHoldOwn and G.frames < (G.replayQuiet or 0)) and not G.sameStepWait(r.at, G.me) then
-			if not G.restale(r, now) then releaseOne(r, now) end
+		elseif ((now >= r.at and (gameSpeed() == 0 or (now == r.at and G.nstopStanding()))) or (now < r.at and G.nstopWillStand(r.at))) and not (G.eoHoldOwn and G.frames < (G.replayQuiet or 0)) and not G.sameStepWait(r.at, G.me) then
+			-- (the simulation about to stand at its time: released for that time, see G.nstopWillStand)
+			local at = math.max(now, r.at)
+			if not G.restale(r, at) then releaseOne(r, at) end
 		else
 			keep[#keep + 1] = r
 		end
@@ -7059,7 +7077,7 @@ end
 G.sendStill = os.getenv("MPFEVER_SENDSTILL") ~= "0"
 G.sendStillWait = function(a, now)
 	if not G.sendStill then return false end
-	if G.simStill() or (G.stepTarget ~= nil and G.stepTarget == now) then a.stillWait = nil; return false end
+	if G.simStill() or (G.stepTarget ~= nil and G.stepTarget == now) or G.nstopWillStand(a.at) then a.stillWait = nil; return false end
 	a.stillWait = a.stillWait or G.frames
 	if G.frames - a.stillWait > 180 then
 		log("NATIVE REPLAY " .. tostring(a.uid) .. ": the engine not proven still in 3 s, sent anyway (t=" .. tostring(now) .. ") [frame " .. G.frames .. "]")
@@ -7105,16 +7123,20 @@ local function runNativeReplays()
 		-- (a construction edited from a window in a pause: its turn among the paused actions, see G.actTurn)
 		local et = a.uiEdit and G.actTurn(a) or nil
 		if et then seq = et end
-		if a.at <= now and ((a.fn == "terrainEdit" and G.terrainBusy) or (a.fn == "mpfCoJoin" and (G.coBusy or jt == false or G.frames - (a.recvFrame or 0) < K.JOIN_GATHER))
+		-- (a native build of the engine's own kind may go as the simulation is about to stand at its time, see G.nstopWillStand)
+		local due = a.at <= now or (a.native and not a.paused and a.fn ~= "terrainEdit" and a.fn ~= "mpfCoJoin" and a.fn ~= "assetBuild" and G.nstopWillStand(a.at))
+		if due and ((a.fn == "terrainEdit" and G.terrainBusy) or (a.fn == "mpfCoJoin" and (G.coBusy or jt == false or G.frames - (a.recvFrame or 0) < K.JOIN_GATHER))
 			or (a.fn ~= "terrainEdit" and a.fn ~= "mpfCoJoin" and replayBusy()) or et == false) then
 			keep[#keep + 1] = a      -- the previous one is still being handed to the engine (or its turn has not been given yet)
-		elseif a.at <= now and seq and not G.ptMayGo(seq) then
+		elseif due and seq and not G.ptMayGo(seq) then
 			keep[#keep + 1] = a      -- a paused build whose turn has not come here yet
-		elseif a.at <= now and not seq and a.native and G.sameStepWait(a.at, a.origin) then
+		elseif due and not seq and a.native and G.sameStepWait(a.at, a.origin) then
 			keep[#keep + 1] = a      -- a build of a player ranked before this one, at this same step, comes first
-		elseif a.at <= now and a.fn ~= "mpfCoJoin" and G.sendStillWait(a, now) then
+		elseif due and a.fn ~= "mpfCoJoin" and G.sendStillWait(a, now) then
 			keep[#keep + 1] = a      -- the engine may still be making a step (see G.sendStillWait)
-		elseif a.at <= now then
+		elseif due then
+			G.replayAt = a.at
+			if a.at > now then log("NATIVE REPLAY " .. tostring(a.uid) .. ": sent as the simulation comes to t=" .. a.at .. " (this interface at " .. now .. ") [frame " .. G.frames .. "]") end
 			if seq then G.ptDone(seq); log("NATIVE REPLAY " .. tostring(a.uid) .. ": paused build, turn " .. seq) end
 			if a.at < now then
 				log("LATE native build " .. tostring(a.uid) .. " for t=" .. a.at .. " applied at " .. now .. " (" .. ((now - a.at) / STEP) .. " step(s) late)")
