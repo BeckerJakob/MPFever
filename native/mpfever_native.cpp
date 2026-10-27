@@ -3772,9 +3772,11 @@ static void WriteStopState(u32 S, u32 n)
 static int g_testSplit = -1;
 static bool g_splitArmed = false;
 static bool g_standSkipOn = false;     // (the thunk's path for a stand was installed, see InstallNativeStop)
+static volatile long g_stepInBatch = 0; // (the steps made in the batch under way, see InstallStepSnap)
 extern "C" u32 StepsForBatch(void* time, u32 speed, u32 asked)
 {
     u32 sp = speed > asked ? speed : asked;
+    g_stepInBatch = 0;
     if (g_testSplit < 0) { g_testSplit = GetEnvironmentVariableA("MPFEVER_TESTSPLIT", 0, 0) > 0 ? 1 : 0; if (g_testSplit) { Buf l; l.str("stop point: TEST batches split (MPFEVER_TESTSPLIT)"); LogLine(l); } }
     if (g_testSplit && sp == 0) g_splitArmed = true;
     if (g_testSplit && g_splitArmed && sp > 1 && asked <= speed && g_getUpdRva && time) {
@@ -3868,6 +3870,46 @@ static void InstallNativeStop()
     PathOf(path, "native_stop.txt");
     DeleteFileA(path);
     Buf b; b.str("stop point: the steps function's number of steps at ").hex(at + 8).str(" decided here (stop points of native_stop.txt)").str(g_standSkipOn ? "; a stand skips the scripts' update" : "; the still batch not as expected, a stand runs the scripts as before"); LogLine(b);
+}
+
+// Test (MPFEVER_STEPSNAP=1): the steps function, once per batch before its steps, copies the "current" values of a few
+// components into their "previous" ones (0x159660 on build 40425, called with the engine). Two games whose batches are cut
+// differently then see other "previous" values during their steps; a game whose batches were split at random (MPFEVER_TESTSPLIT)
+// drifted from the other within 3 minutes, without any action (test 630). Here that copy is made again before every step after
+// the first of a batch, as if every batch made one step: do the games then stay alike whatever their batches?
+typedef u64 (*EngStepF)(void*, u32, u64);
+typedef void (*StepSnapF)(void*);
+static EngStepF g_engStep = 0;
+static StepSnapF g_snap = 0;
+static volatile long g_snapExtra = 0;
+extern "C" u64 StepWithSnap(void* engine, u32 world, u64 dt)
+{
+    if (g_stepInBatch++ > 0 && g_snap) { g_snap(engine); _InterlockedIncrement(&g_snapExtra); }
+    return g_engStep(engine, world, dt);
+}
+static void InstallStepSnap()
+{
+    if (GetEnvironmentVariableA("MPFEVER_STEPSNAP", 0, 0) == 0) return;
+    // the steps function's prologue: "... mov rcx,[rcx+18h] / call snapshot"; its loop: "mov rcx,[rbp+8] / mov r8,r14 /
+    // mov edx,[rcx+208h] / mov rcx,[rcx+18h] / call step"
+    u32 a = FindSigRva("48 8B 49 08 48 89 5C 24 60 4C 89 64 24 40 4C 89 6C 24 38 48 8B 49 18 E8");
+    u32 b = FindSigRva("48 8B 4D 08 4D 8B C6 8B 91 08 02 00 00 48 8B 49 18 E8");
+    if (!a || !b) { Buf l; l.str("step snapshot: off (not found)"); LogLine(l); return; }
+    u8* snapCall = (u8*)(g_base + a + 23);
+    u8* site = (u8*)(g_base + b + 17);
+    g_snap = (StepSnapF)(snapCall + 5 + *(i32*)(snapCall + 1));
+    u8* target = site + 5 + *(i32*)(site + 1);
+    u8* thunk = AllocNear(64);
+    if (!thunk) return;
+    g_engStep = (EngStepF)target;
+    WriteAbsJump(thunk, (uptr)&StepWithSnap);
+    FlushInstructionCache(GetCurrentProcess(), thunk, 14);
+    DWORD old;
+    if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &old)) return;
+    *(i32*)(site + 1) = (i32)(thunk - (site + 5));
+    VirtualProtect(site, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, 5);
+    Buf l; l.str("step snapshot: TEST the batch's copy of previous values made before every step (MPFEVER_STEPSNAP)"); LogLine(l);
 }
 
 // ---------------------------------------------------------------- dedicated server without display (MPFEVER_HEADLESS=1)
@@ -4026,6 +4068,7 @@ static DWORD WINAPI Init(void*)
     }
     InstallSmoothPacing();
     InstallNativeStop();
+    InstallStepSnap();
     HookWordReads();
     // (found by their own signatures, on any build where those match exactly once)
     InstallOrderFixes();
