@@ -12,6 +12,8 @@ MPFever - Changelog
     MPFever's list is https://mpfever.knight-hd.fr; serverlist=<address> in mpfever_settings.txt names another one
     (serverlist=0: off). The service can run behind a reverse proxy (Caddy, nginx, Cloudflare): from a proxy of its own PC
     or network, it lists a server with the address in X-Forwarded-For, or Cloudflare's CF-Connecting-IP.
+    A server announces itself over IPv4 when it can (its router forwards the game's port for IPv4; its IPv6 often stays
+    closed to the Internet), else as before.
   - FIX: MPFever disabled in the game's mod list while a lobby was open, then a savegame loaded: nothing could be built
     (the native module held every build for the mod's script, which no longer ran). The script now writes a sign of life
     every 2 s (bridge_alive.txt); after a minute without it, the builds held go to the game and the next ones are not held,

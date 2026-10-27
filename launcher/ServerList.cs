@@ -4,6 +4,8 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using static MPFever.L;
@@ -29,6 +31,7 @@ namespace MPFever
 
         static string ListRequest(string url, string body)
         {
+            if (body != null && PostIPv4(url, body) is string sent) return sent;
             var req = (HttpWebRequest)WebRequest.Create(url);
             req.Timeout = req.ReadWriteTimeout = 6000;
             req.UserAgent = "MPFever/" + Version;
@@ -44,6 +47,80 @@ namespace MPFever
             using (var resp = (HttpWebResponse)req.GetResponse())
             using (var r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
                 return r.ReadToEnd();
+        }
+
+        /// <summary>A POST to the list over IPv4, when both ends have it: the list shows a server with the address its announce
+        /// came from, and a home router forwards the game's port for IPv4 (its IPv6 often stays closed to the Internet, and
+        /// players without IPv6 could not use it). null when that fails in any way: the caller then goes the usual way.</summary>
+        static string PostIPv4(string url, string body)
+        {
+            try
+            {
+                var u = new Uri(url);
+                var v4 = Dns.GetHostAddresses(u.DnsSafeHost).FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (v4 == null) return null;
+                using (var c = new TcpClient(AddressFamily.InterNetwork))
+                {
+                    if (!c.ConnectAsync(v4, u.Port).Wait(6000)) return null;
+                    c.ReceiveTimeout = c.SendTimeout = 6000;
+                    Stream s = c.GetStream();
+                    if (u.Scheme == Uri.UriSchemeHttps) { var ssl = new SslStream(s); ssl.AuthenticateAsClient(u.DnsSafeHost); s = ssl; }
+                    using (s)
+                    {
+                        var b = Encoding.UTF8.GetBytes(body);
+                        var head = Encoding.ASCII.GetBytes("POST " + u.PathAndQuery + " HTTP/1.1\r\nHost: " + u.Authority + "\r\nUser-Agent: MPFever/" + Version
+                            + "\r\nContent-Type: application/json\r\nContent-Length: " + b.Length + "\r\nConnection: close\r\n\r\n");
+                        s.Write(head, 0, head.Length);
+                        s.Write(b, 0, b.Length);
+                        s.Flush();
+                        // (the answer read until it is whole, by its Content-Length or its last chunk, or until the connection closes)
+                        var got = new MemoryStream();
+                        var buf = new byte[4096];
+                        string answer = null;
+                        while (answer == null)
+                        {
+                            int n = s.Read(buf, 0, buf.Length);
+                            if (n > 0) got.Write(buf, 0, n);
+                            answer = HttpAnswer(got.ToArray(), n <= 0);
+                            if (n <= 0 && answer == null) return null;
+                        }
+                        return answer.Length > 0 && answer[0] == '\0' ? null : answer;
+                    }
+                }
+            }
+            catch { return null; }
+        }
+
+        /// <summary>The body of a whole HTTP answer; null while it is not whole, "\0" when it is not a success.</summary>
+        static string HttpAnswer(byte[] a, bool closed)
+        {
+            int end = -1;
+            for (int i = 3; i < a.Length; i++) if (a[i - 3] == '\r' && a[i - 2] == '\n' && a[i - 1] == '\r' && a[i] == '\n') { end = i + 1; break; }
+            if (end < 0) return null;
+            var lines = Encoding.ASCII.GetString(a, 0, end).Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
+            var status = lines[0].Split(' ');
+            if (status.Length < 2 || status[1].Length != 3 || status[1][0] != '2') return "\0";
+            string Header(string name) => lines.Skip(1).Where(l => l.StartsWith(name + ":", StringComparison.OrdinalIgnoreCase)).Select(l => l.Substring(name.Length + 1).Trim()).FirstOrDefault();
+            if ((Header("Transfer-Encoding") ?? "").IndexOf("chunked", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                var body = new MemoryStream();
+                int p = end;
+                while (true)
+                {
+                    int eol = -1;
+                    for (int i = p + 1; i < a.Length; i++) if (a[i - 1] == '\r' && a[i] == '\n') { eol = i - 1; break; }
+                    if (eol < 0) return closed ? "\0" : null;
+                    var hex = Encoding.ASCII.GetString(a, p, eol - p).Split(';')[0].Trim();
+                    if (!int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int size) || size < 0) return "\0";
+                    if (size == 0) return Encoding.UTF8.GetString(body.ToArray());
+                    if (eol + 2 + size + 2 > a.Length) return closed ? "\0" : null;
+                    body.Write(a, eol + 2, size);
+                    p = eol + 2 + size + 2;
+                }
+            }
+            if (int.TryParse(Header("Content-Length"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int len))
+                return a.Length - end >= len ? Encoding.UTF8.GetString(a, end, len) : closed ? "\0" : null;
+            return closed ? Encoding.UTF8.GetString(a, end, a.Length - end) : null;
         }
 
         static string JsonStr(string s)
