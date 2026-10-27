@@ -123,10 +123,10 @@ and on "restart".
   watchdog-seconds=180         A game that gives no sign of life for that long is restarted
                                (0: never).
   motd=                        Chat message every player receives when it joins.
-  public=false                 true: the server is shown in the public server list (the
+  public=true                  true: the server is shown in the public server list (the
                                "Public servers" tab of MPFever's multiplayer page) while its
-                               world runs: its name, address, players, world and motd. It needs
-                               a list MPFever knows (serverlist= in mpfever_settings.txt).
+                               world runs: its name, address, players, world and motd.
+                               false: only those who know its address find it.
   public-address=              The address the list shows (a domain name, name:port). Empty:
                                the public IP address the list sees, and port.
 

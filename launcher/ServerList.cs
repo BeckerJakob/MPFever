@@ -12,12 +12,12 @@ namespace MPFever
 {
     /// <summary>The public list of dedicated servers (the service of serverlist\ in the sources): a dedicated server whose
     /// mpfever_server.properties says public=true announces itself there every 30 s while its world runs, and the players'
-    /// multiplayer page shows the list in its « Servers » tab. Off as long as no address is known: serverlist= in
-    /// mpfever_settings.txt, else DefaultServerList (empty for now); serverlist=0 turns it off.</summary>
+    /// multiplayer page shows the list in its « Servers » tab. serverlist= in mpfever_settings.txt names another list, else
+    /// DefaultServerList; serverlist=0 turns it off.</summary>
     sealed partial class MainForm
     {
         /// <summary>The list MPFever uses when mpfever_settings.txt names none (empty: none).</summary>
-        public const string DefaultServerList = "";
+        public const string DefaultServerList = "https://mpfever.knight-hd.fr";
 
         static string ServerListUrl()
         {
@@ -32,6 +32,7 @@ namespace MPFever
             var req = (HttpWebRequest)WebRequest.Create(url);
             req.Timeout = req.ReadWriteTimeout = 6000;
             req.UserAgent = "MPFever/" + Version;
+            req.ServicePoint.Expect100Continue = false;
             if (body != null)
             {
                 req.Method = "POST";

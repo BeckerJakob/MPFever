@@ -35,7 +35,7 @@ namespace MPFever
         public bool RestartOnCrash = true;
         public int WatchdogSeconds = 180;
         public string Motd = "";
-        public bool Public = false;
+        public bool Public = true;
         public string PublicAddress = "";
 
         public static string DefaultPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, FileName);
@@ -98,7 +98,7 @@ namespace MPFever
             "",
             "# true: the server is shown in the public server list of MPFever's multiplayer page (its name, address, players,",
             "# world and motd), while its world runs. false: only those who know its address find it.",
-            "public=false",
+            "public=true",
             "",
             "# The address the list shows (a domain name, name:port). Empty: the public IP address the list sees, and port.",
             "public-address=",

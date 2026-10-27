@@ -153,6 +153,7 @@ namespace MPFever.ServerList
                     var head = ReadHead(s, out byte[] early);
                     if (head == null) return;
                     var lines = head.Split(new[] { "\r\n" }, StringSplitOptions.None);
+                    ip = ClientIp(ip, lines);
                     var first = lines[0].Split(' ');
                     if (first.Length < 2) { Reply(s, 400, "{\"error\":\"bad request\"}"); return; }
                     string method = first[0], path = first[1];
@@ -175,6 +176,52 @@ namespace MPFever.ServerList
                 }
             }
             catch (Exception e) { Program.Log("request failed: " + e.GetType().Name + ": " + e.Message); }
+        }
+
+        // ------------------------------------------------------------------------------------------------- behind a reverse proxy
+        // (Caddy, nginx, IIS on the same PC or network, maybe behind Cloudflare): the connection then comes from the proxy, and
+        // the announcing server's own address is in the headers. They are believed only from a proxy of this PC or network:
+        // X-Forwarded-For's last address is the one the proxy saw (Caddy and nginx set or append it), and Cloudflare's
+        // CF-Connecting-IP only when that address is one of Cloudflare's.
+        static readonly string[] Cloudflare = {
+            "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18",
+            "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+            "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+            "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32" };
+        static readonly string[] Local = { "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10" };
+
+        static IPAddress ClientIp(IPAddress peer, string[] lines)
+        {
+            if (!IPAddress.IsLoopback(peer) && !In(peer, Local)) return peer;
+            string Header(string name)
+            {
+                foreach (var l in lines.Skip(1))
+                    if (l.Length > name.Length && l[name.Length] == ':' && l.StartsWith(name, StringComparison.OrdinalIgnoreCase)) return l.Substring(name.Length + 1).Trim();
+                return null;
+            }
+            var ip = peer;
+            var xff = Header("X-Forwarded-For");
+            if (xff != null && IPAddress.TryParse(xff.Split(',').Last().Trim(), out var seen)) ip = seen;
+            var cf = Header("CF-Connecting-IP");
+            if (cf != null && In(ip, Cloudflare) && IPAddress.TryParse(cf, out var real)) ip = real;
+            return ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip;
+        }
+
+        static bool In(IPAddress ip, string[] ranges)
+        {
+            if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+            var a = ip.GetAddressBytes();
+            foreach (var r in ranges)
+            {
+                var parts = r.Split('/');
+                var b = IPAddress.Parse(parts[0]).GetAddressBytes();
+                if (a.Length != b.Length) continue;
+                int bits = int.Parse(parts[1], CultureInfo.InvariantCulture), i = 0;
+                while (bits >= 8 && a[i] == b[i]) { bits -= 8; i++; }
+                if (bits >= 8) continue;
+                if (bits == 0 || ((a[i] ^ b[i]) & (0xff << (8 - bits)) & 0xff) == 0) return true;
+            }
+            return false;
         }
 
         static string ReadHead(Stream s, out byte[] early)
