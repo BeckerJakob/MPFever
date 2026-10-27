@@ -3330,7 +3330,10 @@ H.session = function(from, p)
 	end
 	if p.pauseAt ~= G.session.pauseAt then
 		G.session.pauseAt = p.pauseAt
-		if p.pauseAt then toSim("pause_at", { at = p.pauseAt }) else toSim("resume", {}) end
+		-- (a resume keeps the hold of a paused action or build waiting here, see runPausedActions: the start of a session with
+		-- companies resumed it right after the host's rules had been put in their turn, the native stop point kept the game at
+		-- that step at speed 1 and the paused actions, applied at speed 0 only, waited for ever: the games never ran, 0.5.10)
+		if p.pauseAt then toSim("pause_at", { at = p.pauseAt }) elseif G.holdAt then toSim("pause_at", { at = G.holdAt }) else toSim("resume", {}) end
 	end
 end
 
