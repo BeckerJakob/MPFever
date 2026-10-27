@@ -1002,6 +1002,8 @@ static void FreeqLine(u8* gs);
 // stopping the simulation (see docs on non-blocking builds).
 static int g_batchLog = -1;
 static volatile long g_batchN = 0;
+static volatile long g_batchStep = -1;     // (the step the simulation thread saw last: never read from the interface's thread, where
+                                           // the game time's getter hung both games, test 601)
 static u32 StepOf(u8* gs);
 static bool BatchLog() { if (g_batchLog < 0) g_batchLog = GetEnvironmentVariableA("MPFEVER_BATCHLOG", 0, 0) > 0 ? 1 : 0; return g_batchLog > 0; }
 
@@ -1015,7 +1017,7 @@ extern "C" u64 PreIterDetour(void* a)
     if (a && *(u8**)((u8*)a + 8)) { g_slot = *(void**)((u8*)a + 8); ApplyLocalPlayer("iteration"); }
     if (g_freeqLog < 0) g_freeqLog = GetEnvironmentVariableA("MPFEVER_FREEQLOG", 0, 0) > 0 ? 1 : 0;
     if (g_freeqLog) FreeqLine(a ? *(u8**)((u8*)a + 8) : 0);
-    if (BatchLog()) { Buf l; l.str("bl iter ").dec(g_iter).str(" step ").dec((long)StepOf(a ? *(u8**)((u8*)a + 8) : 0)).str(" batch ").dec(g_batchN).str(" us ").dec(NowUs()); LogLine(l); }
+    if (BatchLog()) { g_batchStep = (long)StepOf(a ? *(u8**)((u8*)a + 8) : 0); Buf l; l.str("bl iter ").dec(g_iter).str(" step ").dec(g_batchStep).str(" batch ").dec(g_batchN).str(" us ").dec(NowUs()); LogLine(l); }
     WatchArm(a ? *(u8**)((u8*)a + 8) : 0);
     // commands moved aside (exact-iteration builds, or the MPFEVER_DEFER_ITERS test) whose iteration has come, in queue order
     for (unsigned i = g_defHead; i != g_defTail; i++) {
@@ -1570,7 +1572,7 @@ static u64 ApplyBody(void* a, void* b, bool inLoop)
     if (kind < 128) { if (inLoop) g_kcLoop[kind]++; else g_kcDir[kind]++; }
     AuditFlush(false);
     if (kind == 52) TerrainCapture(pay);
-    if (inLoop && BatchLog()) { Buf l; l.str("bl apply kind ").dec(kind).str(" step ").dec((long)StepOf((u8*)a)).str(" iter ").dec(g_iter).str(" batch ").dec(g_batchN); LogLine(l); }
+    if (inLoop && BatchLog()) { Buf l; l.str("bl apply kind ").dec(kind).str(" step ").dec(g_batchStep).str(" iter ").dec(g_iter).str(" batch ").dec(g_batchN); LogLine(l); }
     long ctxPlayer = 0;
     static int noCtx = -1;      // diagnostic MPFEVER_NOCTXPLAYER: the simulation reads the savegame's company during builds too
     if (noCtx < 0) noCtx = GetEnvironmentVariableA("MPFEVER_NOCTXPLAYER", 0, 0) > 0 ? 1 : 0;
@@ -3633,7 +3635,7 @@ extern "C" u64 SyncCallWrap(void* cgame, void* fn)
     u64 r = ((SyncCallF)g_syncTarget)(cgame, fn);
     if (r & 0xFF) {
         long n = _InterlockedIncrement(&g_batchN);
-        if (BatchLog()) { Buf l; l.str("bl sync ").dec(n).str(" step ").dec((long)StepOf((u8*)g_slot)).str(" us ").dec(NowUs()); LogLine(l); }
+        if (BatchLog()) { Buf l; l.str("bl sync ").dec(n).str(" last step seen ").dec(g_batchStep).str(" us ").dec(NowUs()); LogLine(l); }
     }
     if (!(r & 0xFF) || g_paceOff) return r;
     DWORD now = GetTickCount();
