@@ -996,6 +996,14 @@ static void WatchArm(u8* gs)
 
 static int g_freeqLog = -1;       // (MPFEVER_FREEQLOG, see FreeqLine)
 static void FreeqLine(u8* gs);
+// Diagnostic (MPFEVER_BATCHLOG=1, tests): which batch handed by CGame::Sync each command added by the main thread lands in, and
+// at which step: "bl sync" (a batch handed, the step the simulation stands at), "bl iter" (an iteration of the simulation loop
+// begins), "bl apply" (a command the loop applies), "bl add" (a command added). For builds applied at an exact step without
+// stopping the simulation (see docs on non-blocking builds).
+static int g_batchLog = -1;
+static volatile long g_batchN = 0;
+static u32 StepOf(u8* gs);
+static bool BatchLog() { if (g_batchLog < 0) g_batchLog = GetEnvironmentVariableA("MPFEVER_BATCHLOG", 0, 0) > 0 ? 1 : 0; return g_batchLog > 0; }
 
 extern "C" u64 PreIterDetour(void* a)
 {
@@ -1007,6 +1015,7 @@ extern "C" u64 PreIterDetour(void* a)
     if (a && *(u8**)((u8*)a + 8)) { g_slot = *(void**)((u8*)a + 8); ApplyLocalPlayer("iteration"); }
     if (g_freeqLog < 0) g_freeqLog = GetEnvironmentVariableA("MPFEVER_FREEQLOG", 0, 0) > 0 ? 1 : 0;
     if (g_freeqLog) FreeqLine(a ? *(u8**)((u8*)a + 8) : 0);
+    if (BatchLog()) { Buf l; l.str("bl iter ").dec(g_iter).str(" step ").dec((long)StepOf(a ? *(u8**)((u8*)a + 8) : 0)).str(" batch ").dec(g_batchN).str(" us ").dec(NowUs()); LogLine(l); }
     WatchArm(a ? *(u8**)((u8*)a + 8) : 0);
     // commands moved aside (exact-iteration builds, or the MPFEVER_DEFER_ITERS test) whose iteration has come, in queue order
     for (unsigned i = g_defHead; i != g_defTail; i++) {
@@ -1561,6 +1570,7 @@ static u64 ApplyBody(void* a, void* b, bool inLoop)
     if (kind < 128) { if (inLoop) g_kcLoop[kind]++; else g_kcDir[kind]++; }
     AuditFlush(false);
     if (kind == 52) TerrainCapture(pay);
+    if (inLoop && BatchLog()) { Buf l; l.str("bl apply kind ").dec(kind).str(" step ").dec((long)StepOf((u8*)a)).str(" iter ").dec(g_iter).str(" batch ").dec(g_batchN); LogLine(l); }
     long ctxPlayer = 0;
     static int noCtx = -1;      // diagnostic MPFEVER_NOCTXPLAYER: the simulation reads the savegame's company during builds too
     if (noCtx < 0) noCtx = GetEnvironmentVariableA("MPFEVER_NOCTXPLAYER", 0, 0) > 0 ? 1 : 0;
@@ -1701,6 +1711,7 @@ extern "C" void* AddDetour(void* list, void* out, void* cmd, void* done, void* p
     { static long once = 0; if (_InterlockedIncrement(&once) == 1) { Buf t; t.str("commands added from thread ").dec(GetCurrentThreadId()); LogLine(t); } }
     u32 caller = (u32)((uptr)_ReturnAddress() - g_base);
     if (g_timing) TimingLine("add", caller, g_released);
+    if (BatchLog()) { u8* pay = cmd ? *(u8**)cmd : 0; u32 k = pay && Readable(pay + 0x9b8, 1) ? *(u8*)(pay + 0x9b8) : 255; if (k != 27) { Buf l; l.str("bl add kind ").dec(k).str(" from ").hex(caller).str(" batch ").dec(g_batchN).str(" us ").dec(NowUs()); LogLine(l); } }
     if (!g_inRelease) ReadControl();
     if (g_tin.ready) TerrainInject(cmd);
     else if (g_tPattern > 0) TerrainPattern(cmd);
@@ -3079,6 +3090,13 @@ static volatile long g_tickLogged = 0;
 // games in step give the same line; the first step where they differ is within 50 steps of the action that shifted the ids
 // (entities made or removed on one game only), long before the vehicles or the towns drift. Compared by tools/freeq_diff.py.
 static u32 g_freeqLast = 0xFFFFFFFFu;
+static u32 StepOf(u8* gs)
+{
+    if (!gs || !g_getUpdRva || !Readable(gs + 0x18, 0x18)) return 0xFFFFFFFFu;
+    u64 time = *(u64*)(gs + 0x28);
+    if (!time || !Readable((void*)time, 0x18)) return 0xFFFFFFFFu;
+    return ((u32(*)(u64))(g_base + g_getUpdRva))(time);
+}
 static void FreeqLine(u8* gs)
 {
     if (!gs || !g_getUpdRva || !Readable(gs + 0x18, 0x18)) return;
@@ -3613,6 +3631,10 @@ static void ReadPace()
 extern "C" u64 SyncCallWrap(void* cgame, void* fn)
 {
     u64 r = ((SyncCallF)g_syncTarget)(cgame, fn);
+    if (r & 0xFF) {
+        long n = _InterlockedIncrement(&g_batchN);
+        if (BatchLog()) { Buf l; l.str("bl sync ").dec(n).str(" step ").dec((long)StepOf((u8*)g_slot)).str(" us ").dec(NowUs()); LogLine(l); }
+    }
     if (!(r & 0xFF) || g_paceOff) return r;
     DWORD now = GetTickCount();
     if (now - g_paceReadAt >= 250) { g_paceReadAt = now; ReadPace(); }
@@ -3652,6 +3674,141 @@ static void InstallSmoothPacing()
     VirtualProtect(site, 5, old, &old);
     FlushInstructionCache(GetCurrentProcess(), site, 5);
     Buf b; b.str("smooth pacing: CGame::Sync's call at ").hex(at + 20).str(" redirected (batch interval scaled by native_pace.txt)"); LogLine(b);
+}
+
+// ---------------------------------------------------------------- native stop point (0.5.10)
+// Builds of other players are applied at the step they were made at. To be at that step exactly, the mod used to pause the game a
+// little before it and ask the engine for the exact steps left (GamePerformSimulationSteps), each request a handshake round trip:
+// every build of another player slowed or stopped the game for one to three seconds. The number of steps a batch of the
+// simulation makes is the game speed (the GameTime component's speed, read once per batch by the steps function, 0x1593e0 on
+// build 40425: max(speed, the exact steps asked for), one step of 200 ms each). That reading is redirected here: the mod writes
+// its next stop point in native_stop.txt ("<step> <sequence>", the step being the game time / 200, the updateCount of the
+// engine; -1: none), and a batch never runs past it: it makes the steps left up to it, then none while the stop point stays
+// there (as a paused game does). The game stands exactly at the step, at once, with no request; the mod then sends the build,
+// which the engine applies at the start of the next batch, still at that step, and moves its stop point on. Batches split
+// differently change nothing in the simulation (the games already run different batch sizes near their stop points).
+// native_stop_state.txt tells the mod what the latest batch did: "<sequence> <step at its start> <steps made> <stop point>".
+// MPFEVER_STOPPOINT=0 leaves the engine alone.
+typedef u32 (*SpeedGetF)(void*);
+static SpeedGetF g_speedGet = 0;
+static KeptFile g_stopFile = { 0, 0 };
+static long g_stopAt = -1, g_stopSeq = -1;
+static HANDLE g_stopState = 0;
+static u32 g_stopLastS = 0xFFFFFFFFu, g_stopLastN = 0xFFFFFFFFu;
+static long g_stopLastSeq = -2, g_stopClamps = 0;
+// (a stop point is kept only while the mod's script says it is alive: bridge_alive.txt, rewritten every 2 s. A game loaded with
+// MPFever disabled after a session, in the same process, would else stand at the session's last stop point)
+static KeptFile g_stopAlive = { 0, 0 };
+static char g_stopAliveLast[24];
+static int g_stopAliveN = -1;
+static u64 g_stopAliveAt = 0, g_stopAliveRead = 0;
+static bool g_stopIgnored = false;
+static bool StopAlive()
+{
+    u64 now = GetTickCount64();
+    if (now - g_stopAliveRead >= 500) {
+        g_stopAliveRead = now;
+        HANDLE f = KeptHandle(g_stopAlive, "bridge_alive.txt");
+        if (f != INVALID_HANDLE_VALUE) {
+            char b[24]; DWORD got = 0;
+            SetFilePointer(f, 0, 0, 0);
+            if (ReadFile(f, b, sizeof(b), &got, 0) && got > 0 && ((int)got != g_stopAliveN || memcmp(b, g_stopAliveLast, got) != 0)) {
+                memcpy(g_stopAliveLast, b, got); g_stopAliveN = (int)got; g_stopAliveAt = now;
+            }
+        }
+    }
+    bool alive = g_stopAliveAt && now - g_stopAliveAt < 10000;
+    if (alive == g_stopIgnored) {
+        g_stopIgnored = !alive;
+        Buf l; l.str(alive ? "stop point: the mod's script is alive, its stop points are kept" : "stop point: no sign of life from the mod's script for 10 s, its stop point is left alone"); LogLine(l);
+    }
+    return alive;
+}
+static void ReadStop()
+{
+    HANDLE f = KeptHandle(g_stopFile, "native_stop.txt");
+    if (f == INVALID_HANDLE_VALUE) return;
+    char buf[64] = {};
+    DWORD got = 0;
+    SetFilePointer(f, 0, 0, 0);
+    if (!ReadFile(f, buf, 63, &got, 0) || got == 0) return;
+    DWORD i = 0;
+    bool neg = false;
+    if (buf[i] == '-') { neg = true; i++; }
+    long v = 0, seq = 0;
+    DWORD d0 = i;
+    while (i < got && buf[i] >= '0' && buf[i] <= '9') v = v * 10 + (buf[i++] - '0');
+    if (i == d0 || i >= got || buf[i] != ' ') return;      // (a file being written: the last value stays)
+    i++;
+    DWORD s0 = i;
+    while (i < got && buf[i] >= '0' && buf[i] <= '9') seq = seq * 10 + (buf[i++] - '0');
+    if (i == s0 || i >= got || (buf[i] != '\n' && buf[i] != '\r')) return;
+    g_stopAt = neg ? -1 : v;
+    g_stopSeq = seq;
+}
+static void WriteStopState(u32 S, u32 n)
+{
+    if (S == g_stopLastS && n == g_stopLastN && g_stopSeq == g_stopLastSeq) return;
+    g_stopLastS = S; g_stopLastN = n; g_stopLastSeq = g_stopSeq;
+    if (!g_stopState) {
+        char path[400];
+        PathOf(path, "native_stop_state.txt");
+        g_stopState = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+    }
+    if (g_stopState == INVALID_HANDLE_VALUE) return;
+    Buf b; b.dec(g_stopSeq).str(" ").dec((long)S).str(" ").dec((long)n).str(" ").dec(g_stopAt).str("\n");
+    DWORD w;
+    SetFilePointer(g_stopState, 0, 0, 0);
+    WriteFile(g_stopState, b.s, (DWORD)b.n, &w, 0);
+    SetEndOfFile(g_stopState);
+}
+extern "C" u32 SpeedForBatch(void* time)
+{
+    u32 sp = g_speedGet(time);
+    ReadStop();
+    if (g_stopSeq < 0 || !g_getUpdRva || !time || !StopAlive()) return sp;
+    u32 S = ((u32(*)(u64))(g_base + g_getUpdRva))((u64)time);
+    u32 n = sp;
+    if (g_stopAt >= 0) {
+        if ((long)S >= g_stopAt) n = 0;
+        else if ((long)(S + sp) > g_stopAt) n = (u32)(g_stopAt - (long)S);
+    }
+    if (n != sp && sp > 0) {
+        long c = _InterlockedIncrement(&g_stopClamps);
+        if (c <= 40 || c % 500 == 0) { Buf l; l.str("stop point: batch at step ").dec((long)S).str(" makes ").dec((long)n).str(" step(s) instead of ").dec((long)sp).str(" (stop point ").dec(g_stopAt).str(", ").dec(c).str(" so far)"); LogLine(l); }
+    }
+    if (g_stopAt >= 0 && (long)S > g_stopAt && g_stopLastS != S) { Buf l; l.str("stop point: the simulation is at step ").dec((long)S).str(", past the stop point ").dec(g_stopAt).str(" (set too late)"); LogLine(l); }
+    WriteStopState(S, n);
+    return n;
+}
+static void InstallNativeStop()
+{
+    char v[4] = {};
+    if (GetEnvironmentVariableA("MPFEVER_STOPPOINT", v, 3) > 0 && v[0] == '0') { Buf b; b.str("stop point: off (MPFEVER_STOPPOINT=0)"); LogLine(b); return; }
+    // the steps function's reading of the speed: "mov rcx,[rbp+8] / mov rcx,[rcx+28h] / call speed / cmp eax,ebx / mov r12d,eax /
+    // cmovl r12d,ebx / test r12d,r12d / jne"
+    u32 at = FindSigRva("48 8B 4D 08 48 8B 49 28 E8 ?? ?? ?? ?? 3B C3 44 8B E0 44 0F 4C E3 45 85 E4 75");
+    if (!at) { Buf b; b.str("stop point: off (the steps function's speed reading not found)"); LogLine(b); return; }
+    u8* site = (u8*)(g_base + at + 8);
+    u8* target = site + 5 + *(i32*)(site + 1);
+    // (the getter: "sub rsp,28h / mov rax,[rcx+10h] / mov rcx,[rcx+8] / mov edx,[rax] / call / mov eax,[rax+4]")
+    static const u8 GETTER[] = { 0x48, 0x83, 0xEC, 0x28, 0x48, 0x8B, 0x41, 0x10, 0x48, 0x8B, 0x49, 0x08, 0x8B, 0x10, 0xE8 };
+    if (site[0] != 0xE8 || memcmp(target, GETTER, sizeof(GETTER)) != 0 || target[19] != 0x8B || target[20] != 0x40 || target[21] != 0x04) { Buf b; b.str("stop point: off (the call at ").hex(at + 8).str(" is not the speed getter expected)"); LogLine(b); return; }
+    u8* thunk = AllocNear(64);
+    if (!thunk) { Buf b; b.str("stop point: off (no memory near the game's code)"); LogLine(b); return; }
+    g_speedGet = (SpeedGetF)target;
+    WriteAbsJump(thunk, (uptr)&SpeedForBatch);
+    FlushInstructionCache(GetCurrentProcess(), thunk, 14);
+    DWORD old;
+    if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &old)) return;
+    *(i32*)(site + 1) = (i32)(thunk - (site + 5));
+    VirtualProtect(site, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, 5);
+    // (a stop point of the game before: none until the mod writes one)
+    char path[400];
+    PathOf(path, "native_stop.txt");
+    DeleteFileA(path);
+    Buf b; b.str("stop point: the steps function's speed reading at ").hex(at + 8).str(" redirected (stop points of native_stop.txt)"); LogLine(b);
 }
 
 // ---------------------------------------------------------------- dedicated server without display (MPFEVER_HEADLESS=1)
@@ -3809,6 +3966,7 @@ static DWORD WINAPI Init(void*)
         if (RVA_REPL) InstallDetour(RVA_REPL, P_REPL, sizeof(P_REPL), (void*)&ReplDetour, (void**)&g_replOrig);
     }
     InstallSmoothPacing();
+    InstallNativeStop();
     HookWordReads();
     // (found by their own signatures, on any build where those match exactly once)
     InstallOrderFixes();

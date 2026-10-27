@@ -3086,6 +3086,7 @@ G.pstat = { frames = 0, barrier = 0, hold = 0 }
 local function pacing()
 	local now = gameTime()
 	local s = G.session
+	G.lastStopAt = nil
 	if not s.started then return 0 end
 	local stopAt = s.pauseAt
 	-- paused, but an action stamped later (another game stopped further): catch up to it, one step at a time
@@ -3136,6 +3137,7 @@ local function pacing()
 	end
 	if barrier and (stopAt == nil or barrier < stopAt) then stopAt = barrier end
 	G.lastBarrier = barrier
+	G.lastStopAt = stopAt
 	local want = s.speed
 	if s.pauseAt == nil and G.holdAt then want = math.max(1, want) end
 	if catchUp then want = 1 end
@@ -3151,6 +3153,9 @@ local function pacing()
 	G.wantSteps = nil
 	if stopAt then
 		if now >= stopAt then return slowed(0) end
+		-- the native module keeps the stop point (G.nstop): the batches end there exactly, so the game runs at its speed up to it,
+		-- with no pause short of it and no exact steps
+		if G.nstopOk() then return want end
 		-- near a stop point, running at a speed would overshoot it (N steps per frame, a speed change takes a frame):
 		-- the game pauses and the engine performs exactly the steps left
 		-- (only for real stop points: the barrier keeps a reserve for the overshoot and moves all the time)
@@ -5685,9 +5690,59 @@ K.JOIN_GATHER = 120
 -- (not the new one once a speed above 0 was asked for since its proof: a step may be under way that no copy shows yet; the old
 -- rule decides until the next proof)
 G.simStill = function()
+	if G.nstopStanding() then return true end
 	local S = G.stillS
 	if G.fastStill and S and S.usable and S.proven and not S.askedSince and gameSpeed() == 0 then return true end
 	return G.stillOldRule()
+end
+
+-- Native stop point (0.5.10, MPFEVER_STOPPOINT=0: off). Every stop point of this game (another player's build, its own held build,
+-- the barrier of the other games' clocks, the session's pause) is written to native_stop.txt ("<step> <sequence>", step = game
+-- time / STEP), and the native module makes the engine's batches end there exactly (see InstallNativeStop in mpfever_native.cpp):
+-- the game runs at its speed up to the stop point and stands there at once. Before, it paused short of the point and asked the
+-- engine for the exact steps left, a handshake round trip each (STEPS), and waited for the proof that the engine stood still:
+-- every build of another player slowed the game for one to three seconds. The module answers in native_stop_state.txt ("<sequence>
+-- <step at the start of the latest batch> <steps it made> <stop point>"): standing at the stop point is the latest batch at that
+-- step, making none, for the stop point written last. Used once the module has answered (G.nstop.ok).
+G.nstop = { on = os.getenv("MPFEVER_STOPPOINT") ~= "0", L = false, seq = (os.time() % 100000) * 1000, ok = false, readFrame = -1 }
+G.nstopRead = function()
+	local N = G.nstop
+	if N.readFrame == G.frames then return N.st end
+	N.readFrame = G.frames
+	N.st = nil
+	local f = C.IO.open(C.DIR .. BS .. "native_stop_state.txt", "rb")
+	if not f then return nil end
+	local line = f:read("*l")
+	f:close()
+	local seq, S, n, L = tostring(line or ""):match("^(%-?%d+) (%d+) (%d+) (%-?%d+)")
+	if not seq then return nil end
+	N.st = { seq = tonumber(seq), S = tonumber(S), n = tonumber(n), L = tonumber(L) }
+	if not N.ok and N.st.seq == N.seq and N.L ~= false then
+		N.ok = true
+		log("stop point: the native module keeps this game's stop points (no exact steps before them any more)")
+	end
+	return N.st
+end
+G.nstopOk = function() return G.nstop.on and G.nstop.ok end
+G.nstopWrite = function(stopAt)
+	local N = G.nstop
+	if not N.on or not C.ACTIVE then return end
+	local L = stopAt and math.floor(stopAt / STEP) or -1
+	if L ~= N.L then
+		N.seq, N.L = N.seq + 1, L
+		local f = C.IO.open(C.DIR .. BS .. "native_stop.txt", "wb")
+		if f then f:write(tostring(L) .. " " .. tostring(N.seq) .. NL); f:close() end
+	end
+	if not N.ok then G.nstopRead() end
+end
+-- the simulation stands at the stop point written last, kept by the native module (and this interface sees that time)
+G.nstopStanding = function()
+	local N = G.nstop
+	if not (N.on and N.ok) or N.L == false or N.L < 0 then return false end
+	local st = G.nstopRead()
+	if st == nil or st.seq ~= N.seq or st.L ~= N.L or st.n ~= 0 or st.S ~= N.L then return false end
+	local ok, now = pcall(gameTime)
+	return ok and now == N.L * STEP
 end
 
 -- the old rule (with MPFEVER_STEPLOG also timed next to the new one)
@@ -6414,7 +6469,7 @@ local function runNativeRelease()
 			else
 				keep[#keep + 1] = r
 			end
-		elseif now >= r.at and gameSpeed() == 0 and not (G.eoHoldOwn and G.frames < (G.replayQuiet or 0)) and not G.sameStepWait(r.at, G.me) then
+		elseif now >= r.at and (gameSpeed() == 0 or (now == r.at and G.nstopStanding())) and not (G.eoHoldOwn and G.frames < (G.replayQuiet or 0)) and not G.sameStepWait(r.at, G.me) then
 			if not G.restale(r, now) then releaseOne(r, now) end
 		else
 			keep[#keep + 1] = r
@@ -14932,6 +14987,8 @@ local function guiUpdate(userParams, state, guiState)
 	local okn, errn = pcall(runNativeReplays)
 	if not okn then log("native replays failed: " .. tostring(errn)) end
 
+	-- (no session: no stop point, see G.nstop)
+	if not G.connected then pcall(G.nstopWrite, nil) end
 	if G.connected then
 		if G.buildLead then G.updateLeadCap() end
 		local okp, sp = pcall(pacing)
@@ -14939,6 +14996,7 @@ local function guiUpdate(userParams, state, guiState)
 			if gameSpeed() ~= sp then G.lastSet = -1 end
 			setSpeed(sp)
 			pcall(G.smoothPace, sp)
+			pcall(G.nstopWrite, G.lastStopAt)
 			-- exact steps up to the stop point (once the engine is stopped, one request at a time)
 			local now = gameTime()
 			-- (the engine may take seconds for many steps, in batches: a request is given up only when the clock stopped moving,

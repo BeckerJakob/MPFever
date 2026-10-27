@@ -1,6 +1,14 @@
 MPFever - Changelog
 ===================
 
+0.5.10 - (in progress) builds of other players without the slow approach
+  - NEW (native stop point): a game stops for another player's build (or its own held build, or the session's pause) exactly at
+    the build's step, without pausing short of it and asking the engine for the exact steps left (one handshake round trip each,
+    and a proof that the engine stood still). The native module makes the engine's batches end at the stop point the mod writes
+    in native_stop.txt (the steps function's reading of the game speed, build 40425); the game runs at its speed up to it.
+    MPFEVER_STOPPOINT=0: as before.
+  - Diagnostic MPFEVER_BATCHLOG=1: the engine's batches, their steps and the commands they apply (native.log, "bl ...").
+
 0.5.9 - a public list of dedicated servers, building no longer blocked after MPFever was disabled in a lobby
   - NEW: public server list. A dedicated server whose mpfever_server.properties says public=true (new, true at first)
     announces itself every 30 s, while its world runs, to MPFever's server list; public-address= (new, optional) gives the
