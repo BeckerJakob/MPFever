@@ -736,8 +736,10 @@ static i64 NowUs()
 {
     i64 c = 0;
     QueryPerformanceCounter(&c);
+    // (the frequency was read only with MPFEVER_TIMING: a division by 0 hung both games under MPFEVER_BATCHLOG, tests 601 and 638)
+    if (!g_qpf) QueryPerformanceFrequency(&g_qpf);
     if (!g_qp0) g_qp0 = c;
-    return (c - g_qp0) * 1000000 / g_qpf;
+    return g_qpf ? (c - g_qp0) * 1000000 / g_qpf : 0;
 }
 static void TimingLine(const char* tag, u64 a, u64 b)
 {
