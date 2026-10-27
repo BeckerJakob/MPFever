@@ -16,6 +16,12 @@ MPFever - Changelog
     until it comes back. MPFEVER_ALIVE_STALE=<seconds>: another delay.
   - FIX (dedicated server without display): its world's savegame picture was black (nothing is drawn). The picture of before
     is kept, else one is made with the server's name and world.
+  - FIX (dedicated server, 0.5.8): the window of a stopped server showed an empty "Dedicated server" card, without the
+    two start buttons and the automatic start box (its height was measured before the window was shown, when every control
+    reads as hidden); only the console's "start" could start it. The card is now sized from the server's state.
+  - FIX (dedicated server, 0.5.8): with the box "Start the server when MPFever opens" ticked, "stop" (the button or the
+    console) started the server again at once: MPFever opens again stopped after a stop, and the box applied to that too. It
+    now applies only when the player opens MPFever.exe.
   - FIX (one company per player, the known issue of 0.5.7): two players changing the same place within about two seconds
     led to a reload. The build made second, computed before the other one was there, is now left out on every game (the
     others stop holding for it, its turn of a pause is skipped) and the chat tells its player to make it again. (With one

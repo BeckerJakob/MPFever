@@ -3074,7 +3074,7 @@ static void FixNeedsPath(SavedRegs* r)
 // game) and commandIndex and subIndex 0: segments of one step are ordered by their entity ids, which every game gives alike. cmp word [rdi+0x31c],0 (whether the engine stamps it) finds it stamped.
 static u32 g_getUpdRva = 0;                         // GameTime's updateCount getter, called with the state's time (state+0x28)
 static volatile long g_tickLogged = 0;
-// Diagnostic (MPFEVER_FREEQLOG=1, tests): the free-id queue of the simulation's engine at the start of every 50th step, by the
+// Diagnostic (MPFEVER_FREEQLOG=1, tests): the free-id queue of the simulation's engine at the first step past every 50, by the
 // step's number (GameTime.updateCount, the same on every game): "freeq step <s> size <n> sum <sum of ids> head <next id>". Two
 // games in step give the same line; the first step where they differ is within 50 steps of the action that shifted the ids
 // (entities made or removed on one game only), long before the vehicles or the towns drift. Compared by tools/freeq_diff.py.
@@ -3086,7 +3086,9 @@ static void FreeqLine(u8* gs)
     u8* eng = *(u8**)(gs + 0x18);
     if (!time || !eng || !Readable((void*)time, 0x18)) return;
     u32 step = ((u32(*)(u64))(g_base + g_getUpdRva))(time);
-    if (step % 50 != 0 || step == g_freeqLast) return;
+    // (each 50-step mark passed: above 1x one iteration makes several steps, so the exact multiples are seldom met; the step written
+    // is the real one, the comparison takes the steps both games wrote)
+    if (g_freeqLast != 0xFFFFFFFFu && step / 50 == g_freeqLast / 50) return;
     g_freeqLast = step;
     u8* q = eng + 0xd8;
     if (!Readable(q, 0x28)) return;

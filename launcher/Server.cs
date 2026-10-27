@@ -219,6 +219,8 @@ namespace MPFever
         /// <summary>--server-start display|headless: the server starts at once in that mode (MPFever started again by an update
         /// installed while it ran), else null.</summary>
         static string serverStartAtOpen;
+        /// <summary>--server-idle: MPFever started again with the server stopped (no automatic start).</summary>
+        static bool serverIdleAsked;
         ServerConfig server;
         volatile bool serverStarted, serverStoppedByHand;
         bool serverHeadless;
@@ -262,6 +264,9 @@ namespace MPFever
         /// <summary>The arguments MPFever.exe was started with, for the server's window: whether the server starts at once.</summary>
         internal static void ServerArgs(string[] args, bool updated)
         {
+            // (started again stopped - the stop button or the console's "stop", or an update of a stopped server: the box "Start the
+            // server when MPFever opens" is for a window opened by the player, else the server started again right after its stop)
+            serverIdleAsked = args.Contains("--server-idle");
             int i = Array.IndexOf(args, "--server-start");
             if (i >= 0 && i + 1 < args.Length && (args[i + 1] == "display" || args[i + 1] == "headless")) serverStartAtOpen = args[i + 1];
             // (MPFever 0.5.7's server started its world at once: its update, installed while the world ran, starts the new
@@ -288,7 +293,7 @@ namespace MPFever
             Program.Args = ServerRunArgs();
             LoadServerConfig();
             new Thread(FindServerAddresses) { IsBackground = true, Name = "Server addresses" }.Start();
-            string mode = serverStartAtOpen ?? (ServerAutoStart ? (ServerLastHeadless ? "headless" : "display") : null);
+            string mode = serverStartAtOpen ?? (ServerAutoStart && !serverIdleAsked ? (ServerLastHeadless ? "headless" : "display") : null);
             if (mode != null)
             {
                 if (serverStartAtOpen == null)
@@ -1104,11 +1109,18 @@ namespace MPFever
             FitServerCard();
         }
 
-        /// <summary>The card's height from what it shows.</summary>
+        /// <summary>The card's height from what it shows. (From the server's state, not from Visible: before the window is shown,
+        /// Visible says false for every control, and the card of a stopped server was built empty, without its start buttons.)</summary>
         void FitServerCard()
         {
+            bool on = serverStarted && !serverStopping;
             int h = serverCard.Padding.Vertical;
-            foreach (Control x in serverCard.Controls) if (x.Dock == DockStyle.Top && x.Visible) h += x.Height;
+            foreach (Control x in serverCard.Controls)
+            {
+                if (x.Dock != DockStyle.Top) continue;
+                if (x == serverIdle ? on : (x == serverRunning || x == serverStopBtn) ? !on : false) continue;
+                h += x.Height;
+            }
             serverCard.Height = h;
         }
 
