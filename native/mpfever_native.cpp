@@ -3802,7 +3802,7 @@ extern "C" u32 StepsForBatch(void* time, u32 speed, u32 asked)
         long c = _InterlockedIncrement(&g_stopClamps);
         if (c <= 40 || c % 500 == 0) { Buf l; l.str("stop point: batch at step ").dec((long)S).str(" makes ").dec((long)n).str(" step(s) instead of ").dec((long)sp).str(" (stop point ").dec(g_stopAt).str(", ").dec(c).str(" so far)"); LogLine(l); }
     }
-    if (g_stopAt >= 0 && (long)S > g_stopAt && g_stopLastS != S) { Buf l; l.str("stop point: the simulation is at step ").dec((long)S).str(", past the stop point ").dec(g_stopAt).str(" (set too late)"); LogLine(l); }
+    if (g_stopAt >= 0 && (long)S > g_stopAt && g_stopLastS != S) { Buf l; l.str("stop point: the simulation is at step ").dec((long)S).str(", past its stop point ").dec(g_stopAt).str(": it stands there until the stop point moves past it (a game that must stay behind a leading one, or a stop point written late)"); LogLine(l); }
     WriteStopState(S, n);
     return n;
 }
