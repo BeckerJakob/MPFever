@@ -45,7 +45,7 @@ Each player plays in their own copy of the game. MPFever replays every player's 
 3. Start **`MPFever.exe`**. It finds the game, installs the mod and starts Transport Fever 3.
 4. In the main menu, click the **Multiplayer** card (top left).
    - **The host** clicks **Host** under one of their savegames to open a lobby.
-   - **The others** join the host's address, or accept the host's Steam invitation.
+   - **The others** accept the host's Steam invitation, join the host's address, or pick a dedicated server in the **Public servers** tab.
 5. When everybody is in the lobby, the host clicks **Start the game**. Every game loads the host's world at the same time.
 
 ![Joining a game](docs/images/join-page.webp)
@@ -110,6 +110,7 @@ See [SERVER](docs/SERVER.txt).
 
 - Automatic updates of MPFever.
 - Smooth game speed between players.
+- **Responsive builds** (experimental host setting, off at first): your builds show at once on your game, so you can attach the next piece right away.
 - The 13 languages of the game.
 
 ## Mods
@@ -136,7 +137,8 @@ The mods tested so far are listed in [MODS](docs/MODS.md).
 - **One company per player:** a merger into the savegame's company leaves the merged company's loans behind (they are the game's own loans).
 - **Steam and Windows only.**
 - **Small drifts of vehicles and passengers** can happen. They are repaired by a reload if they last.
-- **Two players changing the same place within about two seconds**, with one company per player: it can lead to a reload (MPFever notices it and reloads the games). With a shared company, the build made second is computed again on every game; if it no longer fits the place, it is left out everywhere and has to be made again.
+- **Two players changing the same place within about two seconds**: the build made second is left out on every game when it no longer fits the place, and has to be made again (with one company per player, the chat tells its player).
+- **Every build of another player stops the games for about a second**, the time to apply it at the same game time everywhere.
 
 What's planned: [ROADMAP](docs/ROADMAP.txt). What changed: [CHANGELOG](docs/CHANGELOG.txt).
 
