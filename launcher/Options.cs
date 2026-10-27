@@ -27,7 +27,7 @@ namespace MPFever
         public static readonly Opt[] All =
         {
             // ---- session (the host's choice)
-            new Opt { Key = "MPFEVER_BUILDLEAD", Session = true, DefaultOn = false, OnValue = "1",
+            new Opt { Key = "MPFEVER_BUILDLEAD", Session = true, DefaultOn = true, OnValue = "1",
                 Name = () => T("Constructions réactives (expérimental)", "Responsive builds (experimental)"),
                 Help = () => T("Vos constructions apparaissent tout de suite chez vous au lieu d'attendre les autres jeux : vous pouvez y raccrocher la suite aussitôt.", "Your builds show at once on your game instead of waiting for the other games: you can attach the next piece right away.") },
             new Opt { Key = "MPFEVER_NOREFUND", Session = true, DefaultOn = true, OffValue = "1",
