@@ -1466,6 +1466,14 @@ static bool SplitWord()
     return g_split && g_canon && g_localPlayer && g_canon != g_localPlayer;
 }
 
+// The savegame's company belongs to the game it was said for: dropped with a new game until the mod says it again (it does every
+// few seconds in a session with companies; in a game without companies it never does, and the readings stay as read)
+static void DropCanon(const char* why)
+{
+    long c = _InterlockedExchange(&g_canon, 0);
+    if (c) { Buf b; b.str("savegame company ").dec(c).str(" dropped: ").str(why); LogLine(b); }
+}
+
 // The game states this machine's player was written into, with the control token of that value (see ApplyLocalPlayer)
 static void* g_doneSlot[16]; static long g_doneTok[16]; static int g_nDone = 0;
 static void NoteWritten(void* slot)
@@ -1489,6 +1497,7 @@ static bool ReloadedAt(void* slot, u32 cur, u32 want)
         g_localPlayer = 0;
         g_nOthers = 0;
         g_nDone = 0;
+        DropCanon("a game was loaded");
         return true;
     }
     return false;
@@ -1505,6 +1514,10 @@ static void ApplyLocalPlayer(const char* why)
     for (int i = 0; i < nseen; i++) if (seen[i] == g_slot) known = true;
     if (!known) {
         if (nseen < 16) seen[nseen++] = g_slot; else seen[0] = g_slot;
+        // the savegame's company too: the simulation's readings of the word are redirected to it (PatchPlayerReads), and a new
+        // game after a session of companies read the company of the game before, an entity that is something else there (a
+        // group of trees): the game's scripts failed and the engine closed the game when it booked money on it (issue #88)
+        DropCanon("a new game state");
         if (g_localPlayer) {
             Buf b; b.str("local player ").dec(g_localPlayer).str(" dropped: a new game state ").hex((u64)g_slot); LogLine(b);
             g_localPlayer = 0;

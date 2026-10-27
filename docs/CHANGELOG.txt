@@ -1,6 +1,15 @@
 MPFever - Changelog
 ===================
 
+0.5.12 - no crash in the next game after a session of separate companies
+  - FIX (crash, issue #88): after a session with one company per player, a new game (or another savegame) started without
+    restarting Transport Fever 3 crashed after about 30 s, whether the session had been left or kept. The native module sends
+    the simulation's readings of the player to the savegame's company, and it kept that company from one game to the next: the
+    new game read the company of the game before, an entity that is something else there (a group of trees in the report). The
+    game's notifications failed ("companyState" nil), the engine stopped when it booked money on it, and in a kept session the
+    new world even took it for its own company. The native module now forgets the savegame's company with a new game, as it
+    already did this machine's company, until the mod says it again.
+
 0.5.11 - sessions of separate companies run again
   - FIX (games frozen at the start, 0.5.10): a session with one company per player never ran. At the start the host's rules go
     to the games as a paused action in its turn, and the games hold at its step. With the native stop point a game stands at a
