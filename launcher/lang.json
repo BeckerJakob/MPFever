@@ -7333,6 +7333,32 @@
       "zh-CN": "查看其他人正在建造的内容",
       "zh-TW": "查看其他人正在建造的內容"
     },
+    "See the others' mouse and view": {
+      "de": "Maus und Blick der anderen sehen",
+      "es": "Ver el ratón y la vista de los demás",
+      "it": "Vedi il mouse e la vista degli altri",
+      "ja": "ほかのプレイヤーのマウスと視点を表示",
+      "ko": "다른 플레이어의 마우스와 시점 보기",
+      "nl": "De muis en het zicht van de anderen zien",
+      "pl": "Pokazuj mysz i widok innych",
+      "pt-BR": "Ver o mouse e a visão dos outros",
+      "ru": "Видеть мышь и обзор других",
+      "zh-CN": "查看其他人的鼠标和视角",
+      "zh-TW": "查看其他人的滑鼠和視角"
+    },
+    "A dot in each player's colour where their mouse points, and a large faint circle where their camera looks.": {
+      "de": "Ein Punkt in der Farbe jedes Spielers, wo seine Maus hinzeigt, und ein großer blasser Kreis, wo seine Kamera hinschaut.",
+      "es": "Un punto del color de cada jugador donde apunta su ratón y un gran círculo tenue donde mira su cámara.",
+      "it": "Un punto nel colore di ogni giocatore dove punta il suo mouse e un grande cerchio tenue dove guarda la sua telecamera.",
+      "ja": "各プレイヤーのマウスが指す場所にその色の点、カメラが見ている場所に大きな薄い円を表示します。",
+      "ko": "각 플레이어의 마우스가 가리키는 곳에 그 색의 점이, 카메라가 보는 곳에 크고 옅은 원이 표시됩니다.",
+      "nl": "Een stip in de kleur van elke speler waar zijn muis wijst, en een grote vage cirkel waar zijn camera kijkt.",
+      "pl": "Kropka w kolorze każdego gracza tam, gdzie wskazuje jego mysz, i duży blady okrąg tam, gdzie patrzy jego kamera.",
+      "pt-BR": "Um ponto na cor de cada jogador onde o mouse dele aponta e um grande círculo suave onde a câmera dele olha.",
+      "ru": "Точка цветом каждого игрока там, куда указывает его мышь, и большой бледный круг там, куда смотрит его камера.",
+      "zh-CN": "在每位玩家鼠标所指之处显示其颜色的圆点，在其镜头所看之处显示一个大的浅色圆圈。",
+      "zh-TW": "在每位玩家滑鼠所指之處顯示其顏色的圓點，在其鏡頭所看之處顯示一個大的淺色圓圈。"
+    },
     "What another player's tool shows before their click shows on the ground in your game, in their colour.": {
       "de": "Was das Werkzeug eines anderen Spielers vor seinem Klick zeigt, erscheint in deinem Spiel auf dem Boden, in seiner Farbe.",
       "es": "Lo que muestra la herramienta de otro jugador antes de su clic aparece en el suelo en tu partida, con su color.",

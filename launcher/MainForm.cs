@@ -113,6 +113,12 @@ namespace MPFever
         const long Step = 200;                 // game time units per simulation step
         const double UnitsPerSecond = 1000;    // game time units per real second at x1
         const double HashEverySeconds = 10;
+        // a checksum that costs its game c seconds (a big map: the hash walks every edge and construction) is asked for
+        // at most every HashCostFactor * c seconds, so that it takes at most a tenth of the time. The dearest game of a
+        // round counts; it halves each round, as the rotating hash (MPFEVER_HASHROT) costs differently from group to group.
+        const double HashCostFactor = 10;
+        double lastHashCost; int costRound = -1;
+        double HashInterval() => Math.Max(HashEverySeconds, HashCostFactor * lastHashCost);
 
         readonly TextBox nameBox = new TextBox { Text = SavedName() };
         readonly TextBox hostBox = new TextBox { Text = "127.0.0.1" };
@@ -1671,7 +1677,7 @@ namespace MPFever
                 menuGame.InGame = false;
                 foreach (var f in new[] { "in.log", "out.log", "ui.log", "sim_mods.log", "started.txt", "results.log", "native_events.log", "resync_claims.txt",
                                           "resync_pending.txt", "bindings.log", "captured.txt", "companies.txt", "shares.txt",
-                                          "chat.txt", "chat_out.txt", "load_id.txt" })
+                                          "chat.txt", "chat_out.txt", "load_id.txt", "autoload.txt" })
                     try { var p = Path.Combine(menuGame.Dir, f); if (File.Exists(p)) File.WriteAllText(p, ""); } catch { }
             }
             menuPhase = "idle"; menuText = ""; menuLoad = ""; menuLoadSeq = "";
@@ -2795,7 +2801,7 @@ namespace MPFever
                 bool allStopped; lock (clocks) allStopped = clocks.Count > 0 && clocks.Values.Select(c => c.T).Distinct().Count() == 1;
                 bool pausedWork = paused && actsRelayed != actsAtHash && pausedAt.HasValue && MaxClock() >= pausedAt.Value
                     && allStopped && Now - lastActRelayed > 5;
-                if (started && (!paused || pausedWork) && !detRunning && !resyncing && Now - lastHash > HashEverySeconds)
+                if (started && (!paused || pausedWork) && !detRunning && !resyncing && Now - lastHash > HashInterval())
                 {
                     lastHash = Now; actsAtHash = actsRelayed; RequestHash();
                 }
@@ -3125,7 +3131,7 @@ namespace MPFever
                         if (from != null) hostGame?.ToGame(m);
                         relay.Broadcast(m, from);
                     }
-                    if (m.Kind != "chat" && m.Kind != "preview") Log.W($"{m.From} : {m.Kind} {m.Payload}");
+                    if (m.Kind != "chat" && m.Kind != "preview" && m.Kind != "presence") Log.W($"{m.From} : {m.Kind} {m.Payload}");
                     break;
             }
         }
@@ -3139,7 +3145,12 @@ namespace MPFever
             if (t == null || !t.TryGetValue("n", out var nv) || !(nv is double nd)) return;
             int n = (int)nd;
             var parts = t.TryGetValue("parts", out var p) ? p as Dictionary<object, object> : null;
-            if (t.TryGetValue("cost", out var cost) && cost is double c && c > 0.1) Log.Warn(F("{0} : empreinte coûteuse ({1:0.00} s)", "{0}: expensive checksum ({1:0.00} s)", m.From, c));
+            if (t.TryGetValue("cost", out var cost) && cost is double c)
+            {
+                if (n != costRound) { costRound = n; lastHashCost /= 2; }
+                lastHashCost = Math.Max(lastHashCost, c);
+            }
+            if (cost is double c2 && c2 > 0.1) Log.Warn(F("{0} : empreinte coûteuse ({1:0.00} s)", "{0}: expensive checksum ({1:0.00} s)", m.From, c2));
             // host authority: the host's values at this checkpoint go to every other game, which corrects itself
             if (m.From == hostName && t.TryGetValue("auth", out var av) && av is Dictionary<object, object> auth)
             {

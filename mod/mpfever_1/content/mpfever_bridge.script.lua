@@ -3350,6 +3350,7 @@ end
 
 H.peerleft = function(from, p)
 	if p.name then G.peers[p.name] = nil end
+	if p.name and G.presForget then pcall(G.presForget, p.name) end
 end
 
 -- native builds of other players: replayed here (callbacks give the engine's verdict), as soon as this game has
@@ -4167,6 +4168,21 @@ local function replayFailed(a, why)
 	pcall(send, "replay_failed", { uid = tostring(a.uid), why = tostring(why):sub(1, 120) })
 end
 G.replayFailedFn = replayFailed
+
+-- A replayed build that removes something (nodes, constructions, more segments than it adds) and comes later than its step:
+-- the place may have changed since (a town building or a station connected to a removed node meanwhile), and the engine
+-- asserts when it removes a node something is still connected to (AreAllNodesEmpty, docs/RESEARCH.md) - seen in a session
+-- of 2026-10-09 with a bulldozed segment 3 steps late: the replaying game crashed. At its exact step it is safe (the same
+-- world as on the builder's game). MPFEVER_LATEREMOVAL=0: replayed late as before.
+function G.lateRemoval(a)
+	if os.getenv("MPFEVER_LATEREMOVAL") == "0" or not a.native or a.fn == "terrainEdit" or a.fn == "assetBuild" or a.fn == "mpfCoJoin" then
+		return false
+	end
+	local m = a.args and a.args[1]
+	if type(m) ~= "table" then return false end
+	local st = m.proposal or {}
+	return #(st.removedNodes or {}) > 0 or #(m.toRemove or {}) > 0 or #(st.removedSegments or {}) > #(st.addedSegments or {})
+end
 
 -- the verdict of a replayed action for the host: a refusal is counted; an action skipped because something it refers to
 -- is missing here means the games already differ, so the host's game is reloaded at once (issue #12: the next action
@@ -7192,7 +7208,13 @@ local function runNativeReplays()
 			end
 			nativeArrived(a)
 			local okr, errr
-			if a.fn == "terrainEdit" then okr, errr = pcall(withActor, PL(a), replayTerrain, a)
+			if a.at < now and G.lateRemoval(a) then
+				-- not replayed: the host reloads its game for everybody (replay_failed) instead of this game asserting
+				log("LATE removal " .. tostring(a.uid) .. " (" .. ((now - a.at) / STEP) .. " step(s) late) not replayed: the place changed since"
+					.. " its step (the engine asserts when something is still connected to a removed node, AreAllNodesEmpty); asking for a reload")
+				replayFailed(a, "late removal")
+				okr = true
+			elseif a.fn == "terrainEdit" then okr, errr = pcall(withActor, PL(a), replayTerrain, a)
 			elseif a.fn == "assetBuild" then okr, errr = pcall(withActor, PL(a), replayAssets, a)
 			elseif a.fn == "mpfCoJoin" then G.coBusy = { a = a, phase = "apply", frame = G.frames }; okr = true
 			elseif select(2, pcall(G.alreadyBuilt, a)) == true then
@@ -7878,9 +7900,30 @@ local function groundZ(x, y, fallback)
 	return type(z) == "number" and z or fallback
 end
 
--- dead ends of the street network, in a deterministic order (same save = same ids for these)
+-- a town or country street, not an industry road, a depot or station entrance or a runway: a scenario that builds a stop on
+-- or removes an edge of another road type ended in an engine assertion (roadType == STREET, AreAllNodesEmpty)
+G.isPlainStreet = function(c)
+	local t = c and c.roadTemplate
+	return type(t) == "string" and (t:find("/street/town/", 1, true) ~= nil or t:find("/street/country/", 1, true) ~= nil)
+end
+
+-- what the engine says of a proposal before it is built (nil when nothing, or the API is not there): a scenario skips what the
+-- engine refuses beforehand, rather than send it and meet the engine's assertion on removing a node something still uses
+G.proposalProblem = function(P, ctx)
+	local okf, data = pcall(function() return api.engine.util.proposal.makeProposalData(P, ctx) end)
+	if not okf or not data then return nil end
+	local problem = nil
+	pcall(function()
+		local es = data.errorState
+		if es and (es.critical or #es.messages > 0) then problem = C.ser(C.marshal(es.messages)):sub(1, 200) end
+	end)
+	return problem
+end
+
+-- dead ends of the street network, in a deterministic order (same save = same ids for these): those of plain streets
+-- (G.isPlainStreet), all streets' when the map has none of these templates
 local function deadEnds()
-	local list, edgeOf = {}, {}
+	local list, edgeOf, plain = {}, {}, {}
 	for n, segs in pairs(api.engine.system.streetSystem.getNode2SegmentMap() or {}) do
 		local k = 0
 		pcall(function() k = #segs end)
@@ -7890,9 +7933,11 @@ local function deadEnds()
 			if c and c.type == 0 and c.roadTemplate and c.roadTemplate ~= "" then
 				list[#list + 1] = n
 				edgeOf[n] = { e = e, other = (c.node0 == n) and c.node1 or c.node0, c = c }
+				if G.isPlainStreet(c) then plain[#plain + 1] = n end
 			end
 		end
 	end
+	if #plain > 0 then list = plain end
 	table.sort(list)
 	return list, edgeOf
 end
@@ -9790,6 +9835,8 @@ local function runStopMatrix(p)
 		local ctx = playerContext()
 		if f.gather then ctx.gatherBuildings = true; ctx.checkTerrainAlignment = true end
 		if f.nocleanup then ctx.cleanupStreetGraph = false end
+		local problem = G.proposalProblem(sp, ctx)
+		if problem then log("STOPS " .. f.name .. ": skipped, the engine refuses it beforehand: " .. problem); return nextForm() end
 		local okf, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, ctx, f.ie == true, true) end)
 		if not okf or not cmd then log("STOPS " .. f.name .. ": factory " .. shortErr(cmd)); return nextForm() end
 		-- (held until its announced step, as a player's tool build: sent at once, the other games applied it a few steps
@@ -9864,7 +9911,7 @@ local function runTramStop(p)
 		list = {}
 		for _, e in ipairs(R.allEdges()) do
 			local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
-			if c and c.type == 0 and #c.objects == 0 and #c.laneConfigs > 0 and not hasPersonLane(c) then list[#list + 1] = e end
+			if c and c.type == 0 and G.isPlainStreet(c) and #c.objects == 0 and #c.laneConfigs > 0 and not hasPersonLane(c) then list[#list + 1] = e end
 		end
 		log("TRAMSTOP " .. #list .. " street segments without sidewalks")
 	end
@@ -10240,14 +10287,18 @@ local function runBulldoze(p)
 	end
 	log("BULLDOZE api: " .. table.concat(av, ", "))
 	local ends, edgeOf = deadEnds()
+	-- the newest dead ends first (the road a newroad scenario just built: nothing on it yet), what the engine refuses skipped
+	table.sort(ends, function(a, b) return edgeOf[a].e > edgeOf[b].e end)
 	local tries = 0
 	local function attempt(k)
 		tries = tries + 1
-		if tries > 6 then return autoFinish() end
-		local n = ends[(k * 41) % #ends + 1]
+		if tries > 6 or #ends == 0 then return autoFinish() end
+		local n = ends[(k - 1) % #ends + 1]
 		local info = edgeOf[n]
 		local okp, P = pcall(function() return api.engine.util.proposal.makeSegmentsRemoveProposal({ info.e }) end)
 		if not okp or not P then log("BULLDOZE no proposal " .. tostring(P)); return attempt(k + 1) end
+		local problem = G.proposalProblem(P, playerContext())
+		if problem then log("BULLDOZE segment " .. info.e .. " skipped: " .. problem); return attempt(k + 1) end
 		local before = edgeCount()
 		local pn = nodePosition(n)
 		deferredSend(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res, success)
@@ -10266,7 +10317,7 @@ local function runBulldoze(p)
 			end }
 		end)
 	end
-	attempt((p.offset or 0) + 3)
+	attempt((p.offset or 0) + 1)
 end
 
 H.bulldoze = function(from, p)
@@ -14952,11 +15003,111 @@ G.previewTick = function()
 	end
 end
 
+-- ---------------------------------------------------------------- the others' mouse and view (presence)
+-- Where each other player's mouse points on the ground (a small dot) and where their camera looks (a large faint circle), in
+-- their company colour, as the previews: mission zones only, nothing of it reaches the world, the actions or the checksums -
+-- a lost update changes nothing but a dot. Sent about ten times a second while something moved more than 1.5 m (and every
+-- 2 s anyway, to show the player is there); a player not heard of for 10 s is taken away. The dot moves a part of the way to
+-- the last received position every few frames, so that it glides between two updates. MPFEVER_PRESENCE=0 (the host's
+-- setting) turns it off on every game.
+G.PRESENCE = { every = 6, minMove = 1.5, heartbeat = 120, timeout = 600, smooth = 0.5, cursorR = 6, cameraR = 60 }
+G.pres = { seen = {}, out = { frame = -1000, seq = 0 }, sent = 0, received = 0 }
+G.presOn = function() return os.getenv("MPFEVER_PRESENCE") ~= "0" end
+G.presMoved = function(a, b, limit)
+	if a == nil or b == nil then return a ~= b end
+	return (a.x - b.x) ^ 2 + (a.y - b.y) ^ 2 >= limit * limit
+end
+G.presSample = function()
+	local function r1(v) return math.floor(v * 10 + 0.5) / 10 end
+	local cur, cam = nil, nil
+	pcall(function()
+		local m = api.gui.mouse
+		if m and m.hasTerrainPosition and m.hasTerrainPosition() then
+			local q = m.getTerrainPosition()
+			cur = { x = r1(q.x), y = r1(q.y) }
+		end
+	end)
+	pcall(function()
+		local d = api.gui.camera.getCameraData()
+		local x, y = d.x, d.y
+		if x == nil then x, y = d[1], d[2] end
+		if type(x) == "number" and type(y) == "number" then cam = { x = r1(x), y = r1(y) } end
+	end)
+	return cur, cam
+end
+G.presForget = function(who)
+	local q = G.pres.seen[who]
+	if not q then return end
+	pcall(api.gui.mission.removeZone, "mpfever_p_" .. q.tag .. "_c")
+	pcall(api.gui.mission.removeZone, "mpfever_p_" .. q.tag .. "_k")
+	G.pres.seen[who] = nil
+end
+-- every 3 frames: this player's mouse and view out (every 6), the others' marks moved on
+G.presenceTick = function()
+	if not (G.session.started and G.presOn()) then return end
+	local P, o = G.PRESENCE, G.pres.out
+	if G.frames % P.every == 0 then
+		local cur, cam = G.presSample()
+		if G.presMoved(cur, o.cursor, P.minMove) or G.presMoved(cam, o.camera, P.minMove) or G.frames - o.frame >= P.heartbeat then
+			o.seq = o.seq + 1
+			o.cursor, o.camera, o.frame = cur, cam, G.frames
+			if not o.color then
+				pcall(function() for _, c in ipairs((R.CO or {}).list or {}) do if c.id == G.myCo then o.color = c.color end end end)
+				o.color = o.color or G.coMyColor()
+			end
+			send("presence", { s = o.seq, c = cur, k = cam, col = o.color })
+			G.pres.sent = G.pres.sent + 1
+		end
+	end
+	for who, q in pairs(G.pres.seen) do
+		if G.frames - q.frame > P.timeout then G.presForget(who)
+		else
+			if q.cursor then
+				local d = q.shown or { x = q.cursor.x, y = q.cursor.y }
+				d.x, d.y = d.x + (q.cursor.x - d.x) * P.smooth, d.y + (q.cursor.y - d.y) * P.smooth
+				q.shown = d
+				if not q.drawn or G.presMoved(d, q.drawn, 0.5) then
+					q.drawn = { x = d.x, y = d.y }
+					pcall(api.gui.mission.setZoneCircle, "mpfever_p_" .. q.tag .. "_c", api.type.Vec2f.new(d.x, d.y), P.cursorR, true, q.col(0.8), false, false)
+				end
+			end
+			if q.camera and (not q.camDrawn or G.presMoved(q.camera, q.camDrawn, 5)) then
+				q.camDrawn = { x = q.camera.x, y = q.camera.y }
+				pcall(api.gui.mission.setZoneCircle, "mpfever_p_" .. q.tag .. "_k", api.type.Vec2f.new(q.camera.x, q.camera.y), P.cameraR, true, q.col(0.12), false, false)
+			end
+		end
+	end
+end
+H.presence = function(from, p)
+	if from == G.me or not from or type(p) ~= "table" or not G.presOn() then return end
+	local q = G.pres.seen[from]
+	if not q then
+		G.pres.out.n = (G.pres.out.n or 0) + 1
+		q = { tag = tostring(G.pres.out.n), seq = -1 }
+		G.pres.seen[from] = q
+		log("presence of " .. tostring(from) .. " received (mouse and view shown)")
+	end
+	if type(p.s) == "number" and p.s <= q.seq then return end      -- (an older update arriving late)
+	q.seq, q.frame = p.s or q.seq, G.frames
+	if type(p.c) == "table" and type(p.c.x) == "number" and type(p.c.y) == "number" then q.cursor = { x = p.c.x, y = p.c.y } else q.cursor = nil end
+	if type(p.k) == "table" and type(p.k.x) == "number" and type(p.k.y) == "number" then q.camera = { x = p.k.x, y = p.k.y } end
+	if not q.col or q.colN ~= p.col then
+		q.colN = p.col
+		local rr, gg, bb = 0.25, 0.6, 1.0
+		if type(p.col) == "number" then rr, gg, bb = CO.rgb(p.col) end
+		q.col = function(a) return api.type.Vec4f.new(rr, gg, bb, a) end
+		q.drawn, q.camDrawn = nil, nil
+	end
+	if not q.cursor then pcall(api.gui.mission.removeZone, "mpfever_p_" .. q.tag .. "_c"); q.shown, q.drawn = nil, nil end
+	G.pres.received = G.pres.received + 1
+end
+
 local function guiUpdate(userParams, state, guiState)
 	if not C.ACTIVE then return end
 	G.frames = G.frames + 1
 	G.stateObj = state
 	if G.frames % 15 == 0 then pcall(G.previewTick) end
+	if G.frames % 3 == 0 then pcall(G.presenceTick) end
 	if G.frames % 600 == 0 then
 		local ps = G.pstat
 		log("gui alive frame " .. G.frames .. " t=" .. tostring(gameTime()) .. " | slowed by other clocks " .. ps.barrier .. "/" .. ps.frames .. " frames, by held actions " .. ps.hold)

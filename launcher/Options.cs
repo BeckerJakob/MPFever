@@ -40,6 +40,9 @@ namespace MPFever
             new Opt { Key = "MPFEVER_PREVIEWS", Session = true, DefaultOn = true, OffValue = "0",
                 Name = () => T("Voir ce que les autres construisent", "See what the others are building"),
                 Help = () => T("Ce que l'outil d'un autre joueur montre avant son clic s'affiche au sol chez vous, à sa couleur.", "What another player's tool shows before their click shows on the ground in your game, in their colour.") },
+            new Opt { Key = "MPFEVER_PRESENCE", Session = true, DefaultOn = true, OffValue = "0",
+                Name = () => T("Voir la souris et la vue des autres", "See the others' mouse and view"),
+                Help = () => T("Un point à la couleur de chaque joueur là où pointe sa souris, et un grand cercle léger là où regarde sa caméra.", "A dot in each player's colour where their mouse points, and a large faint circle where their camera looks.") },
             // ---- this player's own
             new Opt { Key = "MPFEVER_SMOOTH", DefaultOn = true, OffValue = "0",
                 Name = () => T("Défilement fluide", "Smooth pacing"),
