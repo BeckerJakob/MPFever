@@ -75,6 +75,14 @@
       Rotation jede Zählung zurücksetzen); Drift-Zeit pro Teil
 - [ ] Merkle-Lokalisierung bis zur Entity, gezielte Reparatur, Replay-Rekorder – offen
 
+### Abschlusstest 0.3.0 – zusätzliche Korrekturen
+- [x] **F14** Sitzungsstart bei leicht unterschiedlichen Spielzeiten (Launcher `StartSession`, Autotest-Bereitschaft,
+      Bridge `pacing`: Aufholen bis zum Startzeitpunkt) – Test `tests/sim/test_session_start.py`
+- [x] Riskante Autotest-Szenarien (eigene Sessions): `stops`, `bulldoze`, `tramstop`, `roadtypes`, `company`
+- [ ] Phase 3, 4, 5, 8, 10, 11, 12, 13: offen (siehe Abschnitte unten); Phase 10: der Spielstand ist schon zstd-komprimiert
+      (64 → 63 MB mit erneutem Komprimieren) – Gewinn nur durch Binärtransport (−25 % gegenüber Base64, Phase 4) oder
+      Beitritt mit Aufholen
+
 ---
 
 ## Inhalt

@@ -1,6 +1,30 @@
 MPFever - Changelog
 ===================
 
+0.3.0-experimental - see the other players, shorter checks, robust to game updates
+  - Presence: every player sees where the others point with the mouse (a dot in that
+    player's colour) and where their camera looks (a large faint circle). When another
+    player uses a construction tool, a circle in their colour shows where at once, until
+    the build is there. Your own waiting circle has your colour too.
+  - The state check no longer stops the game for seconds every 10 seconds: each check
+    compares a third of the game (in turns), and the next check waits at least ten times
+    as long as the last one took.
+  - A company balance above 2.1 billion no longer breaks the money correction (the game's
+    Lua cannot format such integers with %d).
+  - Names with characters like í, Í or ō are sent unchanged whatever the language settings
+    of the PC.
+  - Game updates: the native module finds the engine functions it needs by their code
+    (signatures) when it does not know the game build, instead of switching itself off.
+  - The autotest starts the loaded game reliably (it could wait for a key press for ever).
+  - Fixed: demolishing with the bulldozer could crash the game when a vehicle reached the
+    road during the short wait before the demolition (it now happens at once for the player
+    who demolishes; the others do it at the same game time).
+  - Fixed: when the games stopped at slightly different times after loading, the session
+    never started and builds made meanwhile never appeared on the other game. The session
+    now starts at the time of the game in front; the others catch up.
+  - For developers: the mod is split into modules (mpfever_br_*.lua), test suite with
+    unit, simulated, native and real-game levels (test.bat), see docs/dev/.
+
 0.2.10-experimental - terrain edits are copied, no more reload
   - Raising / lowering / levelling the ground is now copied to the other players like any other
     construction, by both the host and the clients. Before, a terrain edit made the host reload

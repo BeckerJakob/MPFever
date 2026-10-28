@@ -98,7 +98,7 @@ prüfen die Auswertung zusätzlich gegen die Logs, die die echte Bridge in der S
    ein paar Straßen, ein Straßendepot, eine Bushaltestelle; speichern unter genau diesem Namen. Für Dauerläufe
    `MPF-Test-Busy` (mittlere Karte mit Verkehr). Andere Namen: `MPF_SAVE=<name>`.
 4. `test.bat e2e` – drei Sessions mit je zwei Spielinstanzen (viel RAM/VRAM: Grafik niedrig stellen), ~25 min:
-   eine Haupt-Session spielt die sicheren Szenarien nacheinander (Host, dann Client); `stops`, `bulldoze`, `tramstop`, `roadtypes`
+   eine Haupt-Session spielt die sicheren Szenarien nacheinander (Host, dann Client); `stops`, `bulldoze`, `tramstop`, `roadtypes`, `company`
    können die Engine abstürzen lassen (F10) und laufen je in einer eigenen kurzen Session; dazu
    je eine kurze Session mit Speed 4 und pausiert, außerdem die Lua-Probe (eine Instanz, ~15 s). Die Ergebnisse der
    Haupt-Session werden über die Startzeiten im Launcher-Log den Szenarien zugeordnet (`analyze.per_scenario`).

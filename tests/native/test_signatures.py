@@ -69,3 +69,18 @@ def test_signatures_resolve_in_installed_game(sigtool, metrics):
     bad = [s for s in out["signatures"] if s["status"] != "ok"]
     metrics["signatures_resolved"] = len(out["signatures"]) - len(bad)
     assert out["ok"] and not bad, bad
+
+
+def test_site0_is_the_bulldozer_in_every_build():
+    """F15: the native module does not hold the builds of site 0 - it must be UI::Bulldozer::Apply in every build list
+    and in the signatures (same order as the known addresses)."""
+    with open(os.path.join(REPO, "native", "mpfever_native.cpp"), encoding="utf-8") as f:
+        src = f.read()
+    for number, b in game.native_builds().items():
+        block = re.search(r"UI_SITES_%d\[\]\s*=\s*\{(.*?)\};" % number, src, re.S).group(1)
+        first = [l for l in block.splitlines() if "0x" in l][0]
+        assert "UI::Bulldozer::Apply" in first, (number, first)
+        with open(os.path.join(REPO, "signatures", "known_%d.txt" % number), encoding="utf-8") as f:
+            site0 = [l.split("\t") for l in f if l.startswith("site0\t")][0]
+        assert int(site0[1], 16) == b["sites"][0]
+    assert "if (i == 0 && !g_holdBulldozer) return false;" in src

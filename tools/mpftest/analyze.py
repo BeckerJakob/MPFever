@@ -86,6 +86,10 @@ def parse_mod_log(lines):
             r["slowed"].append({"frames": int(m.group(3)), "by_clocks": int(m.group(2)), "by_held": int(m.group(4))})
         if "FAILED" in line or "replay failed" in line.lower():
             r["failed"].append(line)
+        if " presence of " in line and line.rstrip().endswith("received"):
+            r["presence_peers"] = r.get("presence_peers", 0) + 1
+        if "presence failed" in line or "pending mark failed" in line:
+            r["presence_errors"] = r.get("presence_errors", 0) + 1
     return r
 
 

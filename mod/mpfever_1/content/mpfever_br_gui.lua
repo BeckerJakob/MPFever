@@ -85,6 +85,10 @@ function pacing()
 	local want = s.speed
 	if s.pauseAt == nil and G.holdAt then want = math.max(1, want) end
 	if catchUp then want = 1 end
+	-- the session starts (or is paused) at a time this game has not reached: it loaded the savegame later than the
+	-- others, which ran a few steps before they were held - it runs on to that time (deterministic: same savegame), so
+	-- that every game is in the same state there and the actions stamped meanwhile are applied (Phase 1 fix)
+	if s.pauseAt ~= nil and now < s.pauseAt and want == 0 then want = 1 end
 	-- statistics (logged with "gui alive"): frames slowed down by the other players' clocks, or by held actions
 	local ps = G.pstat
 	ps.frames = ps.frames + 1

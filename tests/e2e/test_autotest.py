@@ -21,10 +21,11 @@ SAVE = os.environ.get("MPF_SAVE", runner.DEFAULT_SAVE)
 
 # the scenarios the bridge implements (H.<name>). The main session plays the safe ones; the RISKY ones build
 # proposals by hand that remove or replace a street segment (with vehicles on it the engine asserts) or build special
-# road types (roadtypes: lane assertion in StreetShapeFactory) - that game then stops (finding F10). Each gets its own
+# road types (roadtypes: lane assertion in StreetShapeFactory), or add a player entity by script (company, research for
+# separate companies: component assertion in the simulation) - that game then stops (finding F10). Each gets its own
 # short session so that a crash spoils nothing else.
-SAFE = ["newroad", "upgrade", "buy", "line", "split", "terrain", "company"]
-RISKY = ["stops", "bulldoze", "tramstop", "roadtypes"]
+SAFE = ["newroad", "upgrade", "buy", "line", "split", "terrain"]
+RISKY = ["stops", "bulldoze", "tramstop", "roadtypes", "company"]
 SCENARIOS = [s for s in os.environ.get("MPF_SCENARIOS", ",".join(SAFE)).split(",") if s]
 SMOKE = ["newroad", "upgrade"]
 
@@ -74,6 +75,14 @@ def check_session(out, metrics, prefix=""):
 def test_session(session, metrics):
     """T0.12 + T0.14: the session as a whole (both games ready, no errors, no resynchronisation) and its KPIs."""
     check_session(session, metrics)
+
+
+def test_presence_in_the_game(session, metrics):
+    """T6.7 (Phase 6): each game received the other's presence (mouse / camera), without errors of the presence code."""
+    metrics["presence_peers"] = session["kpi"].get("presence_peers", 0)
+    metrics["presence_errors"] = session["kpi"].get("presence_errors", 0)
+    assert session["kpi"].get("presence_errors", 0) == 0
+    assert session["kpi"].get("presence_peers", 0) >= 2, "presence of the other player not received on both games"
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS)

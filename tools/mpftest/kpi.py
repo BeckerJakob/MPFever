@@ -23,6 +23,9 @@ def compute(run):
         "stamp_distance_steps": next((g["stamp_distance"] for g in games if g["stamp_distance"]), None),
         "barrier_stall_ratio": round(sum(s["by_clocks"] for s in slowed) / frames, 4) if frames else None,
         "failed_lines": sum(len(g["failed"]) for g in games),
+        # presence (Phase 6): games that received another player's presence, errors of the presence code
+        "presence_peers": sum(g.get("presence_peers", 0) for g in games),
+        "presence_errors": sum(g.get("presence_errors", 0) for g in games),
         # K6 / K8: resynchronisations
         "resyncs": run["launcher"]["resyncs_started"],
         "resync_seconds_max": max(run["launcher"]["resync_seconds"], default=None),

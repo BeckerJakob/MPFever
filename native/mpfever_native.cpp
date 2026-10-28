@@ -476,9 +476,23 @@ static void MoveFunction(u8* dst, u8* src)
     *(void**)(src + 0x38) = 0;
 }
 
+// The bulldozer (site 0, UI::Bulldozer::Apply, first in every site list and in the signatures) is not held: its
+// proposal is computed when the player clicks; applied two seconds later, a vehicle may stand on a node it removes and
+// the engine asserts (AreAllNodesEmpty, TransportNetworkSystem::EntityToBeRemoved - finding F15, the game crashed). It
+// applies at once on the player's game (like the terrain tool); the others replay it at that game time with a proposal
+// they compute then. MPFEVER_HOLD_BULLDOZER=1: held like the other tools (0.2.x behaviour).
+static int g_holdBulldozer = -1;
 static bool IsUiSite(u32 rva)
 {
-    for (int i = 0; i < UI_ADD_N; i++) if (UI_ADD_SITES[i] == rva) return true;
+    if (g_holdBulldozer < 0) {
+        char v[4] = {};
+        g_holdBulldozer = (GetEnvironmentVariableA("MPFEVER_HOLD_BULLDOZER", v, 3) > 0 && v[0] == '1') ? 1 : 0;
+    }
+    for (int i = 0; i < UI_ADD_N; i++) {
+        if (UI_ADD_SITES[i] != rva) continue;
+        if (i == 0 && !g_holdBulldozer) return false;
+        return true;
+    }
     return false;
 }
 

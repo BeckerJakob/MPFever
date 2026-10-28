@@ -296,6 +296,16 @@ function pumpTerrain()
 	end
 end
 
+-- a build that removes something (nodes, constructions, more segments than it adds): applied late, the state it was
+-- made for has changed - a vehicle on a removed node makes the engine assert (AreAllNodesEmpty) and the game crash
+-- (finding F15). Applied at its exact time it is safe (same state as on the builder's game).
+function removesSomething(a)
+	local m = a.args and a.args[1]
+	if type(m) ~= "table" then return false end
+	local st = m.proposal or {}
+	return #(st.removedNodes or {}) > 0 or #(m.toRemove or {}) > 0 or #(st.removedSegments or {}) > #(st.addedSegments or {})
+end
+
 function runNativeReplays()
 	pumpTerrain()
 	if #G.nativeQueue == 0 then return end
@@ -306,13 +316,29 @@ function runNativeReplays()
 		if a.at <= now and a.fn == "terrainEdit" and G.terrainBusy then
 			keep[#keep + 1] = a      -- the cells of the previous edit are still being handed to the engine
 		elseif a.at <= now then
-			if a.at < now then
+			local late = a.at < now
+			if late then
 				log("LATE native build " .. tostring(a.uid) .. " for t=" .. a.at .. " applied at " .. now .. " (" .. ((now - a.at) / STEP) .. " step(s) late)")
 				G.aheadLocked = true
 			end
 			nativeArrived(a)
 			local okr, errr
-			if a.fn == "terrainEdit" then okr, errr = pcall(replayTerrain, a) else okr, errr = pcall(replayNative, a, 1) end
+			if late and a.fn ~= "terrainEdit" and removesSomething(a) then
+				-- not replayed: the host reloads its game for everybody (replay_failed) instead of this game crashing
+				local m, shape = a.args[1], ""
+				pcall(function()
+					local st = m.proposal or {}
+					shape = " (-nodes " .. #(st.removedNodes or {}) .. " -segments " .. #(st.removedSegments or {}) .. " +segments "
+						.. #(st.addedSegments or {}) .. " -constructions " .. #(m.toRemove or {}) .. ", " .. ((now - a.at) / STEP) .. " step(s) late)"
+				end)
+				log("LATE removal " .. tostring(a.uid) .. shape .. " not replayed (the engine would assert if a vehicle moved there): asking for a resynchronisation")
+				replayFailed(a, "late removal")
+				okr = true
+			elseif a.fn == "terrainEdit" then
+				okr, errr = pcall(replayTerrain, a)
+			else
+				okr, errr = pcall(replayNative, a, 1)
+			end
 			if not okr then log("NATIVE REPLAY " .. tostring(a.uid) .. " failed: " .. tostring(errr)) end
 		else
 			keep[#keep + 1] = a

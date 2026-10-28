@@ -11,8 +11,9 @@ Player documentation is in [`docs/`](docs/): [README](docs/README.txt), [INSTALL
 | Part | Folder | Role |
 |---|---|---|
 | Launcher | `launcher/` (C#, .NET Framework 4.8, WinForms) | Hosts or joins a session over TCP and starts the game. It installs the mod and the native module, relays player actions, compares the games' state and runs resynchronisations from the host's savegame. |
-| Game mod | `mod/mpfever_1/` (Lua) | Game script and UI hook. It captures player actions and replays them in every game at the same game time (barrier lockstep). It computes state checksums, corrects money, and saves or loads for resynchronisation. It does nothing unless the game was started by the launcher. |
+| Game mod | `mod/mpfever_1/` (Lua) | Game script (split into parts, `mpfever_br_*.lua`), UI hook and presence of the other players. It captures player actions and replays them in every game at the same game time (barrier lockstep). It computes state checksums, corrects money, and saves or loads for resynchronisation. It does nothing unless the game was started by the launcher. |
 | Native module | `native/` (freestanding C++, no CRT) | Built as `winhttp.dll` and placed in the game folder, where the game loads it itself (the game imports `WINHTTP.dll`). Every WinHTTP call is passed unchanged to the system library. With an MPFever session only, it hooks the game's command queue so that construction tool commands run at the same game time in every game. It stays inert on any other game build. |
+| Signatures | `crates/`, `tools/sigtool/` (Rust) | Signatures of the hooked engine addresses (`signatures/`), the tool that makes and checks them. |
 | Tests | `tests/` (Python + pytest + lupa) | Unit tests of the Lua modules, N simulated games running the real Lua files (mocked relay, native module and network), offline checks of the game executable, end-to-end runs with real games (`test.bat`). |
 
 The launcher and the game talk through files in a per-session folder (`%TEMP%\mpfever\...`): `in.log` and `out.log`, plus control files. No process injection is used.
@@ -53,4 +54,4 @@ Levels, harness and conventions: [`docs/dev/TESTING.md`](docs/dev/TESTING.md); m
 
 ## Status
 
-Experimental (0.2.5). The game builds supported by the native module are 40408 and 40420 (Steam). See [`docs/ROADMAP.txt`](docs/ROADMAP.txt).
+Experimental (0.3.0). The native module knows the game builds 40408 and 40420 (Steam) and finds its addresses by signatures on other builds. See [`docs/ROADMAP.txt`](docs/ROADMAP.txt) and the 2.0 plan [`docs/dev/PLAN.md`](docs/dev/PLAN.md).

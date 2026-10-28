@@ -49,7 +49,8 @@ function deadEnds()
 		if k == 1 then
 			local e = segs[1]
 			local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
-			if c and c.type == 0 and c.roadTemplate and c.roadTemplate ~= "" then
+			-- (plain town / country streets only: from an industry road, a station entrance or a runway the engine asserts)
+			if c and c.type == 0 and isPlainStreet(c) then
 				list[#list + 1] = n
 				edgeOf[n] = { e = e, other = (c.node0 == n) and c.node1 or c.node0, c = c }
 			end

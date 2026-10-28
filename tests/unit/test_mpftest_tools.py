@@ -25,7 +25,8 @@ MOD = """10:41:49 native build 1 held by the DLL, released at t=44600 (now 43000
 10:35:37 gui alive frame 1200 t=41400 | slowed by other clocks 234/600 frames, by held actions 3
 11:43:07 pending mark drawn for autotest build 100001
 11:43:08 native build 100001 released at t=92435200 (1 step(s) late) [frame 437]
-11:43:02 hash parts: conParams=2849/3764181060 ; edges=3202/3311768893 ; nodeConfigs=2726/16576""".splitlines()
+11:43:02 hash parts: conParams=2849/3764181060 ; edges=3202/3311768893 ; nodeConfigs=2726/16576
+11:43:03 presence of Client#1 received""".splitlines()
 
 LAUNCHER = """10:00:00.123 === Resynchronisation #1 on the host's game (difference: towns) ===
 10:00:21.000 === Resynchronisation #1 done in 21 s ===
@@ -75,6 +76,7 @@ def test_kpis():
     assert k["released_late_steps_max"] == 2 and k["autotest_build_wall_seconds_max"] == 1
     assert k["resyncs"] == 2 and k["resync_seconds_max"] == 21
     assert k["desyncs"] == 1 and k["scenario_timeouts"] == 1
+    assert k["presence_peers"] == 1 and k["presence_errors"] == 0
     assert k["checksum_seconds_max"] == 4.06 and k["speed_changes"] == 2 and k["scenario_errors"] == 0
 
 

@@ -41,7 +41,7 @@ namespace MPFever
 
     sealed class MainForm : Form
     {
-        public const string Version = "0.2.10-experimental";
+        public const string Version = "0.3.0-experimental";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -58,6 +58,8 @@ namespace MPFever
         const long Step = 200;                 // game time units per simulation step
         const double UnitsPerSecond = 1000;    // game time units per real second at x1
         const double HashEverySeconds = 10;
+        // games further apart than this at the start did not load the same savegame (20 steps)
+        const long MaxStartSpread = 20 * 200;
         // A state check stops the simulation of every game while it hashes (4-5 s on a mid-size map, finding F9): the
         // next check waits at least HashCostFactor times the last check's cost, so checking takes at most ~10% of the time.
         const double HashCostFactor = 10;
@@ -465,7 +467,7 @@ namespace MPFever
                 bool ready = WaitUntil(() =>
                 {
                     int n; lock (players) n = players.Count;
-                    lock (clocks) return n >= 2 && clocks.Count >= 2 && clocks.Values.Select(c => c.T).Distinct().Count() == 1;
+                    lock (clocks) return n >= 2 && clocks.Count >= 2 && clocks.Values.Max(c => c.T) - clocks.Values.Min(c => c.T) <= MaxStartSpread;
                 }, 600);
                 if (!ready) { AutoLine("FAILED: the two games did not get ready with the same save"); return; }
                 AutoLine("both games ready");
@@ -749,8 +751,16 @@ namespace MPFever
             lock (clocks) times = clocks.Values.Select(c => c.T).Distinct().ToList();
             lock (players) n = players.Count;
             if (n < 1) { Log.W(T("Aucun jeu prêt.", "No game is ready.")); return; }
-            if (times.Count > 1) { Log.W(T("Les jeux ne sont pas au même temps (", "The games are not at the same time (") + string.Join(", ", times) + T(") : chargez exactement la même sauvegarde partout.", "): load exactly the same savegame everywhere.")); return; }
-            lock (sessionGate) { started = true; speed = 0; pauseAt = times.Count == 1 ? times[0] : (long?)null; }
+            // after loading, every game runs a few steps at the savegame's speed before its bridge holds it: the games
+            // stop a little apart. The session starts at the time of the furthest one; the others run on to it (same
+            // savegame, deterministic). Far apart: not the same savegame.
+            if (times.Count > 1 && times.Max() - times.Min() > MaxStartSpread)
+            {
+                Log.W(T("Les jeux ne sont pas au même temps (", "The games are not at the same time (") + string.Join(", ", times) + T(") : chargez exactement la même sauvegarde partout.", "): load exactly the same savegame everywhere."));
+                return;
+            }
+            if (times.Count > 1) Log.W(T($"Jeux à des temps proches ({string.Join(", ", times)}) : départ au temps {times.Max()}, les autres le rattrapent", $"Games at close times ({string.Join(", ", times)}): start at {times.Max()}, the others catch up"));
+            lock (sessionGate) { started = true; speed = 0; pauseAt = times.Count >= 1 ? times.Max() : (long?)null; }
             Log.W(T($"=== Partie démarrée avec {n} jeu(x) au temps {times.FirstOrDefault()} : vérification initiale... ===", $"=== Game started with {n} game(s) at time {times.FirstOrDefault()}: initial check... ==="));
             BroadcastSession();
             // every game just loaded the same savegame: a part already different now is a local measure
