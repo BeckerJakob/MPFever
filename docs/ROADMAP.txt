@@ -13,31 +13,50 @@ it is stable enough.
       automatic resynchronisation from the host's savegame
   [x] Built into the game: no extra button in the game interface
 
-0.2 - Stability and easier start (this version: 0.2.5)
+0.2 - Stability and easier start
   [x] Automatic transfer of the host's savegame when joining (0.2.0)
   [x] Start from any savegame, mod added automatically (0.2.1)
   [x] Fix the slow simulation drift without limiting the processor (0.1.1)
   [x] Reconnect after a lost connection (0.2.1)
+  [x] Main cause of desyncs found and fixed: the game's Lua walked its tables in a different
+      order on every PC (0.3.4, see RESEARCH.md)
+  [x] Players on different Windows compute alike: Windows' mathematical
+      functions give other last digits from one Windows build to the other; every game now
+      computes them with MPFever's own (0.5.1)
+  [ ] The towns' drift between two PCs (a resynchronisation every 5 to 10 minutes): cause still searched
   [ ] Tests and fixes for 3 to 8 players
   [ ] Feedback from the first testers
 
 0.3 - Playing with friends
   [x] Steam invites (join through your Steam friends list) (0.2.0)
   [x] Join a session that is already running (0.2.0)
-  [ ] Player list and chat inside the game interface
+  [x] Player list and sync state inside the game, from the pause menu (0.3.4)
+  [x] Chat inside the game interface (0.3.5)
   [ ] Settings for the host (who may build, bulldoze, spend money)
+  [x] Personal mods (interface only) that every player may have or not, missing mods installed from the game's Mod Hub,
+      the host's local mods sent from its PC (0.5.0)
+  [x] What the others are building shown on the ground before their click (0.5.0)
 
 0.4 - Separate companies
-  [ ] Each player (or team) runs their own company on the same map
-  [ ] Own money, vehicles, lines and stations per company
-  [ ] Competition on cargo and passengers, company rankings
+  [x] Each player runs their own company on the same map, chosen by the host (0.3.0)
+  [x] Own money, vehicles, lines and stations per company, a colour per company, the company
+      is found again after a reconnection (0.3.0)
+  [x] Loans for every company (0.3.2)
+  [x] Contracts for every company, owner shown in the windows, company tied to the Steam account (0.3.3)
+  [x] Company-window actions for every company, money transfers, colour picked in the lobby,
+      a table of the companies (0.4.4)
+  [x] Bankruptcy: the company's empire auctioned to the other companies, the player starts again (0.5.0)
+  [x] Shared stations' fees in the finances (0.5.0)
+  [ ] Competition on cargo and passengers
 
 0.5 - Mixed modes
-  [ ] Shared companies and separate companies in the same game
-  [ ] Joining, leaving and merging companies
-  [ ] Rules for shared infrastructure (track access, fees)
+  [x] Shared companies and separate companies in the same game (0.5.0)
+  [x] Joining, leaving and merging companies (0.5.0)
+  [x] Shared stations with a fee per stop (0.3.3)
+  [x] Rules for shared tracks and depots: private, open, or a toll per passage (0.5.0)
 
 Later - Persistent worlds
-  [ ] Dedicated server running the world without the host's PC
+  [x] Dedicated server running the world without the host's PC (0.3.12: MPFever.exe --server, separate archive,
+      see SERVER.txt; to be tested in long real games; 0.5.8: start buttons, without display)
   [ ] Persistent world that players join and leave at any time
   [ ] Larger player counts (MMO-like)

@@ -14,13 +14,7 @@ logs/
 autotest_result.txt
 __pycache__/
 *.pyc
-
-# tests
-.venv/
-.hypothesis/
-.pytest_cache/
-reports/*
-!reports/baseline-*/
-
-# rust
-target/
+/.vscode
+dev-test.bat
+dev-test - Server.bat
+serverlist/obj/

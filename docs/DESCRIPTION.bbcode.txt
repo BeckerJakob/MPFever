@@ -1,50 +1,89 @@
-[size=5][b]MPFever – Multiplayer for Transport Fever 3 (experimental)[/b][/size]
+[center][img]https://raw.githubusercontent.com/dkdknight/MPFever/main/docs/preview.png[/img]
 
-[b]Build your transport empire together.[/b] MPFever adds cooperative multiplayer to Transport Fever 3: you and your friends run the same company, each in your own game, over the internet or a local network.
+[size=6][b]MPFever[/b][/size]
+[size=4][color=#f0a030]Multiplayer for Transport Fever 3[/color][/size]
 
-[b]⚠ Experimental version (0.1.1).[/b] It works, but expect bugs, short pauses and the occasional crash. Back up your savegames, and please send feedback: it decides what comes next.
+[b]Build your transport empire with your friends: together, or against each other.[/b]
+Free · Open source · 13 languages · Updates itself[/center]
 
-[size=4][b]Features[/b][/size]
-[list]
-[*][b]Co-op in one shared company.[/b] Shared money, vehicles, lines and infrastructure.
-[*][b]Real-time sync of what you build.[/b] Roads and tracks (including joins in the middle of a road and upgrades), bus and tram stops, stations, depots, buildings, the bulldozer and terrain editing (raising / lowering the ground). Vehicle purchases, lines, vehicle assignments, game speed and pause too.
-[*][b]Host authority.[/b] Every 10 seconds the games compare their state: money, loans, company progress, contracts, towns and industries; cargo in buildings and vehicles; vehicles and roads. Money is corrected automatically. Any other lasting difference triggers an [b]automatic resync[/b]: a short pause, the host's game is sent to everyone, all games reload it, and play resumes (about 20 s).
-[*][b]Built into the game.[/b] No extra buttons in the game interface. A small launcher window handles hosting, joining and speed.
-[*][b]Direct IP connection.[/b] Use port forwarding or a virtual LAN (Radmin VPN, ZeroTier, Tailscale…).
-[*][b]English and French launcher.[/b]
-[/list]
+[line]
 
-[size=4][b]Known limitations (0.1)[/b][/size]
-[list]
-[*]Co-op only, with one shared company. Separate companies are planned.
-[*]All players must load the same savegame file. The host shares it for now; automatic transfer is planned.
-[*]No joining a session that is already running, and no Steam invites yet.
-[*]Vehicles may drift slightly after road building; the automatic resync fixes it.
-[*]Tested with 2 players. Windows only.
-[*]Made for the current Steam version of the game (builds 40408 and 40420).
-[/list]
+[size=5][color=#f0a030]► Why MPFever?[/color][/size]
+Transport Fever 3 ships without multiplayer. MPFever adds it: you and your friends play [b]the same world at the same time[/b], each in your own game. Lay the tracks while a friend plans the bus lines and share one company and one bank account... or race each other for the best network on the same map.
 
-[size=4][b]Open source and transparent[/b][/size]
-The full source code is public (link below), with the steps to build it yourself. MPFever copies a small winhttp.dll into the game folder, which the game loads by itself, the same way well-known mod loaders work. It passes the game's network calls unchanged to Windows and stays inactive in normal solo games. MPFever only connects to the address you enter.
-
-[b]Source code:[/b] [url=https://github.com/dkdknight/MPFever]https://github.com/dkdknight/MPFever[/url]
-
-[size=4][b]Installation[/b][/size]
+[size=5][color=#f0a030]► Ready in one minute[/color][/size]
 [list=1]
-[*]Extract the archive anywhere.
-[*]Run [b]MPFever.exe[/b] once. It finds the game through Steam, installs the mod and enables it for new games.
-[*]Follow [b]INSTALL.txt[/b] to prepare a shared savegame, set up the network and start your first session.
+[*]Extract the archive anywhere and run [b]MPFever.exe[/b].
+[*]It finds the game through Steam, installs the mod and starts the game.
+[*]Click [b]Multiplayer (MPFever)[/b] in the main menu: host one of your savegames, or join a friend.
 [/list]
-The mod does nothing in normal solo games. It only activates when the game is started through MPFever.exe.
+That's it. No account, no sign-up, no outside server. Your solo games stay untouched: MPFever only wakes up when the game is started through MPFever.exe.
 
-[size=4][b]Roadmap[/b][/size]
+[size=5][color=#f0a030]► Play together, your way[/color][/size]
+[b]✔ One shared company (co-op)[/b]
+One bank account, one network, built together.
+
+[b]✔ One company per player (competition)[/b]
+Your own money, roads, stations, vehicles, lines, loans, contracts and Company window, and your own colour on the map. Climb the ranking, give money to a friend in two clicks... but watch out: a company in debt for too long goes bankrupt, and its network is auctioned to the others.
+
+[b]✔ Or mix both[/b]
+Some players team up, others go solo: ask to join a company, leave it, or merge two companies, in the middle of a game.
+
+[b]✔ Your network, your rules[/b]
+Your tracks, stations and depots are open to everyone for free, until you make them private or charge a toll (per passage, per stop or per vehicle).
+
+[size=5][color=#f0a030]► Almost everything is shared[/color][/size]
+Roads, tracks, signals, stops, stations, airports, depots, buildings, the bulldozer, terrain, trees, vehicles, lines, game speed and pause. Every game applies each action at the same moment, so all the worlds stay identical. You even see what your friends are about to build: their tool's preview shows on the ground in your game, in their colour.
+
+[size=5][color=#f0a030]► Features[/color][/size]
 [list]
-[*][b]0.2 – Stability and easier start:[/b] automatic savegame transfer when joining, any savegame, fewer resyncs, reconnection, 3–8 players.
-[*][b]0.3 – Playing with friends:[/b] Steam invites, joining a running game, player list and chat in the game UI, host permissions.
-[*][b]0.4 – Separate companies[/b] on the same map, with competition and rankings.
-[*][b]0.5 – Mixed modes:[/b] shared and separate companies in the same game.
-[*][b]Later – Persistent worlds:[/b] dedicated server, drop-in/drop-out, larger player counts.
+[*][b]Join through Steam, no port to open.[/b] Accept a Steam invitation or click « Join game » in your Steam friends list. IP address (IPv4 / IPv6) and local network work too, and MPFever opens the port on your router by itself when it can.
+[*][b]Worlds that stay in sync.[/b] Every 10 seconds the games compare their state. If anything drifts, MPFever corrects it or resynchronises every game by itself.
+[*][b]Reconnection.[/b] Lost your connection? You are back in without the others reloading.
+[*][b]Smooth play.[/b] A steady pace for smooth vehicle movement.
+[*][b]Chat and MPFever window in the game.[/b] An icon in the bottom bar shows the sync state and the unread messages; one click opens the session, the players, the chat, your company and the settings.
+[*][b]Mods made easy.[/b] Missing mods install themselves from the game's Mod Hub, the host can send its own local mods, and interface-only mods may differ from one player to another.
+[*][b]Your own dedicated server[/b] (separate download). Keep a world running for your group on a spare PC, like a Minecraft or Factorio server: it waits while nobody is connected, saves regularly, restarts by itself after a crash, and has a password, a player limit and a console.
+[*][b]Always up to date.[/b] MPFever updates itself when it starts, so every player has the same version.
+[*][b]One-click bug reports.[/b] One button gathers the logs (without your personal data) and opens a prefilled report.
+[*][b]In your language.[/b] All 13 languages of Transport Fever 3.
 [/list]
 
-[size=4][b]Feedback and bug reports[/b][/size]
-Describe what you did and what happened, and attach the newest logs\launcher-….log next to MPFever.exe and the %TEMP%\mpfever session folders. Details are in README.txt.
+[center][img]https://raw.githubusercontent.com/dkdknight/MPFever/main/docs/images/ingame-window-chat.png[/img]
+[i]The MPFever window and the chat, in game[/i][/center]
+
+[size=5][color=#f0a030]► Good to know[/color][/size]
+[list]
+[*]MPFever is in active development, with frequent updates. Backing up your savegames is always a good idea.
+[*]Every player needs [b]the same game version[/b] (let Steam update Transport Fever 3 on every PC) and the same mods (they install themselves). The MPFever version is kept in step automatically.
+[*]The shared company is the most tested mode. One company per player works and is still being polished.
+[*]Made for the Steam version of the game, on Windows. The tutorial is made for solo play.
+[/list]
+
+[size=5][color=#f0a030]► Coming next[/color][/size]
+[list]
+[*]A dedicated server that runs without display, using far fewer resources.
+[*]Competition between companies for cargo and passengers.
+[*]Smoother building, faster resyncs, more players.
+[/list]
+
+[size=5][color=#f0a030]► Open source and transparent[/color][/size]
+The full source code is public on GitHub: [url=https://github.com/dkdknight/MPFever]github.com/dkdknight/MPFever[/url], under the GNU GPL v3 (versions up to 0.4.5: MIT).
+MPFever copies a small winhttp.dll file into the game folder, which the game loads by itself, like the usual mod loaders; it stays inactive in solo games. MPFever only connects to your friends, to your router (to open the port) and to GitHub (for updates).
+
+[size=5][color=#f0a030]► Something went wrong?[/color][/size]
+Click [b]Report a problem[/b] in the in-game MPFever window or in the launcher: MPFever gathers the logs and opens a report on GitHub. Describe what you did, drag the zip file in and send. You can also use the Bugs tab here or [url=https://github.com/dkdknight/MPFever/issues]GitHub issues[/url]. Every report makes MPFever better!
+
+[size=5][color=#f0a030]► Credits[/color][/size]
+[list]
+[*][b]dkdknight[/b] – author and maintainer.
+[*][b]SlikerDev[/b] – the launcher's design, the 13 languages, the in-game MPFever window, the chat, IPv6, the dedicated server and the automatic updates.
+[*][b]Steelworm[/b] – build sync fixes and detailed bug analyses.
+[*][b]Juliansgith[/b] – the source of the smooth pacing, the company rules and several sync fixes.
+[*][b]The testers[/b] – kingplay98, theop, Eagle, simon21-la, Vogel, Alex, CrossCroissant, AZalshehri7, ArtemQa8, Gwemox, qLimAx1991, KatzenSupport, GreGNee, terpo and everyone who sent reports, logs and savegames.
+[/list]
+
+[line]
+
+[center]Enjoying MPFever? A tip helps me keep developing it: ☕ [url=https://ko-fi.com/H2H717LY5N]Ko-fi[/url]
+[b]Thank you, and have fun building together![/b][/center]

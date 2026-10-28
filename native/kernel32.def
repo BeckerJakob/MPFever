@@ -32,4 +32,16 @@ GetModuleFileNameW
 QueryPerformanceCounter
 QueryPerformanceFrequency
 GetCurrentThreadId
+RaiseException
 DeleteFileA
+GetLastError
+SetLastError
+AcquireSRWLockExclusive
+ReleaseSRWLockExclusive
+TryAcquireSRWLockExclusive
+GetTickCount64
+SetEndOfFile
+GetCurrentProcessId
+TlsAlloc
+TlsGetValue
+TlsSetValue

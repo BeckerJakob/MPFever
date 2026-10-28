@@ -1,0 +1,176 @@
+MPFever - Dedicated server
+==========================
+
+A dedicated server runs the world on a PC of its own, for example a PC that stays on at
+home or a rented Windows server. Nobody plays on it: the players join it as they join a
+host, and the world no longer depends on the PC of one of them. It is the same idea as
+the servers of Minecraft, Satisfactory or Factorio:
+
+- the world is loaded by the server, and stays there when the players leave;
+- while nobody is connected, the world waits (paused), as in Satisfactory and Factorio;
+- the world is saved every 10 minutes, and a copy of each save is kept;
+- if the game crashes or freezes, it is started again with the last saved world, and the
+  players' MPFever reconnects by itself;
+- a console under the log drives the server (say, save, kick, restart, stop...);
+- a password, a number of players at most and a message of the day.
+
+THIS IS NEW AND STILL EXPERIMENTAL, like the rest of MPFever. Keep backups of your world.
+
+
+HOW IT WORKS
+------------
+Transport Fever 3 has no server program of its own: the world can only be simulated by the
+game itself. So the dedicated server is the full game, started by MPFever on the server PC,
+which loads the world and hosts it exactly like a player hosts a savegame, with nobody at
+its keyboard. The players' games and the server's game run the same world
+in lockstep, as in every MPFever session; the server's game is the authority (its state is
+the reference, and its savegame is what a joining player receives).
+
+
+WITH OR WITHOUT DISPLAY
+-----------------------
+The server starts in one of two ways, one button each:
+
+- With display: the game's window shows the world, as on a player's PC. Handy to look at
+  the world, but the game draws it all the time for nobody.
+- Without display: the game runs hidden. It still simulates the world and hosts the
+  players exactly the same way, but its window is never shown, the world is not drawn and
+  it makes no sound: far less work for the graphics card and the processor. A graphics card
+  able to run the game is still needed (the game starts its graphics even so).
+
+Both are the same world and the same saves: you can stop the server and start it again in
+the other way at any time.
+
+
+REQUIREMENTS (server PC)
+------------------------
+- Windows 10 or 11 that stays on (no sleep), with a graphics card able to run the game.
+- Transport Fever 3 on Steam, with its own Steam account logged in: the game runs on the
+  server, so it needs a copy of the game. A Steam account cannot play on two PCs at the same
+  time: do not use the account of one of the players.
+- The same game version, the same mods and the same MPFever version as the players (a
+  player with another MPFever version is refused, with a message saying which one the
+  server runs).
+- TCP port 28090 (or the port of the settings) forwarded to the server PC on the router,
+  as for a host (see INSTALL.txt, "Network"), or a virtual LAN.
+
+
+SETTING IT UP
+-------------
+1. Unzip MPFever-<version>-server.zip on the server PC. Its folder is called MPFever-Server
+   (the players' archive is called MPFever: do not mix them up). Its MPFever.exe opens the
+   server's window, because of the file server-edition.txt next to it.
+2. Put the world on the server PC: start Transport Fever 3 there (through MPFever.exe or
+   Steam), load or create the map, and save it under a name, for example "Our World".
+   A savegame of another PC works too: copy its .sav file (and the files next to it with
+   the same name) into the save folder of the server's Steam account:
+       Steam\userdata\<id>\3493540\local\save\
+   With display, lower the graphics settings of the game on the server: it draws the world
+   even though nobody watches it (without display, it does not draw it).
+3. Open MPFever.exe (or start-server.bat, the same). The first time, it writes
+   mpfever_server.properties next to MPFever.exe. The server does not start by itself: the
+   window waits.
+4. Open mpfever_server.properties (button "Open the settings"), write the savegame's name
+   after world= (for example  world=Our World ), set a password if you want one, and save
+   the file.
+5. Click "Start with display" or "Start without display" (or type  start  or
+   start headless  in the server console). Transport Fever 3 starts, loads the world and
+   the server is ready. The log shows the addresses the players join with.
+
+To start the server as soon as MPFever opens, tick "Start the server when MPFever opens"
+(off at first): it then starts in the way it was started last.
+
+Players: in the game's main menu, "Multiplayer (MPFever)", "Join a game", type the server's
+address, the password if it has one, then "Join". Everything else is as with a host.
+
+To start the server with Windows: tick "Start the server when MPFever opens", let Windows
+log on by itself, start Steam with Windows, and put a shortcut to MPFever.exe in the
+Startup folder (Win+R, shell:startup).
+
+With display, do not minimize the game window of the server: whether the game keeps running
+at full speed while minimized has not been checked yet. Do not close it either (it would be
+started again). Without display, the game has no window to see: it shows in the Task Manager
+only.
+
+
+SETTINGS (mpfever_server.properties)
+------------------------------------
+One "key=value" per line; a line starting with # is a comment. Read when the server starts
+and on "restart".
+
+  server-name=MPFever Server   Name shown to the players (in-game MPFever window, chat).
+  world=                       The savegame to host (name of the game's load list). Required.
+                               The server saves the world under this name.
+  port=28090                   TCP port of the server.
+  password=                    Password to join (empty: none).
+  max-players=8                Players at most (the server not counted).
+  company-mode=shared          shared: one company for everybody. separate: one company per
+                               player (still in development, many bugs remain).
+  owner=                       separate only: the player name that gets the savegame's own
+                               company (the first player who joins under that name; from then
+                               on the company follows that player's Steam account). Empty:
+                               nobody plays it (every player gets a new one).
+  start-money=2000000          separate only: money of a new company.
+  start-speed=1                Game speed when the world starts: 1, 2 or 4.
+  pause-when-empty=true        The world waits while nobody is connected. false: it always runs.
+  player-speed-control=true    The players may pause and change the speed. false: only the
+                               console may.
+  autosave-minutes=10          Minutes between two saves of the world (0: none). The world
+                               stops for a few seconds while it is saved.
+  backups=10                   Copies of the world kept in server\backups (0: none).
+  restart-on-crash=true        The game is started again when it closes or crashes (at most 3
+                               times in 15 minutes, then it waits for "restart").
+  watchdog-seconds=180         A game that gives no sign of life for that long is restarted
+                               (0: never).
+  motd=                        Chat message every player receives when it joins.
+  public=true                  true: the server is shown in the public server list (the
+                               "Public servers" tab of MPFever's multiplayer page) while its
+                               world runs: its name, address, players, world and motd.
+                               false: only those who know its address find it.
+  public-address=              The address the list shows (a domain name, name:port). Empty:
+                               the public IP address the list sees, and port.
+
+
+CONSOLE
+-------
+Type the commands in the line under the log of the server window:
+
+  help               the list of the commands
+  start              starts the server with display (start headless: without display)
+  status             players (with their address), speed, sync, last save
+  say <text>         a message in every player's chat
+  save               saves the world now
+  pause | resume     pauses the world or runs it again
+  speed <1|2|4>      game speed
+  kick <player>      kicks a player (who may come back; set a password to keep people out)
+  resync             reloads the server's world on every player's game
+  restart            reads the settings again, saves the world and restarts the game
+  stop               saves the world, tells the players and stops the server; the window
+                     stays open and waits for a new start
+
+Closing the server window saves the world and stops the server too, then MPFever closes.
+
+
+SAVES AND BACKUPS
+-----------------
+- The world is saved under its own name (world=) every autosave-minutes, before a
+  restart and when the server stops. When nothing happened since the last save (the world
+  waited for its players), no save is made.
+- Each save is also copied to server\backups\<world>\ next to MPFever.exe, the file names
+  starting with the date and time. The last backups=10 copies are kept.
+- To go back to a backup: stop the server, copy the files of that date into the save
+  folder of the server's Steam account, remove the date from their names (they must be
+  called exactly like the world, for example "Our World.sav"), then start the server.
+
+
+LIMITS
+------
+- The server PC runs the full game (there is no server-only version of Transport Fever 3),
+  even without display: it needs Windows, a copy of the game and a graphics card.
+- Each time a player joins, every game pauses and reloads the server's world for a few
+  seconds, as with a host.
+- After a crash of the server's game, the world goes back to its last save (10 minutes at
+  most with the default settings).
+- A kicked player may come back: use a password to keep people out.
+- The password travels unencrypted, like everything MPFever sends: do not reuse an important
+  password.

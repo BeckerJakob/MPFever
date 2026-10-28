@@ -23,28 +23,7 @@ end
 
 local S = { requested = false, frames = 0, readyStarted = false }
 
--- The autotest's load request is kept in a file too (autoload.txt in the session folder): the game restarts this
--- application script with the loaded game, which loses S - the loaded game then waited for a key press for ever when
--- the engine wanted one (finding F8: "game loaded, starting it" was never logged).
-local function autoloadPending()
-	if not (DIR and IO) then return false end
-	local f = IO.open(DIR .. BS .. "autoload.txt", "rb")
-	if not f then return false end
-	local s = f:read("*a") or ""
-	f:close()
-	return s:find("1", 1, true) ~= nil
-end
-
-local function setAutoload(on)
-	if not (DIR and IO) then return end
-	local f = IO.open(DIR .. BS .. "autoload.txt", "wb")
-	if f then
-		if on then f:write("1") end
-		f:close()
-	end
-end
-
-local function loadSave(name)
+local function loadSave(name, fromMenu, hostGame)
 	name = name or SAVE
 	local ns = app.SaveGameNamespace.getSavegame()
 	local found = nil
@@ -63,7 +42,7 @@ local function loadSave(name)
 	-- as the game's own load screen does when the player changes the mods of a savegame
 	local ok, async = pcall(app.getSavegameInfo, id)
 	if ok and async then
-		S.pending = { id = id, async = async, name = name, since = S.frames }
+		S.pending = { id = id, async = async, name = name, since = S.frames, fromMenu = fromMenu, host = hostGame }
 		log("reading savegame '" .. name .. "' (" .. tostring(found.path) .. ")")
 	else
 		log("loading savegame '" .. name .. "' (details unavailable: " .. tostring(async) .. ")")
@@ -72,6 +51,59 @@ local function loadSave(name)
 end
 
 local MOD_ID = "mpfever_1"
+
+-- personal mods (0.5.0): the launcher's plan for this player's load of the host's game (load_mods.txt, see Mods.LoadPlan):
+-- "drop TAB id" (the host's personal mods this player does not run) and "add TAB id" (this player's own)
+local function loadPlan()
+	if not (DIR and IO) then return nil end
+	local f = IO.open(DIR .. BS .. "load_mods.txt", "rb")
+	if not f then return nil end
+	local s = f:read("*a") or ""
+	f:close()
+	local plan = { drop = {}, add = {}, n = 0 }
+	for line in s:gmatch("[^" .. string.char(10, 13) .. "]+") do
+		local k, id = line:match("^(%a+)" .. string.char(9) .. "(.+)$")
+		if k == "drop" then plan.drop[id] = true; plan.n = plan.n + 1
+		elseif k == "add" then plan.add[#plan.add + 1] = id; plan.n = plan.n + 1 end
+	end
+	return plan.n > 0 and plan or nil
+end
+
+-- the savegame's mods not installed here: written to missing_mods.txt (one "id TAB name TAB origin" line each); true if any
+-- (the host's personal mods this player leaves out are not needed)
+local function missingMods(info, plan)
+	local okr, rep = pcall(function() return app.getUserProfile():getModRep() end)
+	if not okr or not rep then return false end
+	local descs = {}
+	pcall(function()
+		for _, d in ipairs(info.metadata.gameModDescs or {}) do
+			if d.modId and d.modId.name then descs[d.modId.name] = d end
+		end
+	end)
+	local lines = {}
+	for _, m in ipairs(info.mods or {}) do
+		if m.name ~= MOD_ID and not (plan and plan.drop[m.name]) then
+			local ok, exists = pcall(function() return rep:exists(m) end)
+			if ok and exists == false then
+				local d = descs[m.name]
+				local name = d and d.name ~= "" and d.name or m.name
+				lines[#lines + 1] = (m.name .. string.char(9) .. name .. string.char(9) .. (d and d.modSource or "")):gsub("[" .. string.char(10, 13) .. "]", " ")
+			end
+		end
+	end
+	if #lines == 0 then return false end
+	-- (MPFever.exe must hear of it: loaded anyway if the file cannot be written)
+	if not (DIR and IO) then return false end
+	local f = IO.open(DIR .. BS .. "missing_mods.txt", "wb")
+	if not f then return false end
+	f:write(table.concat(lines, string.char(10)) .. string.char(10))
+	f:close()
+	-- (no resynchronisation load waits any more)
+	local fl = IO.open(DIR .. BS .. "resync_pending.txt", "wb")
+	if fl then fl:close() end
+	log("not loaded: " .. #lines .. " mod(s) of the host's game missing here")
+	return true
+end
 
 local function loadPending()
 	local p = S.pending
@@ -88,22 +120,58 @@ local function loadPending()
 		app.loadGame(p.id, false)
 		return
 	end
+	-- the host's game received from the main menu: not loaded when mods of it are missing on this PC (the game would load
+	-- without them, and never match the host's). MPFever.exe reads missing_mods.txt and shows them.
+	local plan = p.host and loadPlan() or nil
+	if p.fromMenu and missingMods(info, plan) then return end
 	local details = api.type.SaveGameDetails.new(info)
 	local has = false
 	local mods = {}
+	-- (tests: MPFEVER_DROPMODS=id1,id2 leaves mods of the savegame out, as the load screen does: a DLC this PC does not have)
+	local drop, dropped = {}, {}
+	for id in tostring(os.getenv("MPFEVER_DROPMODS") or ""):gmatch("[^,%s]+") do drop[id] = true end
 	for _, m in ipairs(info.mods or {}) do
-		mods[#mods + 1] = m
-		if m.name == MOD_ID then has = true end
+		if drop[m.name] or (plan and plan.drop[m.name]) then dropped[#dropped + 1] = m.name
+		else
+			mods[#mods + 1] = m
+			if m.name == MOD_ID then has = true end
+		end
+	end
+	-- (tests: MPFEVER_ADDMODS=id1,id2 adds installed mods to the savegame, as the load screen does; the plan adds this
+	-- player's personal mods, those installed)
+	local added = {}
+	local adds = {}
+	for id in tostring(os.getenv("MPFEVER_ADDMODS") or ""):gmatch("[^,%s]+") do adds[#adds + 1] = id end
+	if plan then
+		local okr, rep = pcall(function() return app.getUserProfile():getModRep() end)
+		for _, id in ipairs(plan.add) do
+			local m = api.type.ModId.new()
+			m.name = id
+			local ok, ex = pcall(function() return okr and rep and rep:exists(m) end)
+			if ok and ex then adds[#adds + 1] = id else log("personal mod " .. id .. " not installed here: not added") end
+		end
+	end
+	for _, id in ipairs(adds) do
+		local dup = false
+		for _, m in ipairs(mods) do if m.name == id then dup = true end end
+		if not dup then
+			local m = api.type.ModId.new()
+			m.name = id
+			mods[#mods + 1] = m
+			added[#added + 1] = id
+		end
 	end
 	if not has then
 		local m = api.type.ModId.new()
 		m.name = MOD_ID
 		mods[#mods + 1] = m
-		details.mods = mods
 		log("loading savegame '" .. p.name .. "' with MPFever added to its mods")
 	else
 		log("loading savegame '" .. p.name .. "'")
 	end
+	if not has or #added > 0 or #dropped > 0 then details.mods = mods end
+	if #dropped > 0 then log("mods left out: " .. table.concat(dropped, ", ")) end
+	if #added > 0 then log("mods added: " .. table.concat(added, ", ")) end
 	app.loadGame(p.id, false, details)
 end
 
@@ -130,6 +198,8 @@ local function menuLoad()
 	if not f then return end
 	local s = f:read("*a") or ""
 	f:close()
+	-- (read while MPFever.exe wrote it: its last line "end=1" is missing, a name may be cut)
+	if s:find("end=1", 1, true) then S.stateEnd = true elseif S.stateEnd then return end
 	local name = s:match("load=([^" .. string.char(10, 13) .. "]*)")
 	local seq = s:match("loadSeq=([^" .. string.char(10, 13) .. "]*)")
 	if not name or name == "" or not seq or seq == "" or seq == lastLoadSeq then return end
@@ -138,12 +208,13 @@ local function menuLoad()
 	local done = fd and fd:read("*a") or ""
 	if fd then fd:close() end
 	lastLoadSeq = seq
-	if done == seq then return end
+	if done == seq then log("load " .. seq .. " of '" .. name .. "' already done: not loaded again") return end
 	fd = IO.open(DIR .. BS .. "menu_loaded.txt", "wb")
 	if fd then fd:write(seq) fd:close() end
 	local fl = IO.open(DIR .. BS .. "resync_pending.txt", "wb")
 	if fl then fl:write("1") fl:close() end
-	local ok, err = pcall(loadSave, name)
+	-- (a host's game received by this player: loadSeq "r..."; the host's own savegame: "h...")
+	local ok, err = pcall(loadSave, name, true, seq:sub(1, 1) == "r")
 	if not ok then log("menu load failed: " .. tostring(err)) end
 end
 
@@ -164,9 +235,8 @@ function data()
 	return {
 		handleEvent = function(id, name, param)
 			if name == "mainMenuReady" then S.menuReady = true end
-			if name == "mainMenuReady" and SAVE and not S.requested and not autoloadPending() then
+			if name == "mainMenuReady" and SAVE and not S.requested then
 				S.requested = true
-				setAutoload(true)
 				local ok, err = pcall(loadSave)
 				if not ok then log("load failed: " .. tostring(err)) end
 			end
@@ -178,9 +248,8 @@ function data()
 				local ok, err = pcall(loadPending)
 				if not ok then log("load failed: " .. tostring(err)) S.pending = nil end
 			end
-			if (S.requested or autoloadPending()) and not S.readyStarted and startWhenReady() then
+			if S.requested and not S.readyStarted and startWhenReady() then
 				S.readyStarted = true
-				setAutoload(false)
 				log("game loaded, starting it")
 			end
 			pcall(menuLoad)

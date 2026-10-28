@@ -1,3 +1,0 @@
-pytest>=8
-lupa>=2.0
-hypothesis>=6.100

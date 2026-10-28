@@ -1,0 +1,51 @@
+# Every push and pull request: builds the native module and the launcher (a warning is an error), runs every check that
+# needs no game (tests/run_all.py: the repository's checks, the Lua tests, MPFever.exe --selftest) and packs the archives,
+# as build.bat does for a release. The tests with the game (two games on one PC) run on a PC with Transport Fever 3.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Lua for the tests
+        run: python -m pip install lupa==2.8
+
+      - name: Build, test, pack
+        shell: pwsh
+        run: |
+          cmd /c build.bat 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # (what failed, as an annotation of the run: readable without signing in, unlike the log)
+      - name: Why it failed
+        if: failure()
+        shell: pwsh
+        run: |
+          $lines = Get-Content build.log -ErrorAction SilentlyContinue
+          $why = @($lines | Select-String -Pattern 'error|FAIL|warning|not found' | ForEach-Object { $_.Line }) | Select-Object -First 40
+          $tail = $lines | Select-Object -Last 25
+          $text = (@('--- errors ---') + $why + @('--- end of the log ---') + $tail) -join "`n"
+          $text = $text.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
+          Write-Output "::error title=build.bat failed::$text"
+
+      - name: Archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: MPFever-${{ github.sha }}
+          path: release/*.zip
+          retention-days: 14

@@ -1,0 +1,7 @@
+MPFever - dedicated server edition
+==================================
+
+This folder is MPFever's dedicated server: because of this file, MPFever.exe opens the server's
+window (not the players' one). See SERVER.txt.
+
+To use this folder as a player's MPFever instead, delete this file.
